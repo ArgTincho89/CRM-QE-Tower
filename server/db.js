@@ -57,6 +57,7 @@ const SCHEMA_STATEMENTS = [
       owner_id TEXT REFERENCES people(id), bid_manager_id TEXT REFERENCES people(id),
       amount TEXT NOT NULL DEFAULT '0', qa_percent REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'open', closure_reason TEXT NOT NULL DEFAULT '',
+      stage TEXT NOT NULL DEFAULT 'prospecting',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
   `CREATE TABLE IF NOT EXISTS framework_agreements (
@@ -113,6 +114,10 @@ export function applySchema(db) {
   ];
   for (const [name, declaration] of additions) {
     if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
+  }
+  const initiativeColumns = db.prepare('PRAGMA table_info(initiatives)').all().map((row) => row.name);
+  if (!initiativeColumns.includes('stage')) {
+    db.exec("ALTER TABLE initiatives ADD COLUMN stage TEXT NOT NULL DEFAULT 'prospecting'");
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
 }

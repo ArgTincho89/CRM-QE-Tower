@@ -34,9 +34,11 @@ test('schema migration preserves existing users and sessions', () => {
     CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
     CREATE TABLE opportunities (id TEXT PRIMARY KEY, title TEXT NOT NULL, account TEXT NOT NULL, amount TEXT NOT NULL, stage TEXT NOT NULL, tower TEXT NOT NULL, owner TEXT NOT NULL, due TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE initiatives (id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL, client_id TEXT, tower_id TEXT, owner_id TEXT, bid_manager_id TEXT, amount TEXT NOT NULL, qa_percent REAL NOT NULL, status TEXT NOT NULL, closure_reason TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     INSERT INTO users VALUES ('u-1','first@example.com','First User','hash','admin','2026-01-01');
     INSERT INTO users VALUES ('u-2','second@example.com','Second User','hash','member','2026-01-01');
     INSERT INTO sessions VALUES ('token-1','u-1','2026-01-01','2027-01-01');
+    INSERT INTO initiatives VALUES ('i-1','Legacy initiative','external',NULL,NULL,NULL,NULL,'0',0,'open','', '2026-01-01','2026-01-01');
   `);
   original.close();
   try {
@@ -44,6 +46,7 @@ test('schema migration preserves existing users and sessions', () => {
     assert.equal(count(db, 'users'), 2);
     assert.equal(count(db, 'sessions'), 1);
     assert.equal(db.prepare('SELECT name FROM users WHERE id = ?').get('u-1').name, 'First User');
+    assert.equal(db.prepare('SELECT stage FROM initiatives WHERE id = ?').get('i-1').stage, 'prospecting');
     closeDatabase(db);
   } finally {
     rmSync(dir, { recursive: true, force: true });

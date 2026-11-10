@@ -171,9 +171,10 @@ function App() {
     if (session.status !== 'authenticated') return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
-      listOpportunities()
-        .then(({ opportunities: list }) => {
+      Promise.all([listOpportunities(), listInitiatives()])
+        .then(([{ opportunities: list }, { initiatives: initiativeList }]) => {
           setOpportunities(Array.isArray(list) ? list : []);
+          setInitiatives(Array.isArray(initiativeList) ? initiativeList : []);
         })
         .catch((err) => {
           if (err?.status === 401) setSession({ status: 'anonymous', user: null });
@@ -193,7 +194,26 @@ function App() {
     };
   }, [session.status]);
 
-  const owners = useMemo(() => [...new Set(opportunities.map((item) => item.owner).filter(Boolean))].sort(), [opportunities]);
+  const pipelineCards = useMemo(() => [
+    ...opportunities.map((item) => ({ ...item, entityType: 'opportunity', cardKey: `opportunity:${item.id}` })),
+    ...initiatives.map((item) => ({
+      ...item,
+      account: clients.find((client) => client.id === item.clientId)?.name || 'Sin cliente',
+      tower: towers.find((tower) => tower.id === item.towerId)?.name || 'Sin tower',
+      owner: people.find((person) => person.id === item.ownerId)?.name || 'Sin responsable',
+      amount: formatCurrency(parseAmount(item.amount)),
+      due: item.status,
+      statusLabel: item.status === 'open' ? 'Abierta' : item.status,
+      categoryLabel: initiativeCategory(item.category),
+      entityType: 'initiative',
+      cardKey: `initiative:${item.id}`,
+      sourceRecord: item,
+    })),
+  ], [opportunities, initiatives, clients, towers, people]);
+  const owners = useMemo(() => {
+    const records = page === 'pipeline' ? pipelineCards : opportunities;
+    return [...new Set(records.map((item) => item.owner).filter(Boolean))].sort();
+  }, [page, pipelineCards, opportunities]);
   const filtered = useMemo(() => opportunities.filter((item) => {
     const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase())
@@ -201,6 +221,13 @@ function App() {
       && (towerFilter === 'all' || item.tower === towerFilter)
       && (ownerFilter === 'all' || item.owner === ownerFilter);
   }), [opportunities, query, stageFilter, towerFilter, ownerFilter]);
+  const filteredPipelineCards = useMemo(() => pipelineCards.filter((item) => {
+    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id}`.toLowerCase();
+    return haystack.includes(query.trim().toLowerCase())
+      && (stageFilter === 'all' || item.stage === stageFilter)
+      && (towerFilter === 'all' || item.tower === towerFilter)
+      && (ownerFilter === 'all' || item.owner === ownerFilter);
+  }), [pipelineCards, query, stageFilter, towerFilter, ownerFilter]);
 
   const navigate = (nextPage) => {
     setPage(nextPage);
@@ -216,20 +243,28 @@ function App() {
       .catch((err) => {
         if (err?.status === 401) setSession({ status: 'anonymous', user: null });
       });
+    listInitiatives().then(({ initiatives: list }) => setInitiatives(Array.isArray(list) ? list : [])).catch((err) => {
+      if (err?.status === 401) setSession({ status: 'anonymous', user: null });
+    });
   };
 
-  const moveOpportunity = async (id, stageId) => {
-    const record = opportunities.find((item) => item.id === id);
+  const moveBoardCard = async (record, stageId) => {
     if (!record || record.stage === stageId) return;
-    const previous = opportunities;
-    setOpportunities((current) => moveOpportunityToStage(current, id, stageId));
+    const isInitiative = record.entityType === 'initiative';
+    const currentRecords = isInitiative ? initiatives : opportunities;
+    const setRecords = isInitiative ? setInitiatives : setOpportunities;
+    const previous = currentRecords;
+    setRecords((current) => moveOpportunityToStage(current, record.id, stageId));
     const stage = stages.find((item) => item.id === stageId);
     try {
-      const { opportunity } = await updateOpportunity(id, { stage: stageId });
-      setOpportunities((current) => current.map((item) => (item.id === id ? opportunity : item)));
+      const result = isInitiative
+        ? await updateInitiative(record.id, { stage: stageId })
+        : await updateOpportunity(record.id, { stage: stageId });
+      const saved = isInitiative ? result.initiative : result.opportunity;
+      setRecords((current) => current.map((item) => (item.id === record.id ? saved : item)));
       showNotice(`«${record.title}» movida a ${stage?.label ?? stageId}.`);
     } catch (err) {
-      setOpportunities(previous);
+      setRecords(previous);
       showNotice(err?.message || 'No se pudo mover la tarjeta.', 'error');
     }
   };
@@ -409,10 +444,10 @@ function App() {
                 <div className="view-switch" aria-label="Tipo de vista">{[['kanban', 'grid', 'Kanban'], ['list', 'list', 'Lista'], ['table', 'table', 'Tabla']].map(([id, icon, label]) => <button key={id} title={label} aria-label={`Vista ${label}`} aria-pressed={view === id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon name={icon} size={16} /></button>)}</div>
               </div>
             </div>
-            <div className="results-line"><span><strong>{filtered.length}</strong> oportunidades encontradas</span><button onClick={() => { setQuery(''); setStageFilter('all'); setTowerFilter('all'); setOwnerFilter('all'); }}>Limpiar filtros <Icon name="close" size={13} /></button></div>
+            <div className="results-line"><span><strong>{page === 'pipeline' && view === 'kanban' ? filteredPipelineCards.length : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={() => { setQuery(''); setStageFilter('all'); setTowerFilter('all'); setOwnerFilter('all'); }}>Limpiar filtros <Icon name="close" size={13} /></button></div>
             {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
-            {view === 'kanban' ? <Kanban opportunities={filtered} allOpportunities={opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditing} onMove={moveOpportunity} /> : <OpportunityRows opportunities={filtered} view={view} onEdit={setEditing} />}
+            {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? filteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} /> : <OpportunityRows opportunities={filtered} view={view} onEdit={setEditing} />}
           </> : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onEditAgreement={setEditingAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
@@ -430,7 +465,7 @@ function Kpi({ icon, color, label, value, detail, trend }) {
   return <article className="kpi-card"><div className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></div><div className="kpi-content"><span>{label}</span><div className="kpi-value-row"><strong>{value}</strong>{trend && <span className="trend-badge">↗ 20%</span>}</div><small>{detail}</small></div></article>;
 }
 
-function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColumn, onEdit, onMove }) {
+function Kanban({ cards, allCards, expandedColumns, onToggleColumn, onEdit, onMove }) {
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverStage, setDragOverStage] = useState(null);
   const suppressClickRef = useRef(false);
@@ -440,9 +475,9 @@ function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColu
   };
   const handleDragStart = (event, record) => {
     suppressClickRef.current = true;
-    setDraggingId(record.id);
+    setDraggingId(record.cardKey || record.id);
     event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', record.id);
+    event.dataTransfer.setData('text/plain', record.cardKey || record.id);
   };
   const handleDragEnd = () => {
     setDraggingId(null);
@@ -459,21 +494,22 @@ function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColu
   };
   const handleDrop = (event, stageId) => {
     event.preventDefault();
-    const id = event.dataTransfer.getData('text/plain') || draggingId;
+    const key = event.dataTransfer.getData('text/plain') || draggingId;
     setDraggingId(null);
     setDragOverStage(null);
-    if (id) onMove(id, stageId);
+    const record = allCards.find((item) => (item.cardKey || item.id) === key);
+    if (record) onMove(record, stageId);
   };
   return <div className="kanban-board" aria-label="Pipeline comercial por etapa">
     <p className="sr-only">Arrastra las tarjetas entre columnas o abre una tarjeta y cambia la etapa.</p>
     {stages.map((stage) => {
-      const cards = opportunities.filter((item) => item.stage === stage.id);
-      const totalCount = allOpportunities.filter((item) => item.stage === stage.id).length;
+      const stageCards = cards.filter((item) => item.stage === stage.id);
+      const totalCount = allCards.filter((item) => item.stage === stage.id).length;
       const isExpanded = Boolean(expandedColumns[stage.id]);
-      const { visibleCards, hiddenCount, canToggle } = getColumnVisibility(cards, isExpanded);
-      return <section className={`kanban-column ${stage.id}${dragOverStage === stage.id ? ' drag-over' : ''}`} key={stage.id} aria-label={`${stage.label}: ${totalCount} oportunidades totales`} onDragEnter={(event) => handleDragOver(event, stage.id)} onDragOver={(event) => handleDragOver(event, stage.id)} onDragLeave={(event) => handleDragLeave(event, stage.id)} onDrop={(event) => handleDrop(event, stage.id)}>
+      const { visibleCards, hiddenCount, canToggle } = getColumnVisibility(stageCards, isExpanded);
+      return <section className={`kanban-column ${stage.id}${dragOverStage === stage.id ? ' drag-over' : ''}`} key={stage.id} aria-label={`${stage.label}: ${totalCount} registros totales`} onDragEnter={(event) => handleDragOver(event, stage.id)} onDragOver={(event) => handleDragOver(event, stage.id)} onDragLeave={(event) => handleDragLeave(event, stage.id)} onDrop={(event) => handleDrop(event, stage.id)}>
         <div className={`column-heading ${stage.tone}`}><span className="stage-indicator" /><h3>{stage.label}</h3><span className="column-count">{totalCount}</span><button className="column-menu" aria-label={`Opciones de ${stage.label}`}><Icon name="dots" size={17} /></button></div>
-        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.id} record={record} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} isDragging={draggingId === record.id} />)}{cards.length === 0 && <div className="empty-column">No hay oportunidades para estos filtros.</div>}</div>
+        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.cardKey || record.id} record={record} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} isDragging={draggingId === (record.cardKey || record.id)} />)}{stageCards.length === 0 && <div className="empty-column">No hay registros para estos filtros.</div>}</div>
         {(canToggle || (isExpanded && totalCount > COLLAPSED_CARD_LIMIT)) && <button className="show-more" aria-expanded={isExpanded} onClick={() => onToggleColumn(stage.id)}>{isExpanded ? '− Ver menos' : `+ Ver más (${hiddenCount})`}</button>}
       </section>;
     })}
@@ -482,11 +518,12 @@ function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColu
 
 function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, isDragging }) {
   const stage = stages.find((item) => item.id === record.stage);
-  return <button className={`opportunity-card${isDragging ? ' dragging' : ''}`} draggable onDragStart={(event) => onDragStart(event, record)} onDragEnd={onDragEnd} onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${record.title}, ${record.account}`}>
-    <div className="card-top"><span className="opportunity-id">{record.id}</span>{record.number && <span className="external-opportunity-number">N.º {record.number}</span>}<span className={`card-stage-dot ${stage.tone}`} title={stage.label} /><span className="card-menu"><Icon name="dots" size={16} /></span></div>
-    <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{record.account.charAt(0)}</span><span>{record.account}</span></div>
+  const isInitiative = record.entityType === 'initiative';
+  return <button className={`opportunity-card${isInitiative ? ' initiative-card' : ''}${isDragging ? ' dragging' : ''}`} draggable onDragStart={(event) => onDragStart(event, record)} onDragEnd={onDragEnd} onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}, ${record.account}`}>
+    <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : record.number && <span className="external-opportunity-number">N.º {record.number}</span>}<span className={`card-stage-dot ${stage.tone}`} title={stage.label} /><span className="card-menu"><Icon name="dots" size={16} /></span></div>
+    <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
     <div className="card-value-row"><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></div>
-    <div className="card-bottom"><span className="card-date"><Icon name={record.due.includes('Ganada') ? 'check' : 'calendar'} size={13} />{record.due}</span><span className="card-owner"><Avatar name={record.owner} compact /></span></div>
+    <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'clock' : record.due.includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? record.statusLabel : record.due}</span><span className="card-owner"><Avatar name={record.owner} compact /></span></div>
   </button>;
 }
 
@@ -645,14 +682,71 @@ function MasterDialog({ kind, record, onClose, onSave, onSaved }) {
 }
 
 function InitiativeDialog({ record, clients, towers, people, onQuickCreate, onClose, onSave }) {
-  const [form, setForm] = useState({ title: record.title || '', category: record.category || 'external', clientId: record.clientId || '', towerId: record.towerId || '', ownerId: record.ownerId || '', bidManagerId: record.bidManagerId || '', amount: record.amount || '0', qaPercent: record.qaPercent ?? 0, status: record.status || 'open', closureReason: record.closureReason || '' });
+  const [form, setForm] = useState({ title: record.title || '', category: record.category || 'external', clientId: record.clientId || '', towerId: record.towerId || '', ownerId: record.ownerId || '', bidManagerId: record.bidManagerId || '', stage: record.stage || 'prospecting', qaPercent: record.qaPercent ?? 0, status: record.status || 'open', closureReason: record.closureReason || '' });
+  const amountInputRef = useRef(null);
+  const [amountText, setAmountText] = useState(() => formatAmountInput(record.amount || '0'));
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
-  const save = async (event) => { event.preventDefault(); if (!form.title.trim()) { setError('Indica el nombre de la iniciativa.'); return; } if (Number(form.amount) < 0 || Number(form.qaPercent) < 0 || Number(form.qaPercent) > 100) { setError('Revisa el importe y el porcentaje QA (0–100 %).'); return; } setSaving(true); try { await onSave({ ...form, id: record.id || '', amount: String(form.amount), qaPercent: Number(form.qaPercent) }); } catch (err) { setError(err?.message || 'No se pudo guardar la iniciativa.'); } finally { setSaving(false); } };
-  return <dialog ref={dialogRef} className="opportunity-dialog"><form onSubmit={save}><div className="dialog-heading"><div><span className="eyebrow">CRM QE · INICIATIVA</span><h2>{record.id ? 'Editar iniciativa' : 'Nueva iniciativa'}</h2><p>Registro independiente de las oportunidades.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><label className="form-field wide">Nombre de la iniciativa *<input required value={form.title} onChange={(event) => update('title', event.target.value)} /></label><label className="form-field">Categoría<select value={form.category} onChange={(event) => update('category', event.target.value)}><option value="internal">Interna</option><option value="cross_selling">Cross-Selling</option><option value="external">Prospección externa</option></select></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)}><option value="">Sin cliente</option>{clients.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => update('clientId', id))}>+ Crear cliente</button></label><label className="form-field">Tower<select value={form.towerId} onChange={(event) => update('towerId', event.target.value)}><option value="">Sin tower</option>{towers.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('towers', (id) => update('towerId', id))}>+ Crear tower</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)}><option value="">Sin responsable</option>{people.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))}>+ Crear responsable</button></label><label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)}><option value="">Sin asignar</option>{people.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))}>+ Crear responsable</button></label><label className="form-field">Importe estimado<input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update('amount', event.target.value)} /></label><label className="form-field">Participación del equipo QA (%)<input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} /></label><label className="form-field">Estado<select value={form.status} onChange={(event) => update('status', event.target.value)}><option value="open">Abierta</option><option value="completed">Completada</option><option value="closed">Cerrada</option></select></label>{['closed', 'completed'].includes(form.status) && <label className="form-field">Motivo de cierre<input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} /></label>}</div>{record.id && <><RecordActions type="initiatives" id={record.id} /><InitiativeHistory id={record.id} /></>}{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit" disabled={saving}>{saving ? 'Guardando…' : 'Guardar iniciativa'}</button></div></form></dialog>;
+  const handleAmountChange = (event) => {
+    const input = event.target;
+    const caret = input.selectionStart ?? input.value.length;
+    const digitsBefore = input.value.slice(0, caret).replace(/[^0-9,]/g, '').length;
+    const formatted = formatAmountInput(input.value);
+    setAmountText(formatted);
+    window.requestAnimationFrame(() => {
+      const field = amountInputRef.current;
+      if (!field) return;
+      let position = 0;
+      let seen = 0;
+      while (position < formatted.length && seen < digitsBefore) {
+        if (/[0-9,]/.test(formatted[position])) seen += 1;
+        position += 1;
+      }
+      field.setSelectionRange(position, position);
+    });
+  };
+  const save = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    if (!form.title.trim()) { setError('Indica el nombre de la iniciativa.'); return; }
+    const amount = parseAmount(amountText);
+    const qaPercent = Number(form.qaPercent);
+    if (!amountText.trim() || !Number.isFinite(amount) || amount < 0) { setError('El importe debe ser igual o superior a cero.'); return; }
+    if (!Number.isFinite(qaPercent) || qaPercent < 0 || qaPercent > 100) { setError('La participación QA debe estar entre 0 y 100 %.'); return; }
+    setError('');
+    setSaving(true);
+    try {
+      await onSave({ ...form, id: record.id || '', amount: formatCurrency(amount), qaPercent });
+    } catch (err) {
+      setError(err?.message || 'No se pudo guardar la iniciativa.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="initiative-dialog-title" onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }} onClick={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+    <form onSubmit={save}>
+      <div className="dialog-heading"><div><span className="eyebrow">CRM QE · INICIATIVA</span><h2 id="initiative-dialog-title">{record.id ? 'Editar iniciativa' : 'Nueva iniciativa'}</h2><p>Registro independiente de las oportunidades.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose} disabled={saving}><Icon name="close" /></button></div>
+      <div className="form-grid">
+        <label className="form-field wide">Nombre de la iniciativa *<input required value={form.title} onChange={(event) => update('title', event.target.value)} disabled={saving} /></label>
+        <label className="form-field">Categoría<select value={form.category} onChange={(event) => update('category', event.target.value)} disabled={saving}><option value="internal">Interna</option><option value="cross_selling">Cross-Selling</option><option value="external">Prospección externa</option></select></label>
+        <label className="form-field">Cliente<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente</option>{clients.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => update('clientId', id))} disabled={saving}>+ Crear cliente</button></label>
+        <label className="form-field">Tower<select value={form.towerId} onChange={(event) => update('towerId', event.target.value)} disabled={saving}><option value="">Sin tower</option>{towers.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('towers', (id) => update('towerId', id))} disabled={saving}>+ Crear tower</button></label>
+        <label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)} disabled={saving}><option value="">Sin responsable</option>{people.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))} disabled={saving}>+ Crear responsable</button></label>
+        <label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)} disabled={saving}><option value="">Sin asignar</option>{people.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))} disabled={saving}>+ Crear responsable</button></label>
+        <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="10.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
+        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
+        <label className="form-field">Participación del equipo QA (%)<input type="number" min="0" max="100" step="any" required value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} /></label>
+        <label className="form-field">Estado<select value={form.status} onChange={(event) => update('status', event.target.value)} disabled={saving}><option value="open">Abierta</option><option value="completed">Completada</option><option value="closed">Cerrada</option></select></label>
+        {['closed', 'completed'].includes(form.status) && <label className="form-field">Motivo de cierre<input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} disabled={saving} /></label>}
+      </div>
+      {record.id && <><RecordActions type="initiatives" id={record.id} /><InitiativeHistory id={record.id} /></>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose} disabled={saving}>Cancelar</button><button className="button button-primary" type="submit" disabled={saving}>{saving ? 'Guardando…' : 'Guardar iniciativa'}</button></div>
+    </form>
+  </dialog>;
 }
 
 function AgreementDialog({ clients, people, onQuickCreate, onClose, onSave }) {

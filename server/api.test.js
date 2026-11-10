@@ -374,6 +374,7 @@ describe('CRM API', () => {
     });
     assert.equal(created.status, 201);
     assert.equal(created.body.initiative.category, 'cross_selling');
+    assert.equal(created.body.initiative.stage, 'prospecting');
     const list = await app.json('GET', '/api/initiatives', { cookie: session });
     assert.equal(list.body.initiatives.some((item) => item.id === created.body.initiative.id), true);
     const initialEvents = await app.json('GET', `/api/initiatives/${created.body.initiative.id}/events`, { cookie: session });
@@ -400,6 +401,62 @@ describe('CRM API', () => {
     assert.equal(agreement.status, 201);
     const agreements = await app.json('GET', '/api/agreements', { cookie: session });
     assert.equal(agreements.body.agreements.some((item) => item.id === agreement.body.agreement.id), true);
+  });
+
+  test('initiative stages default, persist, and reject values outside the opportunity stages', async () => {
+    const created = await app.json('POST', '/api/initiatives', {
+      body: { title: 'Iniciativa con etapa', amount: '10.000,00', qaPercent: 0 },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.initiative.stage, 'prospecting');
+    assert.equal(created.body.initiative.amount, '10000');
+
+    const moved = await app.json('PATCH', `/api/initiatives/${created.body.initiative.id}`, {
+      body: { stage: 'proposal' },
+      cookie: session,
+    });
+    assert.equal(moved.status, 200);
+    assert.equal(moved.body.initiative.stage, 'proposal');
+    assert.equal(moved.body.initiative.status, 'open');
+    assert.equal(moved.body.initiative.closureReason, '');
+
+    const invalidStage = await app.json('PATCH', `/api/initiatives/${created.body.initiative.id}`, {
+      body: { stage: 'archived' },
+      cookie: session,
+    });
+    assert.equal(invalidStage.status, 400);
+    assert.equal(app.db.prepare('SELECT stage FROM initiatives WHERE id = ?').get(created.body.initiative.id).stage, 'proposal');
+
+    const boundary = await app.json('POST', '/api/initiatives', {
+      body: { title: 'QA al máximo', qaPercent: 100 },
+      cookie: session,
+    });
+    assert.equal(boundary.status, 201);
+    assert.equal(boundary.body.initiative.qaPercent, 100);
+  });
+
+  test('initiative QA percentage rejects out-of-range create and update values without persisting them', async () => {
+    const created = await app.json('POST', '/api/initiatives', {
+      body: { title: 'QA acotado', qaPercent: 0 },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+
+    for (const value of [-1, 101]) {
+      const invalidCreate = await app.json('POST', '/api/initiatives', {
+        body: { title: `QA inválido ${value}`, qaPercent: value },
+        cookie: session,
+      });
+      assert.equal(invalidCreate.status, 400);
+
+      const invalidUpdate = await app.json('PATCH', `/api/initiatives/${created.body.initiative.id}`, {
+        body: { qaPercent: value },
+        cookie: session,
+      });
+      assert.equal(invalidUpdate.status, 400);
+      assert.equal(app.db.prepare('SELECT qa_percent FROM initiatives WHERE id = ?').get(created.body.initiative.id).qa_percent, 0);
+    }
   });
 
   test('amount and QA percentage reject invalid values', async () => {

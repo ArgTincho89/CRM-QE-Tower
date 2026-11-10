@@ -16,6 +16,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
+import { stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
 import {
   HttpError,
@@ -27,7 +28,7 @@ import {
   serveStatic,
 } from './http.js';
 
-const STAGES = new Set(['prospecting', 'analysis', 'waiting', 'proposal', 'won', 'lost']);
+const STAGES = new Set(stages.map(({ id }) => id));
 
 const FIELD_LIMITS = {
   title: 160,
@@ -119,7 +120,7 @@ function mapMaster(row) {
 }
 
 function mapInitiative(row) {
-  return { id: row.id, title: row.title, category: row.category, clientId: row.client_id || '', towerId: row.tower_id || '', ownerId: row.owner_id || '', bidManagerId: row.bid_manager_id || '', amount: row.amount, qaPercent: Number(row.qa_percent), status: row.status, closureReason: row.closure_reason, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, title: row.title, category: row.category, clientId: row.client_id || '', towerId: row.tower_id || '', ownerId: row.owner_id || '', bidManagerId: row.bid_manager_id || '', amount: row.amount, qaPercent: Number(row.qa_percent), status: row.status, closureReason: row.closure_reason, stage: row.stage, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapAgreement(row) {
@@ -664,21 +665,22 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
   const user = requireUser(ctx, req);
   const body = await readJson(req);
   const now = ctx.now().toISOString();
-  const fields = {
-    title: parseTextField(body.title, 'title', 160),
-    category: body.category === undefined ? 'external' : body.category,
-    client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
-    tower_id: optionalId(ctx.db, 'towers', body.towerId, 'tower'),
-    owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
-    bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
-    amount: parseAmount(body.amount ?? 0),
-    qa_percent: parsePercent(body.qaPercent ?? 0),
-    status: typeof body.status === 'string' && body.status.trim() ? body.status.trim().slice(0, 40) : 'open',
-    closure_reason: typeof body.closureReason === 'string' ? body.closureReason.trim().slice(0, 160) : '',
-  };
-  if (!['internal', 'cross_selling', 'external'].includes(fields.category)) throw validationError('La categoría de la iniciativa no es válida.');
   let id;
   if (req.method === 'POST') {
+    const fields = {
+      title: parseTextField(body.title, 'title', 160),
+      category: body.category === undefined ? 'external' : body.category,
+      client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
+      tower_id: optionalId(ctx.db, 'towers', body.towerId, 'tower'),
+      owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
+      bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
+      amount: parseAmount(body.amount ?? 0),
+      qa_percent: parsePercent(body.qaPercent ?? 0),
+      status: typeof body.status === 'string' && body.status.trim() ? body.status.trim().slice(0, 40) : 'open',
+      closure_reason: typeof body.closureReason === 'string' ? body.closureReason.trim().slice(0, 160) : '',
+      stage: parseStage(body.stage ?? 'prospecting'),
+    };
+    if (!['internal', 'cross_selling', 'external'].includes(fields.category)) throw validationError('La categoría de la iniciativa no es válida.');
     id = randomUUID();
     const columns = ['id', ...Object.keys(fields), 'created_at', 'updated_at'];
     ctx.db.prepare(`INSERT INTO initiatives (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...Object.values(fields), now, now);
@@ -687,9 +689,39 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
     id = decodeId(rawId);
     const existing = ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id);
     if (!existing) throw new HttpError(404, 'not_found', 'La iniciativa no existe.');
-    const assignments = Object.keys(fields).map((field) => `${field} = ?`).join(', ');
-    ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
-    appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: 'updated', detail: { fields: Object.keys(fields) }, now });
+    const parsers = {
+      title: (value) => parseTextField(value, 'title', 160),
+      category: (value) => {
+        if (!['internal', 'cross_selling', 'external'].includes(value)) throw validationError('La categoría de la iniciativa no es válida.');
+        return value;
+      },
+      clientId: (value) => optionalId(ctx.db, 'clients', value, 'cliente'),
+      towerId: (value) => optionalId(ctx.db, 'towers', value, 'tower'),
+      ownerId: (value) => optionalId(ctx.db, 'people', value, 'responsable'),
+      bidManagerId: (value) => optionalId(ctx.db, 'people', value, 'bid manager'),
+      amount: parseAmount,
+      qaPercent: parsePercent,
+      status: (value) => typeof value === 'string' && value.trim() ? value.trim().slice(0, 40) : 'open',
+      closureReason: (value) => typeof value === 'string' ? value.trim().slice(0, 160) : '',
+      stage: parseStage,
+    };
+    const columns = {
+      title: 'title', category: 'category', clientId: 'client_id', towerId: 'tower_id',
+      ownerId: 'owner_id', bidManagerId: 'bid_manager_id', amount: 'amount',
+      qaPercent: 'qa_percent', status: 'status', closureReason: 'closure_reason', stage: 'stage',
+    };
+    const fields = {};
+    for (const [apiField, column] of Object.entries(columns)) {
+      if (!Object.hasOwn(body, apiField)) continue;
+      const value = parsers[apiField](body[apiField]);
+      if (value !== existing[column]) fields[column] = value;
+    }
+    const changedFields = Object.keys(fields);
+    if (changedFields.length > 0) {
+      const assignments = changedFields.map((field) => `${field} = ?`).join(', ');
+      ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
+      appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: 'updated', detail: { fields: changedFields }, now });
+    }
   }
   sendJson(res, req.method === 'POST' ? 201 : 200, { initiative: mapInitiative(ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id)) });
 }

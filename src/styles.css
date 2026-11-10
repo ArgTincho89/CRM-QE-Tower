@@ -141,11 +141,14 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .column-cards { display: grid; gap: 6px; }
 .opportunity-card { min-width: 0; display: block; padding: 6px 8px 5px; border: 1px solid #dfe6ef; border-left: 3px solid var(--stage-accent, #1375df); border-radius: 6px; background: white; box-shadow: 0 1px 3px #24344c09; text-align: left; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
 .opportunity-card:hover { transform: translateY(-1px); border-color: #aac8eb; border-left-color: var(--stage-accent, #1375df); box-shadow: 0 4px 10px #24344c12; }
+.opportunity-card.initiative-card { border-color: #eadcb8; border-left-color: var(--stage-accent, #1375df); background: #fffdf7; }
+.opportunity-card.initiative-card:hover { border-color: #d8bd7c; border-left-color: var(--stage-accent, #1375df); }
 .opportunity-card[draggable='true'] { cursor: grab; }
 .opportunity-card.dragging { opacity: .45; cursor: grabbing; }
 .card-top { display: flex; align-items: center; height: 13px; gap: 6px; }
 .opportunity-id { color: #a1aaba; font-size: 9px; font-weight: 600; }
 .external-opportunity-number { overflow: hidden; color: #74839a; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.initiative-type-pill { max-width: 135px; overflow: hidden; padding: 1px 5px; border-radius: 999px; background: #f7edd1; color: #806321; font-size: 8px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .card-stage-dot { width: 6px; height: 6px; border-radius: 50%; background: #5297ea; }
 .card-stage-dot.violet { background: #8972db; }.card-stage-dot.amber { background: #e9ad48; }.card-stage-dot.orange { background: #e48b56; }.card-stage-dot.green { background: #42b784; }.card-stage-dot.gray { background: #9ca7b5; }
 .card-menu { display: inline-flex; margin-left: auto; color: #a6afbc; }
