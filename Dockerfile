@@ -21,6 +21,7 @@ COPY --from=build /app/dist ./dist
 COPY server ./server
 RUN mkdir -p src
 COPY --from=build /app/src/data.js ./src/data.js
+COPY --from=build /app/src/money.js ./src/money.js
 
 EXPOSE 8080
 CMD ["node", "server/index.js"]
