@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { agreements, clients, crossSelling, proposals, seedOpportunities, stages, towerNames } from './data.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
-
-const STORAGE_KEY = 'crm-qe-demo-v1';
+import { getMe, login, logout, listOpportunities, createOpportunity, updateOpportunity } from './api.js';
+import AuthScreen from './AuthScreen.jsx';
+import CardHistory from './CardHistory.jsx';
 
 const navItems = [
   { id: 'home', label: 'Inicio', icon: 'home' },
@@ -38,19 +39,8 @@ const pageTitles = {
   crossSelling: ['Cross-Selling', 'Iniciativas de expansión desde cuentas existentes, con o sin oportunidad formal.'],
   towers: ['Por Towers', 'Vista de actividad y pipeline por torre de servicio.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
-  settings: ['Configuración', 'Preferencias locales de esta demostración.'],
+  settings: ['Configuración', 'Preferencias de tu cuenta.'],
 };
-
-function loadOpportunities() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return seedOpportunities;
-    const parsed = JSON.parse(saved);
-    return Array.isArray(parsed) ? parsed : seedOpportunities;
-  } catch {
-    return seedOpportunities;
-  }
-}
 
 function Icon({ name, size = 18 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
@@ -83,12 +73,14 @@ function Icon({ name, size = 18 }) {
 }
 
 function Avatar({ name, compact = false }) {
-  const initials = name.split(' ').map((part) => part[0]).slice(0, 2).join('');
+  const initials = (name || '?').split(' ').map((part) => part[0]).slice(0, 2).join('');
   return <span className={`avatar${compact ? ' avatar-small' : ''}`} aria-label={name}>{initials}</span>;
 }
 
 function App() {
-  const [opportunities, setOpportunities] = useState(loadOpportunities);
+  const [session, setSession] = useState({ status: 'loading', user: null });
+  const [opportunities, setOpportunities] = useState([]);
+  const [oppState, setOppState] = useState('loading');
   const [page, setPage] = useState('pipeline');
   const [query, setQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
@@ -97,19 +89,86 @@ function App() {
   const [view, setView] = useState('kanban');
   const [expandedColumns, setExpandedColumns] = useState({});
   const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [historyRefresh, setHistoryRefresh] = useState(0);
   const [mobileNav, setMobileNav] = useState(false);
   const [notice, setNotice] = useState('');
+  const [noticeTone, setNoticeTone] = useState('success');
   const noticeTimerRef = useRef(null);
 
-  const showNotice = (message) => {
+  const showNotice = (message, tone = 'success') => {
     setNotice(message);
+    setNoticeTone(tone);
     if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = window.setTimeout(() => setNotice(''), 2600);
   };
 
+  // Resolve the session on first load.
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(opportunities)); } catch { showNotice('No se pudo guardar en este navegador.'); }
-  }, [opportunities]);
+    let cancelled = false;
+    getMe()
+      .then(({ user }) => {
+        if (!cancelled) setSession({ status: 'authenticated', user });
+      })
+      .catch(() => {
+        if (!cancelled) setSession({ status: 'anonymous', user: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load the shared board whenever the session becomes authenticated.
+  useEffect(() => {
+    if (session.status !== 'authenticated') return;
+    let cancelled = false;
+    setOppState('loading');
+    listOpportunities()
+      .then(({ opportunities: list }) => {
+        if (cancelled) return;
+        setOpportunities(Array.isArray(list) ? list : []);
+        setOppState('ready');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err?.status === 401) {
+          setSession({ status: 'anonymous', user: null });
+          return;
+        }
+        setOppState('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.status]);
+
+  // Poll so two users see each other's changes without a manual refresh.
+  useEffect(() => {
+    if (session.status !== 'authenticated') return;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      listOpportunities()
+        .then(({ opportunities: list }) => {
+          setOpportunities(Array.isArray(list) ? list : []);
+        })
+        .catch((err) => {
+          if (err?.status === 401) setSession({ status: 'anonymous', user: null });
+        });
+    };
+    const interval = window.setInterval(refresh, 20000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    const onFocus = () => refresh();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [session.status]);
 
   const owners = useMemo(() => [...new Set(opportunities.map((item) => item.owner))].sort(), [opportunities]);
   const filtered = useMemo(() => opportunities.filter((item) => {
@@ -125,23 +184,102 @@ function App() {
     setMobileNav(false);
   };
 
-  const saveOpportunity = (record) => {
-    setOpportunities((current) => {
-      const exists = current.some((item) => item.id === record.id);
-      return exists ? current.map((item) => item.id === record.id ? record : item) : [record, ...current];
-    });
-    setEditing(null);
-    showNotice('Oportunidad guardada correctamente.');
+  const reloadOpportunities = () => {
+    listOpportunities()
+      .then(({ opportunities: list }) => {
+        setOpportunities(Array.isArray(list) ? list : []);
+        setOppState('ready');
+      })
+      .catch((err) => {
+        if (err?.status === 401) setSession({ status: 'anonymous', user: null });
+      });
   };
 
-  const moveOpportunity = (id, stageId) => {
+  const moveOpportunity = async (id, stageId) => {
     const record = opportunities.find((item) => item.id === id);
     if (!record || record.stage === stageId) return;
+    const previous = opportunities;
     setOpportunities((current) => moveOpportunityToStage(current, id, stageId));
     const stage = stages.find((item) => item.id === stageId);
-    showNotice(`«${record.title}» movida a ${stage?.label ?? stageId}.`);
+    try {
+      const { opportunity } = await updateOpportunity(id, { stage: stageId });
+      setOpportunities((current) => current.map((item) => (item.id === id ? opportunity : item)));
+      showNotice(`«${record.title}» movida a ${stage?.label ?? stageId}.`);
+    } catch (err) {
+      setOpportunities(previous);
+      showNotice(err?.message || 'No se pudo mover la tarjeta.', 'error');
+    }
   };
 
+  const saveOpportunity = async (record) => {
+    setSaving(true);
+    setSaveError('');
+    try {
+      const isExisting = opportunities.some((item) => item.id === record.id);
+      const payload = {
+        title: record.title,
+        account: record.account,
+        amount: record.amount,
+        stage: record.stage,
+        tower: record.tower,
+        owner: record.owner,
+        due: record.due,
+        tags: record.tags || [],
+      };
+      let opportunity;
+      if (isExisting && record.id) {
+        ({ opportunity } = await updateOpportunity(record.id, payload));
+      } else {
+        ({ opportunity } = await createOpportunity(payload));
+      }
+      setOpportunities((current) => {
+        const idx = current.findIndex((item) => item.id === opportunity.id);
+        if (idx === -1) return [opportunity, ...current];
+        const next = current.slice();
+        next[idx] = opportunity;
+        return next;
+      });
+      setHistoryRefresh((value) => value + 1);
+      setEditing(null);
+      showNotice('Oportunidad guardada correctamente.');
+    } catch (err) {
+      setSaveError(err?.message || 'No se pudo guardar la oportunidad.');
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAuthenticated = (user) => {
+    setSession({ status: 'authenticated', user });
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // Ignore network errors on logout; local state is cleared anyway.
+    }
+    setSession({ status: 'anonymous', user: null });
+    setOpportunities([]);
+    setOppState('loading');
+    setPage('pipeline');
+  };
+
+  if (session.status === 'loading') {
+    return (
+      <div className="boot-screen">
+        <img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" />
+        <p>Cargando…</p>
+      </div>
+    );
+  }
+
+  if (session.status === 'anonymous') {
+    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+  }
+
+  const user = session.user;
   const activePage = page === 'home' ? 'home' : page;
   const [title, subtitle] = pageTitles[activePage] || pageTitles.pipeline;
   const opportunityMetric = 18 + opportunities.length - seedOpportunities.length;
@@ -167,7 +305,13 @@ function App() {
           <div className="breadcrumbs"><span>SEIDOR</span><Icon name="chevron" size={14} /><strong>{title}</strong></div>
           <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en CRM QE</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad..." /><kbd>⌘ K</kbd></label>
           <button className="icon-button notification-button" aria-label="Notificaciones"><Icon name="bell" size={19} /><span className="notification-dot" /></button>
-          <button className="user-menu" aria-label="Usuario: Martín Pérez"><Avatar name="Martín Pérez" /><span><strong>Martín Pérez</strong><small>Equipo QE</small></span><span className="user-chevron">⌄</span></button>
+          <div className="user-menu">
+            <Avatar name={user.name} />
+            <span><strong>{user.name}</strong><small>{user.email}</small></span>
+          </div>
+          <button className="button button-secondary topbar-logout" onClick={handleLogout} aria-label="Cerrar sesión">
+            <Icon name="close" size={16} /> <span>Cerrar sesión</span>
+          </button>
         </header>
 
         <div className="content-wrap">
@@ -198,13 +342,15 @@ function App() {
               </div>
             </div>
             <div className="results-line"><span><strong>{filtered.length}</strong> oportunidades encontradas</span><button onClick={() => { setQuery(''); setStageFilter('all'); setTowerFilter('all'); setOwnerFilter('all'); }}>Limpiar filtros <Icon name="close" size={13} /></button></div>
+            {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
+            {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
             {view === 'kanban' ? <Kanban opportunities={filtered} allOpportunities={opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditing} onMove={moveOpportunity} /> : <OpportunityRows opportunities={filtered} view={view} onEdit={setEditing} />}
-          </> : <SecondaryPage page={page} opportunities={opportunities} onNavigate={navigate} />}
+          </> : <SecondaryPage page={page} opportunities={opportunities} onNavigate={navigate} user={user} onLogout={handleLogout} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
-      {editing !== null && <OpportunityDialog record={editing} onClose={() => setEditing(null)} onSave={saveOpportunity} />}
-      {notice && <div className="toast" role="status"><Icon name="check" size={16} />{notice}</div>}
+      {editing !== null && <OpportunityDialog record={editing} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
+      {notice && <div className={`toast${noticeTone === 'error' ? ' toast-error' : ''}`} role="status"><Icon name="check" size={16} />{notice}</div>}
     </div>
   );
 }
@@ -279,10 +425,10 @@ function OpportunityRows({ opportunities, view, onEdit }) {
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
-function SecondaryPage({ page, opportunities, onNavigate }) {
+function SecondaryPage({ page, opportunities, onNavigate, user, onLogout }) {
   const grouped = towerNames.map((tower) => ({ tower, count: opportunities.filter((item) => item.tower === tower).length, amount: opportunities.filter((item) => item.tower === tower).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
-  if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">MARTES, 10 DE JUNIO</div><h2>Buen día, Martín</h2><p>Este es el pulso de tu actividad comercial QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account} · {item.tower}</small></span><b>{item.amount}</b></div>)}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver oportunidades" onAction={() => onNavigate('opportunities')}><div className="task-list"><p><span className="task-date">12 JUN</span> Revisar alcance con Grupo Albor <small>Data · Lucía Martín</small></p><p><span className="task-date">14 JUN</span> Enviar propuesta a Aceros del Norte <small>SAP · Diego Ramos</small></p><p><span className="task-date">16 JUN</span> Reunión de calificación con Nova Energía <small>Cloud · Carlos Vega</small></p></div></SummaryCard></div></section>;
-  if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Preferencias de demostración</h2><p>Los cambios de oportunidades se guardan únicamente en el almacenamiento local de este navegador. No hay una cuenta o sincronización multiusuario conectada.</p><button className="button button-secondary" onClick={() => { localStorage.removeItem(STORAGE_KEY); window.location.reload(); }}>Restaurar datos de ejemplo</button></div></div>;
+  if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">MARTES, 10 DE JUNIO</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Este es el pulso de tu actividad comercial QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account} · {item.tower}</small></span><b>{item.amount}</b></div>)}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver oportunidades" onAction={() => onNavigate('opportunities')}><div className="task-list"><p><span className="task-date">12 JUN</span> Revisar alcance con Grupo Albor <small>Data · Lucía Martín</small></p><p><span className="task-date">14 JUN</span> Enviar propuesta a Aceros del Norte <small>SAP · Diego Ramos</small></p><p><span className="task-date">16 JUN</span> Reunión de calificación con Nova Energía <small>Cloud · Carlos Vega</small></p></div></SummaryCard></div></section>;
+  if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios del espacio de trabajo. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
   if (page === 'clients') return <DataPanel title="Cartera de clientes" description="Las oportunidades influyen en el desarrollo de la cuenta; el valor de negocio corporativo no se suma como ingreso QE." headers={['Cliente', 'Sector', 'Responsable', 'Oportunidades QE', 'Señal de desarrollo', 'Estado']} rows={clients.map((item) => [item.name, item.sector, item.owner, item.opportunities, item.signal, item.status])} />;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
   if (page === 'agreements') return <DataPanel title="Acuerdos vigentes y renovaciones" description="Control de acuerdos marco comerciales. Los contratos y aprobaciones se gestionan en los sistemas corporativos." headers={['ID', 'Acuerdo', 'Cliente', 'Fin de vigencia', 'Responsable', 'Estado']} rows={agreements.map((item) => [item.id, item.title, item.client, item.end, item.owner, item.status])} />;
@@ -305,12 +451,12 @@ function Analytics({ opportunities, grouped }) {
   return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros de la vista local de demostración</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatCurrency(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En negociación</span><strong>{opportunities.filter((item) => item.stage === 'negotiation').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
 }
 
-function OpportunityDialog({ record, onClose, onSave }) {
+function OpportunityDialog({ record, onClose, onSave, saving, saveError, historyRefresh }) {
   const dialogRef = useRef(null);
   const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
   const [form, setForm] = useState({
-    id: record.id || `O-${String(Date.now()).slice(-4)}`,
+    id: record.id || '',
     title: record.title || '', account: record.account || '',
     stage: record.stage || 'prospecting', tower: record.tower || 'Data', owner: record.owner || 'Lucía Martín',
     due: record.due || '', tags: record.tags || [],
@@ -323,6 +469,10 @@ function OpportunityDialog({ record, onClose, onSave }) {
     dialog?.showModal();
     return () => { if (dialog?.open) dialog.close(); };
   }, []);
+
+  useEffect(() => {
+    if (saveError) setError(saveError);
+  }, [saveError]);
 
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
   const handleAmountChange = (event) => {
@@ -344,29 +494,46 @@ function OpportunityDialog({ record, onClose, onSave }) {
     });
   };
   const handleAmountBlur = () => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')));
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault();
+    if (saving) return;
     if (!form.title.trim() || !form.account.trim()) { setError('Completa el nombre y el cliente.'); return; }
     const amount = parseAmount(amountText);
     if (!(amount > 0)) { setError('Indica un importe estimado mayor que cero.'); return; }
-    onSave({ ...form, id: form.id.trim(), title: form.title.trim(), account: form.account.trim(), amount: formatCurrency(amount), due: form.due.trim() || 'Por definir' });
+    setError('');
+    try {
+      await onSave({
+        id: form.id,
+        title: form.title.trim(),
+        account: form.account.trim(),
+        amount: formatCurrency(amount),
+        stage: form.stage,
+        tower: form.tower,
+        owner: form.owner.trim() || 'Lucía Martín',
+        due: form.due.trim() || 'Por definir',
+        tags: form.tags,
+      });
+    } catch {
+      // The parent surfaces the API message through saveError.
+    }
   };
 
-  return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="dialog-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+  return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="dialog-title" onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }} onClick={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
     <form onSubmit={submit}>
-      <div className="dialog-heading"><div><span className="eyebrow">CRM QE · OPORTUNIDAD</span><h2 id="dialog-title">{isEditing ? 'Editar oportunidad' : 'Nueva oportunidad'}</h2><p>Registra el seguimiento QE. No reemplaza la oportunidad del CRM corporativo.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div>
+      <div className="dialog-heading"><div><span className="eyebrow">CRM QE · OPORTUNIDAD</span><h2 id="dialog-title">{isEditing ? 'Editar oportunidad' : 'Nueva oportunidad'}</h2><p>Registra el seguimiento QE. No reemplaza la oportunidad del CRM corporativo.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose} disabled={saving}><Icon name="close" /></button></div>
       <div className="form-grid">
-        <label className="form-field wide">Nombre de la oportunidad *<input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required /></label>
-        <label className="form-field">Cliente / cuenta *<input value={form.account} onChange={(event) => update('account', event.target.value)} placeholder="Nombre de la cuenta" required /></label>
-        <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
-        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
-        <label className="form-field">Tower<select value={form.tower} onChange={(event) => update('tower', event.target.value)}>{towerNames.map((tower) => <option key={tower}>{tower}</option>)}</select></label>
-        <label className="form-field">Responsable<input value={form.owner} onChange={(event) => update('owner', event.target.value)} placeholder="Nombre y apellido" /></label>
-        <label className="form-field">Próximo hito<input value={form.due} onChange={(event) => update('due', event.target.value)} placeholder="Ej. 20 jun" /></label>
+        <label className="form-field wide">Nombre de la oportunidad *<input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required disabled={saving} /></label>
+        <label className="form-field">Cliente / cuenta *<input value={form.account} onChange={(event) => update('account', event.target.value)} placeholder="Nombre de la cuenta" required disabled={saving} /></label>
+        <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
+        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
+        <label className="form-field">Tower<select value={form.tower} onChange={(event) => update('tower', event.target.value)} disabled={saving}>{towerNames.map((tower) => <option key={tower}>{tower}</option>)}</select></label>
+        <label className="form-field">Responsable<input value={form.owner} onChange={(event) => update('owner', event.target.value)} placeholder="Nombre y apellido" disabled={saving} /></label>
+        <label className="form-field">Próximo hito<input value={form.due} onChange={(event) => update('due', event.target.value)} placeholder="Ej. 20 jun" disabled={saving} /></label>
       </div>
+      {isEditing && <CardHistory opportunityId={form.id} refreshKey={historyRefresh} />}
       <div className="dialog-hint"><span className="info-mark">i</span> Las propuestas y estimaciones se gestionan como registros independientes vinculados.</div>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">{isEditing ? 'Guardar cambios' : 'Crear oportunidad'}</button></div>
+      <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose} disabled={saving}>Cancelar</button><button className="button button-primary" type="submit" disabled={saving}>{saving ? 'Guardando…' : (isEditing ? 'Guardar cambios' : 'Crear oportunidad')}</button></div>
     </form>
   </dialog>;
 }

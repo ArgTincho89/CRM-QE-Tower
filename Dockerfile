@@ -1,12 +1,26 @@
-FROM node:22-alpine AS build
+# Build stage: install deps and build the Vite bundle.
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
+# Runtime stage: Node serves the SPA and the JSON API from one process.
+FROM node:24-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+
+# Runtime uses only Node built-ins (node:http, node:sqlite, node:crypto), so no
+# node_modules are needed. Keep the image small and the supply chain empty.
+# package.json is copied only so Node treats *.js as ES modules ("type": module).
+
+COPY package.json ./
+COPY --from=build /app/dist ./dist
+COPY server ./server
+RUN mkdir -p src
+COPY --from=build /app/src/data.js ./src/data.js
+
 EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["node", "server/index.js"]

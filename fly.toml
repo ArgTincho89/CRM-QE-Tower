@@ -1,12 +1,20 @@
 # fly.toml app configuration file generated for crm-qe-tower on 2026-11-10T08:51:16+01:00
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# See https://fly.io/docs/reference/configuration/ for more information
 #
 
 app = 'crm-qe-tower'
 primary_region = 'lhr'
 
 [build]
+
+[env]
+  NODE_ENV = 'production'
+  PORT = '8080'
+  TRUST_PROXY = 'true'
+  CRM_DB_PATH = '/data/app.db'
+  DIST_DIR = '/app/dist'
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -14,6 +22,10 @@ primary_region = 'lhr'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
+
+[[mounts]]
+  source = 'crm_data'
+  destination = '/data'
 
 [[vm]]
   memory = '1gb'
