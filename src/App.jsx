@@ -134,7 +134,7 @@ function App() {
   return (
     <div className="app-shell">
       <aside className={`sidebar${mobileNav ? ' sidebar-open' : ''}`} aria-label="Navegación principal">
-        <div className="brand" aria-label="SEIDOR CRM QE"><span className="brand-word">SEIDOR</span><span className="brand-mark">◆</span></div>
+        <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /></div>
         <div className="workspace-label">GESTIÓN COMERCIAL</div>
         <nav className="side-nav">
           {navItems.map((item) => <button key={item.id} className={`nav-item${page === item.id ? ' selected' : ''}`} onClick={() => navigate(item.id)} aria-current={page === item.id ? 'page' : undefined}>

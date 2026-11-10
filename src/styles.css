@@ -1,7 +1,7 @@
 :root {
   font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: #1d2738;
-  background: #f5f7fa;
+  background: #d9eafd;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -22,9 +22,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 
 .app-shell { min-height: 100vh; }
 .sidebar { width: 220px; position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; flex-direction: column; padding: 23px 14px 13px; background: #fff; border-right: 1px solid #e9edf3; }
-.brand { display: flex; align-items: center; gap: 3px; height: 38px; padding-left: 10px; color: #152541; }
-.brand-word { font: 800 22px/1 'Manrope', sans-serif; letter-spacing: -1.5px; }
-.brand-mark { color: #eb1733; font-size: 13px; transform: rotate(-13deg); }
+.brand { display: flex; align-items: center; height: 38px; padding-left: 2px; }
+.brand-logo { display: block; width: auto; height: 38px; transform: translateY(-3px); }
 .workspace-label { margin: 35px 0 12px 10px; color: #a0a9b8; font-size: 9px; font-weight: 700; letter-spacing: 1.25px; }
 .side-nav { display: grid; gap: 4px; }
 .nav-item { display: flex; align-items: center; gap: 11px; width: 100%; height: 41px; border: 0; border-radius: 7px; padding: 0 10px; background: transparent; color: #69768b; text-align: left; font-size: 12px; font-weight: 500; cursor: pointer; transition: .16s ease; }
@@ -44,8 +43,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .footer-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #45bd85; }
 .footer-version { float: right; color: #a5adba; }
 
-.main-area { min-height: 100vh; margin-left: 220px; }
-.topbar { height: 68px; display: flex; align-items: center; gap: 22px; padding: 0 31px; border-bottom: 1px solid #e9edf3; background: rgba(255,255,255,.94); }
+.main-area { min-height: 100vh; margin-left: 220px; background-color: #d9eafd; background-image: url('/app-background.png'); background-position: center center; background-size: cover; background-repeat: no-repeat; background-attachment: fixed; }
+.topbar { height: 68px; display: flex; align-items: center; gap: 22px; padding: 0 31px; border-bottom: 1px solid #e9edf3; background: rgba(255,255,255,.92); backdrop-filter: blur(6px); }
 .breadcrumbs { display: flex; align-items: center; gap: 9px; min-width: 218px; color: #9ba5b5; font-size: 11px; }
 .breadcrumbs strong { color: #48566b; font-weight: 600; }
 .global-search { display: flex; align-items: center; gap: 9px; width: min(410px, 38vw); height: 36px; margin-left: auto; padding: 0 10px; border: 1px solid #e8ecf2; border-radius: 7px; background: #fafbfd; color: #8c98aa; }
