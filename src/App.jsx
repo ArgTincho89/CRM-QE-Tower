@@ -15,7 +15,7 @@ const navItems = [
   { id: 'proposals', label: 'Propuestas / Estimaciones', icon: 'file' },
   { id: 'agreements', label: 'Acuerdos Marco', icon: 'layers' },
   { id: 'crossSelling', label: 'Cross-Selling', icon: 'share' },
-  { id: 'towers', label: 'Por Towers', icon: 'grid' },
+  { id: 'towers', label: 'Towers', icon: 'grid' },
   { id: 'people', label: 'Responsables', icon: 'users' },
   { id: 'analytics', label: 'Informes', icon: 'chart' },
   { id: 'settings', label: 'Configuración', icon: 'settings' },
@@ -27,7 +27,7 @@ const moduleTabs = [
   { id: 'agreements', label: 'Acuerdos Marco' },
   { id: 'clients', label: 'Clientes' },
   { id: 'crossSelling', label: 'Cross-Selling' },
-  { id: 'towers', label: 'Por Towers' },
+  { id: 'towers', label: 'Towers' },
   { id: 'analytics', label: 'Analítica' },
 ];
 
@@ -40,7 +40,7 @@ const pageTitles = {
   proposals: ['Propuestas / Estimaciones', 'Preventa interna y propuestas externas vinculadas a oportunidades.'],
   agreements: ['Acuerdos Marco', 'Vigencia, responsables y renovaciones de acuerdos comerciales.'],
   crossSelling: ['Cross-Selling', 'Las iniciativas de cross-selling se mantienen independientes de las oportunidades.'],
-  towers: ['Por Towers', 'Vista de actividad y pipeline por torre de servicio.'],
+  towers: ['Towers', 'Vista de actividad y pipeline por torre de servicio.'],
   people: ['Responsables', 'Personas asignables a clientes, iniciativas y oportunidades.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
   settings: ['Configuración', 'Preferencias de tu cuenta.'],
@@ -358,7 +358,7 @@ function App() {
         <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /></div>
         <div className="workspace-label">GESTIÓN COMERCIAL</div>
             <nav className="side-nav">
-          {navItems.map((item) => <button key={item.id} className={`nav-item${page === item.id ? ' selected' : ''}`} onClick={() => navigate(item.id === 'crossSelling' ? 'initiatives' : item.id)} aria-current={page === item.id ? 'page' : undefined}>
+          {navItems.map((item) => <button key={item.id} className={`nav-item${page === item.id ? ' selected' : ''}`} onClick={() => navigate(item.id)} aria-current={page === item.id ? 'page' : undefined}>
             <Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'pipeline' && <span className="nav-count">{opportunities.length}</span>}
           </button>)}
         </nav>
@@ -385,7 +385,7 @@ function App() {
         <div className="content-wrap">
           <div className="page-heading">
             <div><div className="eyebrow"><span className="eyebrow-dot" /> ESPAÑA <span className="eyebrow-divider">/</span> QUALITY ENGINEERING</div><h1>{title}</h1><p>{subtitle}</p></div>
-            <div className="heading-actions">{['clients', 'towers', 'people'].includes(page) && <button className="button button-secondary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {page === 'clients' ? 'Nuevo cliente' : page === 'towers' ? 'Nueva tower' : 'Nuevo responsable'}</button>}{(['initiatives', 'crossSelling'].includes(page) || page === 'pipeline') && <button className="button button-secondary" onClick={() => setEditingInitiative({})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-secondary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}<button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button></div>
+            <div className="heading-actions">{['clients', 'towers', 'people'].includes(page) && <button className="button button-secondary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {page === 'clients' ? 'Nuevo cliente' : page === 'towers' ? 'Nueva tower' : 'Nuevo responsable'}</button>}{(['initiatives', 'crossSelling'].includes(page) || page === 'pipeline') && <button className="button button-secondary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'cross_selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-secondary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
           </div>
 
           {page === 'pipeline' || page === 'opportunities' ? <>
@@ -497,12 +497,13 @@ function OpportunityRows({ opportunities, view, onEdit }) {
 
 function SecondaryPage({ page, opportunities, clients, towers, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onEditAgreement }) {
   const grouped = towers.filter((tower) => tower.active).map((tower) => ({ tower: tower.name, count: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).length, amount: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
+  const displayedInitiatives = page === 'crossSelling' ? initiatives.filter((item) => item.category === 'cross_selling') : initiatives;
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios del espacio de trabajo. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
   if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
   if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
-  if (page === 'initiatives' || page === 'crossSelling') return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Iniciativas de desarrollo</h2><p>Las iniciativas son registros independientes; Cross-Selling se identifica como una categoría.</p></div><span className="record-count">{initiatives.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Tipo</th><th>Cliente</th><th>Tower</th><th>Responsable</th><th>Importe</th><th>Estado</th><th></th></tr></thead><tbody>{initiatives.map((item) => <tr key={item.id}><td><button className="table-title" onClick={() => onEditInitiative(item)}>{item.title}</button></td><td>{initiativeCategory(item.category)}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{towers.find((x) => x.id === item.towerId)?.name || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td>{formatCurrency(parseAmount(item.amount))}</td><td>{item.status}</td><td><button className="button button-secondary" onClick={() => onEditInitiative(item)}>Editar</button></td></tr>)}</tbody></table>{initiatives.length === 0 && <p className="empty-state">Todavía no hay iniciativas.</p>}</div></section>;
+  if (page === 'initiatives' || page === 'crossSelling') return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{page === 'crossSelling' ? 'Iniciativas de Cross-Selling' : 'Iniciativas de desarrollo'}</h2><p>{page === 'crossSelling' ? 'Registros de iniciativas de cross-selling, independientes de las oportunidades.' : 'Las iniciativas son registros independientes de las oportunidades.'}</p></div><span className="record-count">{displayedInitiatives.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Tipo</th><th>Cliente</th><th>Tower</th><th>Responsable</th><th>Importe</th><th>Estado</th><th></th></tr></thead><tbody>{displayedInitiatives.map((item) => <tr key={item.id}><td><button className="table-title" onClick={() => onEditInitiative(item)}>{item.title}</button></td><td>{initiativeCategory(item.category)}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{towers.find((x) => x.id === item.towerId)?.name || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td>{formatCurrency(parseAmount(item.amount))}</td><td>{item.status}</td><td><button className="button button-secondary" onClick={() => onEditInitiative(item)}>Editar</button></td></tr>)}</tbody></table>{displayedInitiatives.length === 0 && <p className="empty-state">{page === 'crossSelling' ? 'Todavía no hay iniciativas de cross-selling.' : 'Todavía no hay iniciativas.'}</p>}</div></section>;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
   if (page === 'agreements') return <DataPanel title="Acuerdos vigentes y renovaciones" description="Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos." headers={['ID', 'Acuerdo', 'Cliente', 'Fin de vigencia', 'Responsable', 'Estado']} rows={agreements.map((item) => [item.id.slice(0, 8), item.title, clients.find((x) => x.id === item.clientId)?.name || '—', item.endDate || '—', people.find((x) => x.id === item.ownerId)?.name || '—', item.status === 'active' ? 'Vigente' : 'Inactivo'])} />;
   return <Analytics opportunities={opportunities} grouped={grouped} />;
