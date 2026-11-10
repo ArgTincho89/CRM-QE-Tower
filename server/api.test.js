@@ -294,6 +294,119 @@ describe('CRM API', () => {
     assert.equal(badStage.status, 400);
     assert.equal(badStage.body.error.code, 'validation_error');
     assert.match(badStage.body.error.message, /etapa/i);
+    const removedStage = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'negotiation' }, cookie: session,
+    });
+    assert.equal(removedStage.status, 400);
+  });
+
+  test('master records can be created, linked and deactivated without deleting references', async () => {
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente maestro', sector: 'Tecnología' }, cookie: session });
+    const tower = await app.json('POST', '/api/towers', { body: { name: 'QE Platform' }, cookie: session });
+    const person = await app.json('POST', '/api/people', { body: { name: 'Responsable QE', email: 'qe@example.com' }, cookie: session });
+    assert.equal(client.status, 201);
+    assert.equal(tower.status, 201);
+    assert.equal(person.status, 201);
+
+    const linked = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, clientId: client.body.record.id, towerId: tower.body.record.id, ownerId: person.body.record.id, bidManagerId: person.body.record.id, number: 'EXT-123', qaPercent: 35 },
+      cookie: session,
+    });
+    assert.equal(linked.status, 201);
+    assert.equal(linked.body.opportunity.number, 'EXT-123');
+    assert.equal(linked.body.opportunity.clientId, client.body.record.id);
+    assert.equal(linked.body.opportunity.qaPercent, 35);
+
+    const deactivate = await app.json('DELETE', `/api/clients/${client.body.record.id}`, { cookie: session });
+    assert.equal(deactivate.status, 200);
+    assert.equal(deactivate.body.record.active, false);
+    const stillLinked = await app.json('GET', '/api/opportunities', { cookie: session });
+    assert.equal(stillLinked.body.opportunities.find((item) => item.id === linked.body.opportunity.id).clientId, client.body.record.id);
+    const inactiveLink = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, clientId: client.body.record.id }, cookie: session,
+    });
+    assert.equal(inactiveLink.status, 400);
+  });
+
+  test('opportunity display fields use linked master names and retain legacy fallbacks', async () => {
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente vinculado' }, cookie: session });
+    const tower = await app.json('POST', '/api/towers', { body: { name: 'Tower vinculada' }, cookie: session });
+    const owner = await app.json('POST', '/api/people', { body: { name: 'Responsable vinculado' }, cookie: session });
+    const replacementClient = await app.json('POST', '/api/clients', { body: { name: 'Cliente actualizado' }, cookie: session });
+    const replacementTower = await app.json('POST', '/api/towers', { body: { name: 'Tower actualizada' }, cookie: session });
+    const replacementOwner = await app.json('POST', '/api/people', { body: { name: 'Responsable actualizado' }, cookie: session });
+
+    const linked = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, account: '', tower: '', owner: '', clientId: client.body.record.id, towerId: tower.body.record.id, ownerId: owner.body.record.id },
+      cookie: session,
+    });
+    assert.equal(linked.status, 201);
+    assert.deepEqual({ ...app.db.prepare('SELECT account, tower, owner FROM opportunities WHERE id = ?').get(linked.body.opportunity.id) }, { account: '', tower: '', owner: '' });
+    assert.equal(linked.body.opportunity.account, 'Cliente vinculado');
+    assert.equal(linked.body.opportunity.tower, 'Tower vinculada');
+    assert.equal(linked.body.opportunity.owner, 'Responsable vinculado');
+
+    const updated = await app.json('PATCH', `/api/opportunities/${linked.body.opportunity.id}`, {
+      body: { clientId: replacementClient.body.record.id, towerId: replacementTower.body.record.id, ownerId: replacementOwner.body.record.id },
+      cookie: session,
+    });
+    assert.equal(updated.body.opportunity.account, 'Cliente actualizado');
+    assert.equal(updated.body.opportunity.tower, 'Tower actualizada');
+    assert.equal(updated.body.opportunity.owner, 'Responsable actualizado');
+
+    const listed = await app.json('GET', '/api/opportunities', { cookie: session });
+    const row = listed.body.opportunities.find((item) => item.id === linked.body.opportunity.id);
+    assert.equal(row.account, 'Cliente actualizado');
+    assert.equal(row.tower, 'Tower actualizada');
+    assert.equal(row.owner, 'Responsable actualizado');
+
+    const legacy = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    assert.equal(legacy.body.opportunity.account, OPPORTUNITY_PAYLOAD.account);
+    assert.equal(legacy.body.opportunity.tower, OPPORTUNITY_PAYLOAD.tower);
+    assert.equal(legacy.body.opportunity.owner, OPPORTUNITY_PAYLOAD.owner);
+  });
+
+  test('initiative and framework agreement records persist, with notes and action completion', async () => {
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente iniciativa' }, cookie: session });
+    const created = await app.json('POST', '/api/initiatives', {
+      body: { title: 'Explorar servicio QE', category: 'cross_selling', clientId: client.body.record.id, amount: '25000', qaPercent: 20 },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.initiative.category, 'cross_selling');
+    const list = await app.json('GET', '/api/initiatives', { cookie: session });
+    assert.equal(list.body.initiatives.some((item) => item.id === created.body.initiative.id), true);
+    const initialEvents = await app.json('GET', `/api/initiatives/${created.body.initiative.id}/events`, { cookie: session });
+    assert.equal(initialEvents.body.events[0].userName, 'Ada Lovelace');
+    assert.equal(initialEvents.body.events[0].action, 'created');
+
+    const note = await app.json('POST', `/api/initiatives/${created.body.initiative.id}/actions`, { body: { text: 'Alinear alcance', kind: 'note' }, cookie: session });
+    const action = await app.json('POST', `/api/initiatives/${created.body.initiative.id}/actions`, { body: { text: 'Preparar reunión' }, cookie: session });
+    assert.equal(note.body.action.kind, 'note');
+    assert.equal(note.body.action.status, 'note');
+    assert.equal(action.body.action.status, 'pending');
+    const completed = await app.json('PATCH', `/api/actions/${action.body.action.id}`, { body: { status: 'completed' }, cookie: session });
+    assert.equal(completed.body.action.status, 'completed');
+    const actions = await app.json('GET', `/api/initiatives/${created.body.initiative.id}/actions`, { cookie: session });
+    assert.equal(actions.body.actions.length, 2);
+    assert.equal(actions.body.actions.find((item) => item.id === action.body.action.id).userName, 'Ada Lovelace');
+    assert.equal(actions.body.actions.find((item) => item.id === action.body.action.id).status, 'completed');
+    assert.equal(actions.body.actions.find((item) => item.id === note.body.action.id).text, 'Alinear alcance');
+    const audit = await app.json('GET', `/api/initiatives/${created.body.initiative.id}/events`, { cookie: session });
+    assert.ok(audit.body.events.some((event) => event.action === 'action_added'));
+    assert.ok(audit.body.events.some((event) => event.action === 'action_completed'));
+
+    const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo de soporte', clientId: client.body.record.id }, cookie: session });
+    assert.equal(agreement.status, 201);
+    const agreements = await app.json('GET', '/api/agreements', { cookie: session });
+    assert.equal(agreements.body.agreements.some((item) => item.id === agreement.body.agreement.id), true);
+  });
+
+  test('amount and QA percentage reject invalid values', async () => {
+    const negativeAmount = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, amount: '-1' }, cookie: session });
+    const badPercent = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, qaPercent: 101 }, cookie: session });
+    assert.equal(negativeAmount.status, 400);
+    assert.equal(badPercent.status, 400);
   });
 
   test('created ids stay unique and fully padded to four digits', async () => {
@@ -383,14 +496,14 @@ describe('CRM API', () => {
     const { id } = created.body.opportunity;
 
     const patch = await app.json('PATCH', `/api/opportunities/${id}`, {
-      body: { stage: 'negotiation', title: 'Doble cambio aplicado' },
+      body: { stage: 'lost', title: 'Doble cambio aplicado' },
       cookie: session,
     });
 
     assert.equal(patch.status, 200);
     assert.equal(patch.body.events.length, 2);
     assert.equal(patch.body.events[0].action, 'moved');
-    assert.deepEqual(patch.body.events[0].detail, { from: 'prospecting', to: 'negotiation' });
+    assert.deepEqual(patch.body.events[0].detail, { from: 'prospecting', to: 'lost' });
     assert.equal(patch.body.events[1].action, 'updated');
     assert.deepEqual(patch.body.events[1].detail, { fields: ['title'] });
 
@@ -457,7 +570,7 @@ describe('CRM API', () => {
 
     assert.equal(response.status, 200);
     const rows = response.body.opportunities;
-    assert.ok(rows.length >= 29);
+    assert.ok(rows.length > 0);
     assert.ok(Array.isArray(rows[0].tags));
 
     const ids = rows.map((row) => row.id);

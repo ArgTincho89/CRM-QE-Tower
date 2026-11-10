@@ -1,7 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { seedOpportunities } from '../src/data.js';
 
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -17,7 +16,19 @@ const SCHEMA_STATEMENTS = [
      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
      created_at TEXT NOT NULL,
      expires_at TEXT NOT NULL
-   )`,
+    )`,
+  `CREATE TABLE IF NOT EXISTS clients (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, sector TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS towers (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS people (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
   `CREATE TABLE IF NOT EXISTS opportunities (
      id TEXT PRIMARY KEY,
      title TEXT NOT NULL,
@@ -39,7 +50,32 @@ const SCHEMA_STATEMENTS = [
      action TEXT NOT NULL,
      detail TEXT NOT NULL,
      created_at TEXT NOT NULL
-   )`,
+    )`,
+  `CREATE TABLE IF NOT EXISTS initiatives (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'external',
+      client_id TEXT REFERENCES clients(id), tower_id TEXT REFERENCES towers(id),
+      owner_id TEXT REFERENCES people(id), bid_manager_id TEXT REFERENCES people(id),
+      amount TEXT NOT NULL DEFAULT '0', qa_percent REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'open', closure_reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS framework_agreements (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, client_id TEXT REFERENCES clients(id),
+      owner_id TEXT REFERENCES people(id), end_date TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS record_actions (
+      id TEXT PRIMARY KEY, entity_type TEXT NOT NULL CHECK(entity_type IN ('initiative','opportunity')),
+      entity_id TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'action' CHECK(kind IN ('note','action')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','note')),
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
+      created_at TEXT NOT NULL, completed_at TEXT
+    )`,
+  `CREATE TABLE IF NOT EXISTS entity_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL, user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      user_name TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+    )`,
   'CREATE INDEX IF NOT EXISTS idx_card_events_card ON card_events(card_id, id)',
 ];
 
@@ -65,6 +101,20 @@ export function withTransaction(db, fn) {
 
 export function applySchema(db) {
   for (const statement of SCHEMA_STATEMENTS) db.exec(statement);
+  const columns = db.prepare('PRAGMA table_info(opportunities)').all().map((row) => row.name);
+  const additions = [
+    ['number', "TEXT NOT NULL DEFAULT ''"],
+    ['client_id', 'TEXT REFERENCES clients(id)'],
+    ['tower_id', 'TEXT REFERENCES towers(id)'],
+    ['owner_id', 'TEXT REFERENCES people(id)'],
+    ['bid_manager_id', 'TEXT REFERENCES people(id)'],
+    ['qa_percent', 'REAL NOT NULL DEFAULT 0'],
+    ['closure_reason', "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [name, declaration] of additions) {
+    if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
 }
 
 /**
@@ -85,51 +135,14 @@ export function openDatabase(dbPath) {
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
   applySchema(db);
-  seedDatabase(db);
   return db;
 }
 
 /**
- * Inserts the demo pipeline only when the opportunities table is empty, so booting
- * twice never duplicates rows.
- *
- * Returns the number of seeded opportunities (0 when the table already had data).
+ * Kept as a backwards-compatible no-op. Application startup must never create demo business data.
  */
-export function seedDatabase(db, createdAt = new Date().toISOString()) {
-  const row = db.prepare('SELECT COUNT(*) AS count FROM opportunities').get();
-  if (Number(row.count) > 0) return 0;
-
-  const insertOpportunity = db.prepare(
-    `INSERT INTO opportunities
-       (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  // user_id stays NULL on purpose: the demo history must survive without any account.
-  const insertEvent = db.prepare(
-    `INSERT INTO card_events (card_id, user_id, user_name, action, detail, created_at)
-     VALUES (?, NULL, 'Sistema', 'created', '{}', ?)`,
-  );
-
-  withTransaction(db, () => {
-    for (const opportunity of seedOpportunities) {
-      insertOpportunity.run(
-        opportunity.id,
-        opportunity.title,
-        opportunity.account,
-        opportunity.amount,
-        opportunity.stage,
-        opportunity.tower,
-        opportunity.owner,
-        opportunity.due,
-        JSON.stringify(opportunity.tags ?? []),
-        createdAt,
-        createdAt,
-      );
-      insertEvent.run(opportunity.id, createdAt);
-    }
-  });
-
-  return seedOpportunities.length;
+export function seedDatabase() {
+  return 0;
 }
 
 export function closeDatabase(db) {

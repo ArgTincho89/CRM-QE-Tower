@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { seedOpportunities } from '../src/data.js';
 import { applySchema, closeDatabase, openDatabase, seedDatabase } from './db.js';
 import { createTempDatabase } from './testing.js';
 
@@ -11,99 +11,65 @@ function count(db, table) {
   return Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count);
 }
 
-test('an empty database is seeded with every opportunity and one origin event each', () => {
+test('a fresh database contains no demo or business records', () => {
   const temp = createTempDatabase();
   try {
-    assert.equal(count(temp.db, 'opportunities'), 29);
-    assert.equal(count(temp.db, 'card_events'), 29);
-
-    const rows = temp.db.prepare('SELECT * FROM opportunities ORDER BY id').all();
-    const expected = [...seedOpportunities].sort((a, b) => (a.id < b.id ? -1 : 1));
-    assert.deepEqual(
-      rows.map((row) => row.id).sort(),
-      expected.map((item) => item.id).sort(),
-    );
-
-    const source = new Map(seedOpportunities.map((item) => [item.id, item]));
-    for (const row of rows) {
-      const original = source.get(row.id);
-      assert.equal(row.title, original.title);
-      assert.equal(row.account, original.account);
-      assert.equal(row.amount, original.amount);
-      assert.equal(row.stage, original.stage);
-      assert.equal(row.tower, original.tower);
-      assert.equal(row.owner, original.owner);
-      assert.equal(row.due, original.due);
-      assert.deepEqual(JSON.parse(row.tags), original.tags);
-      assert.equal(row.created_at, row.updated_at);
+    for (const table of ['opportunities', 'initiatives', 'clients', 'towers', 'people', 'framework_agreements', 'card_events', 'record_actions']) {
+      assert.equal(count(temp.db, table), 0, `${table} should be empty on first boot`);
     }
-
-    const events = temp.db.prepare('SELECT * FROM card_events').all();
-    for (const event of events) {
-      assert.equal(event.action, 'created');
-      assert.equal(event.user_id, null);
-      assert.equal(event.user_name, 'Sistema');
-      assert.equal(event.detail, '{}');
-    }
+    assert.equal(seedDatabase(temp.db), 0);
+    assert.equal(count(temp.db, 'opportunities'), 0);
+    applySchema(temp.db);
+    assert.equal(count(temp.db, 'initiatives'), 0);
   } finally {
     temp.cleanup();
   }
 });
 
-test('reopening the same database does not duplicate seed rows', () => {
-  const dir = mkdtempSync(path.join(tmpdir(), 'crm-seed-'));
+test('schema migration preserves existing users and sessions', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-preserve-'));
   const dbPath = path.join(dir, 'app.db');
-
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+    CREATE TABLE opportunities (id TEXT PRIMARY KEY, title TEXT NOT NULL, account TEXT NOT NULL, amount TEXT NOT NULL, stage TEXT NOT NULL, tower TEXT NOT NULL, owner TEXT NOT NULL, due TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    INSERT INTO users VALUES ('u-1','first@example.com','First User','hash','admin','2026-01-01');
+    INSERT INTO users VALUES ('u-2','second@example.com','Second User','hash','member','2026-01-01');
+    INSERT INTO sessions VALUES ('token-1','u-1','2026-01-01','2027-01-01');
+  `);
+  original.close();
   try {
-    const first = openDatabase(dbPath);
-    assert.equal(count(first, 'opportunities'), 29);
-    closeDatabase(first);
-
-    const second = openDatabase(dbPath);
-    assert.equal(count(second, 'opportunities'), 29);
-    assert.equal(count(second, 'card_events'), 29);
-
-    // Running the seed explicitly on a populated database is a no-op.
-    assert.equal(seedDatabase(second), 0);
-    assert.equal(count(second, 'opportunities'), 29);
-    closeDatabase(second);
+    const db = openDatabase(dbPath);
+    assert.equal(count(db, 'users'), 2);
+    assert.equal(count(db, 'sessions'), 1);
+    assert.equal(db.prepare('SELECT name FROM users WHERE id = ?').get('u-1').name, 'First User');
+    closeDatabase(db);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('the schema is idempotent', () => {
+test('deleting an opportunity cascades to its append-only history rows', () => {
   const temp = createTempDatabase();
   try {
-    applySchema(temp.db);
-    applySchema(temp.db);
-    assert.equal(count(temp.db, 'opportunities'), 29);
+    const now = new Date().toISOString();
+    temp.db.prepare(`INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('O-0001','Test','','0','prospecting','','','','[]',?,?)`).run(now, now);
+    temp.db.prepare(`INSERT INTO card_events (card_id,user_name,action,detail,created_at) VALUES ('O-0001','Sistema','created','{}',?)`).run(now);
+    assert.equal(count(temp.db, 'card_events'), 1);
+    temp.db.prepare('DELETE FROM opportunities WHERE id = ?').run('O-0001');
+    assert.equal(count(temp.db, 'card_events'), 0);
   } finally {
     temp.cleanup();
   }
 });
 
-test('deleting an opportunity cascades to its events', () => {
-  const temp = createTempDatabase();
-  try {
-    const id = seedOpportunities[0].id;
-    assert.ok(count(temp.db, 'card_events') > 0);
-
-    temp.db.prepare('DELETE FROM opportunities WHERE id = ?').run(id);
-    const remaining = temp.db.prepare('SELECT COUNT(*) AS count FROM card_events WHERE card_id = ?').get(id);
-    assert.equal(Number(remaining.count), 0);
-  } finally {
-    temp.cleanup();
-  }
-});
-
-test('the demo database file lives under a directory that is created on demand', () => {
+test('the database path directory is created when needed', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'crm-mkdir-'));
   const dbPath = path.join(dir, 'nested', 'deeper', 'app.db');
-
   try {
     const db = openDatabase(dbPath);
-    assert.equal(count(db, 'opportunities'), 29);
+    assert.equal(count(db, 'opportunities'), 0);
     closeDatabase(db);
   } finally {
     rmSync(dir, { recursive: true, force: true });

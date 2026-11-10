@@ -16,6 +16,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
+import { formatCurrency } from '../src/money.js';
 import {
   HttpError,
   assertSameOrigin,
@@ -26,7 +27,7 @@ import {
   serveStatic,
 } from './http.js';
 
-const STAGES = new Set(['prospecting', 'analysis', 'proposal', 'negotiation', 'won', 'waiting']);
+const STAGES = new Set(['prospecting', 'analysis', 'waiting', 'proposal', 'won', 'lost']);
 
 const FIELD_LIMITS = {
   title: 160,
@@ -38,7 +39,7 @@ const FIELD_LIMITS = {
 };
 
 /** Field names a PATCH may touch. The order also drives the `updated` event payload. */
-const EDITABLE_FIELDS = ['title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags'];
+const EDITABLE_FIELDS = ['title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number', 'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason'];
 
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 40;
@@ -80,16 +81,49 @@ function mapOpportunity(row) {
   return {
     id: row.id,
     title: row.title,
-    account: row.account,
-    amount: row.amount,
+    account: row.linked_client_name || row.account || '',
+    amount: formatCurrency(Number(parseAmount(row.amount))),
     stage: row.stage,
-    tower: row.tower,
-    owner: row.owner,
+    tower: row.linked_tower_name || row.tower || '',
+    owner: row.linked_owner_name || row.owner || '',
     due: row.due,
     tags: safeParseJson(row.tags, []),
+    number: row.number || '',
+    clientId: row.client_id || '',
+    towerId: row.tower_id || '',
+    ownerId: row.owner_id || '',
+    bidManagerId: row.bid_manager_id || '',
+    qaPercent: Number(row.qa_percent || 0),
+    closureReason: row.closure_reason || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+const OPPORTUNITY_DISPLAY_SELECT = `
+  SELECT opportunities.*,
+         clients.name AS linked_client_name,
+         towers.name AS linked_tower_name,
+         people.name AS linked_owner_name
+    FROM opportunities
+    LEFT JOIN clients ON clients.id = opportunities.client_id
+    LEFT JOIN towers ON towers.id = opportunities.tower_id
+    LEFT JOIN people ON people.id = opportunities.owner_id`;
+
+function getOpportunityForDisplay(db, id) {
+  return db.prepare(`${OPPORTUNITY_DISPLAY_SELECT} WHERE opportunities.id = ?`).get(id);
+}
+
+function mapMaster(row) {
+  return { id: row.id, name: row.name, sector: row.sector ?? undefined, email: row.email ?? undefined, active: row.status === 'active', createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+function mapInitiative(row) {
+  return { id: row.id, title: row.title, category: row.category, clientId: row.client_id || '', towerId: row.tower_id || '', ownerId: row.owner_id || '', bidManagerId: row.bid_manager_id || '', amount: row.amount, qaPercent: Number(row.qa_percent), status: row.status, closureReason: row.closure_reason, createdAt: row.created_at, updatedAt: row.updated_at };
+}
+
+function mapAgreement(row) {
+  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapEvent(row) {
@@ -151,6 +185,37 @@ function parseStage(value) {
   return value.trim();
 }
 
+function parseAmount(value) {
+  if (value === undefined || value === null || value === '') throw validationError('El importe es obligatorio.');
+  const raw = typeof value === 'number' ? String(value) : String(value ?? '').trim();
+  const clean = raw.replace(/\s|€|EUR/g, '');
+  const normalized = clean.includes(',')
+    ? clean.replace(/\./g, '').replace(',', '.')
+    : (/^\d{1,3}(\.\d{3})+$/.test(clean) ? clean.replace(/\./g, '') : clean);
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount < 0) throw validationError('El importe debe ser un número no negativo.');
+  return String(amount);
+}
+
+function parsePercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 100) throw validationError('El porcentaje de participación QA debe estar entre 0 y 100.');
+  return number;
+}
+
+function optionalId(db, table, value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !db.prepare(`SELECT id FROM ${table} WHERE id = ? AND status = 'active'`).get(value)) {
+    throw validationError(`El registro seleccionado en "${field}" no existe o está inactivo.`);
+  }
+  return value;
+}
+
+function appendEntityEvent(db, { type, id, user, action, detail = {}, now }) {
+  db.prepare(`INSERT INTO entity_events (entity_type, entity_id, user_id, user_name, action, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(type, id, user?.id ?? null, user?.name ?? 'Sistema', action, JSON.stringify(detail), now);
+}
+
 function parseTags(value) {
   if (!Array.isArray(value)) {
     throw validationError('Las etiquetas deben ser una lista de textos.');
@@ -174,9 +239,15 @@ function parseTags(value) {
 }
 
 /** Normalizes a single editable field into the exact string stored in SQLite. */
-function normalizeFieldValue(field, value) {
+function normalizeFieldValue(db, field, value) {
   if (field === 'stage') return parseStage(value);
   if (field === 'tags') return JSON.stringify(parseTags(value));
+  if (field === 'amount') return parseAmount(value);
+  if (field === 'qa_percent') return parsePercent(value);
+  if (field === 'client_id') return optionalId(db, 'clients', value, 'cliente');
+  if (field === 'tower_id') return optionalId(db, 'towers', value, 'tower');
+  if (field === 'owner_id' || field === 'bid_manager_id') return optionalId(db, 'people', value, 'responsable');
+  if (field === 'number' || field === 'closure_reason') return typeof value === 'string' ? value.trim().slice(0, 160) : '';
   return parseTextField(value, field, FIELD_LIMITS[field]);
 }
 
@@ -384,7 +455,7 @@ function me(ctx, req, res) {
 function listOpportunities(ctx, req, res) {
   requireUser(ctx, req);
   const rows = ctx.db
-    .prepare('SELECT * FROM opportunities ORDER BY created_at DESC, id DESC')
+    .prepare(`${OPPORTUNITY_DISPLAY_SELECT} ORDER BY opportunities.created_at DESC, opportunities.id DESC`)
     .all();
   sendJson(res, 200, { opportunities: rows.map(mapOpportunity) });
 }
@@ -395,20 +466,27 @@ async function createOpportunity(ctx, req, res) {
 
   const values = {
     title: parseTextField(body.title, 'title', FIELD_LIMITS.title),
-    account: parseTextField(body.account, 'account', FIELD_LIMITS.account),
-    amount: parseTextField(body.amount, 'amount', FIELD_LIMITS.amount),
+    account: typeof body.account === 'string' ? body.account.trim() : '',
+    amount: parseAmount(body.amount),
     stage: parseStage(body.stage),
-    tower: parseTextField(body.tower, 'tower', FIELD_LIMITS.tower),
-    owner: parseTextField(body.owner, 'owner', FIELD_LIMITS.owner),
-    due: parseTextField(body.due, 'due', FIELD_LIMITS.due),
+    tower: typeof body.tower === 'string' ? body.tower.trim() : '',
+    owner: typeof body.owner === 'string' ? body.owner.trim() : '',
+    due: typeof body.due === 'string' ? body.due.trim() : '',
     tags: JSON.stringify(body.tags === undefined ? [] : parseTags(body.tags)),
+    number: typeof body.number === 'string' ? body.number.trim().slice(0, 160) : '',
+    client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
+    tower_id: optionalId(ctx.db, 'towers', body.towerId, 'tower'),
+    owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
+    bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
+    qa_percent: parsePercent(body.qaPercent ?? 0),
+    closure_reason: typeof body.closureReason === 'string' ? body.closureReason.trim().slice(0, 160) : '',
   };
 
   const nowIso = ctx.now().toISOString();
   const insert = ctx.db.prepare(
     `INSERT INTO opportunities
-       (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at, number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -428,6 +506,13 @@ async function createOpportunity(ctx, req, res) {
           values.tags,
           nowIso,
           nowIso,
+          values.number,
+          values.client_id,
+          values.tower_id,
+          values.owner_id,
+          values.bid_manager_id,
+          values.qa_percent,
+          values.closure_reason,
         );
         insertCardEvent(ctx.db, {
           cardId: id,
@@ -436,6 +521,7 @@ async function createOpportunity(ctx, req, res) {
           detail: {},
           createdAt: nowIso,
         });
+        appendEntityEvent(ctx.db, { type: 'opportunity', id, user, action: 'created', now: nowIso });
         return id;
       });
       break;
@@ -444,7 +530,7 @@ async function createOpportunity(ctx, req, res) {
     }
   }
 
-  const row = ctx.db.prepare('SELECT * FROM opportunities WHERE id = ?').get(createdId);
+  const row = getOpportunityForDisplay(ctx.db, createdId);
   sendJson(res, 201, { opportunity: mapOpportunity(row) });
 }
 
@@ -459,9 +545,11 @@ async function patchOpportunity(ctx, req, res, rawId) {
 
   const changes = {};
   const changedFields = [];
-  for (const field of EDITABLE_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
-    const nextValue = normalizeFieldValue(field, body[field]);
+  const apiFields = { clientId: 'client_id', towerId: 'tower_id', ownerId: 'owner_id', bidManagerId: 'bid_manager_id', qaPercent: 'qa_percent', closureReason: 'closure_reason' };
+  for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
+    if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
+    const field = apiFields[apiField] || apiField;
+    const nextValue = normalizeFieldValue(ctx.db, field, body[apiField]);
     if (nextValue === existing[field]) continue;
     changes[field] = nextValue;
     changedFields.push(field);
@@ -469,7 +557,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
 
   // Nothing actually changed: return the row untouched and write no event.
   if (changedFields.length === 0) {
-    sendJson(res, 200, { opportunity: mapOpportunity(existing), events: [] });
+    sendJson(res, 200, { opportunity: mapOpportunity(getOpportunityForDisplay(ctx.db, id)), events: [] });
     return;
   }
 
@@ -510,10 +598,169 @@ async function patchOpportunity(ctx, req, res, rawId) {
         }),
       );
     }
+    appendEntityEvent(ctx.db, { type: 'opportunity', id, user, action: stageChanged ? 'updated' : 'updated', detail: { fields: changedFields }, now: nowIso });
   });
 
-  const updated = ctx.db.prepare('SELECT * FROM opportunities WHERE id = ?').get(id);
+  const updated = getOpportunityForDisplay(ctx.db, id);
   sendJson(res, 200, { opportunity: mapOpportunity(updated), events });
+}
+
+const MASTER_CONFIG = {
+  clients: { table: 'clients', plural: 'clients', fields: ['name', 'sector'] },
+  towers: { table: 'towers', plural: 'towers', fields: ['name'] },
+  people: { table: 'people', plural: 'people', fields: ['name', 'email'] },
+};
+
+function listMaster(ctx, req, res, kind) {
+  requireUser(ctx, req);
+  const { table } = MASTER_CONFIG[kind];
+  const rows = ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
+  sendJson(res, 200, { records: rows.map(mapMaster) });
+}
+
+async function mutateMaster(ctx, req, res, kind, rawId = null) {
+  const user = requireUser(ctx, req);
+  const { table, plural, fields } = MASTER_CONFIG[kind];
+  const body = req.method === 'DELETE' ? {} : await readJson(req);
+  const now = ctx.now().toISOString();
+  let row;
+  if (req.method === 'POST') {
+    const values = fields.map((field) => {
+      if (field === 'name') return parseTextField(body[field], field, 120);
+      return typeof body[field] === 'string' ? body[field].trim().slice(0, 160) : '';
+    });
+    if (kind === 'towers' && ctx.db.prepare('SELECT id FROM towers WHERE name = ?').get(values[0])) throw new HttpError(409, 'duplicate_record', 'Ya existe una tower con ese nombre.');
+    const id = randomUUID();
+    const columns = ['id', ...fields, 'status', 'created_at', 'updated_at'];
+    ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, 'active', now, now);
+    appendEntityEvent(ctx.db, { type: kind, id, user, action: 'created', now });
+    row = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+  } else {
+    const id = decodeId(rawId);
+    const current = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+    if (!current) throw new HttpError(404, 'not_found', 'El registro no existe.');
+    if (req.method === 'DELETE') {
+      ctx.db.prepare(`UPDATE ${table} SET status = 'inactive', updated_at = ? WHERE id = ?`).run(now, id);
+      appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deactivated', now });
+    } else {
+      const changes = fields.filter((field) => Object.hasOwn(body, field)).map((field) => [field, field === 'name' ? parseTextField(body[field], field, 120) : String(body[field] ?? '').trim().slice(0, 160)]);
+      if (Object.hasOwn(body, 'active')) changes.push(['status', body.active ? 'active' : 'inactive']);
+      if (!changes.length) { sendJson(res, 200, { [plural.slice(0, -1)]: mapMaster(current) }); return; }
+      ctx.db.prepare(`UPDATE ${table} SET ${changes.map(([field]) => `${field} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...changes.map(([, value]) => value), now, id);
+      appendEntityEvent(ctx.db, { type: kind, id, user, action: changes.some(([field]) => field === 'status') ? 'status_changed' : 'updated', detail: { fields: changes.map(([field]) => field) }, now });
+    }
+    row = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+  }
+  sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row) });
+}
+
+function listInitiatives(ctx, req, res) {
+  requireUser(ctx, req);
+  const rows = ctx.db.prepare('SELECT * FROM initiatives ORDER BY created_at DESC, id DESC').all();
+  sendJson(res, 200, { initiatives: rows.map(mapInitiative) });
+}
+
+async function mutateInitiative(ctx, req, res, rawId = null) {
+  const user = requireUser(ctx, req);
+  const body = await readJson(req);
+  const now = ctx.now().toISOString();
+  const fields = {
+    title: parseTextField(body.title, 'title', 160),
+    category: body.category === undefined ? 'external' : body.category,
+    client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
+    tower_id: optionalId(ctx.db, 'towers', body.towerId, 'tower'),
+    owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
+    bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
+    amount: parseAmount(body.amount ?? 0),
+    qa_percent: parsePercent(body.qaPercent ?? 0),
+    status: typeof body.status === 'string' && body.status.trim() ? body.status.trim().slice(0, 40) : 'open',
+    closure_reason: typeof body.closureReason === 'string' ? body.closureReason.trim().slice(0, 160) : '',
+  };
+  if (!['internal', 'cross_selling', 'external'].includes(fields.category)) throw validationError('La categoría de la iniciativa no es válida.');
+  let id;
+  if (req.method === 'POST') {
+    id = randomUUID();
+    const columns = ['id', ...Object.keys(fields), 'created_at', 'updated_at'];
+    ctx.db.prepare(`INSERT INTO initiatives (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...Object.values(fields), now, now);
+    appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: 'created', now });
+  } else {
+    id = decodeId(rawId);
+    const existing = ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id);
+    if (!existing) throw new HttpError(404, 'not_found', 'La iniciativa no existe.');
+    const assignments = Object.keys(fields).map((field) => `${field} = ?`).join(', ');
+    ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
+    appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: 'updated', detail: { fields: Object.keys(fields) }, now });
+  }
+  sendJson(res, req.method === 'POST' ? 201 : 200, { initiative: mapInitiative(ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id)) });
+}
+
+function listAgreements(ctx, req, res) {
+  requireUser(ctx, req);
+  sendJson(res, 200, { agreements: ctx.db.prepare('SELECT * FROM framework_agreements ORDER BY created_at DESC').all().map(mapAgreement) });
+}
+
+async function createAgreement(ctx, req, res) {
+  const user = requireUser(ctx, req);
+  const body = await readJson(req);
+  const id = randomUUID();
+  const now = ctx.now().toISOString();
+  const title = parseTextField(body.title, 'title', 160);
+  const clientId = optionalId(ctx.db, 'clients', body.clientId, 'cliente');
+  const ownerId = optionalId(ctx.db, 'people', body.ownerId, 'responsable');
+  const endDate = typeof body.endDate === 'string' ? body.endDate.trim().slice(0, 40) : '';
+  ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(id, title, clientId, ownerId, endDate, 'active', now, now);
+  appendEntityEvent(ctx.db, { type: 'agreement', id, user, action: 'created', now });
+  sendJson(res, 201, { agreement: mapAgreement(ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id)) });
+}
+
+function listActions(ctx, req, res, type, rawId) {
+  requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const exists = type === 'initiative'
+    ? ctx.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id)
+    : ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id);
+  if (!exists) throw new HttpError(404, 'not_found', 'El registro no existe.');
+  const rows = ctx.db.prepare('SELECT * FROM record_actions WHERE entity_type = ? AND entity_id = ? ORDER BY created_at DESC').all(type, id);
+  sendJson(res, 200, { actions: rows.map((row) => ({ id: row.id, text: row.text, kind: row.kind, status: row.status, userName: row.user_name, createdAt: row.created_at, completedAt: row.completed_at })) });
+}
+
+function listEntityEvents(ctx, req, res, type, rawId) {
+  requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const table = type === 'initiative' ? 'initiatives' : 'opportunities';
+  if (!ctx.db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) throw new HttpError(404, 'not_found', 'El registro no existe.');
+  const rows = ctx.db.prepare('SELECT id, action, detail, user_name, created_at FROM entity_events WHERE entity_type = ? AND entity_id = ? ORDER BY id DESC LIMIT 100').all(type, id);
+  sendJson(res, 200, { events: rows.map((row) => ({ id: Number(row.id), action: row.action, detail: safeParseJson(row.detail, {}), userName: row.user_name, createdAt: row.created_at })) });
+}
+
+async function createAction(ctx, req, res, type, rawId) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const exists = type === 'initiative' ? ctx.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id) : ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id);
+  if (!exists) throw new HttpError(404, 'not_found', 'El registro no existe.');
+  const body = await readJson(req);
+  const text = parseTextField(body.text, 'acción', 500);
+  const kind = body.kind === 'note' ? 'note' : 'action';
+  const status = kind === 'note' ? 'note' : 'pending';
+  const now = ctx.now().toISOString();
+  const actionId = randomUUID();
+  ctx.db.prepare('INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_id,user_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(actionId, type, id, text, kind, status, user.id, user.name, now);
+  appendEntityEvent(ctx.db, { type, id, user, action: 'action_added', detail: { actionId }, now });
+  sendJson(res, 201, { action: { id: actionId, text, kind, status, userName: user.name, createdAt: now, completedAt: null } });
+}
+
+async function updateAction(ctx, req, res, rawActionId) {
+  const user = requireUser(ctx, req);
+  const actionId = decodeId(rawActionId);
+  const existing = ctx.db.prepare('SELECT * FROM record_actions WHERE id = ?').get(actionId);
+  if (!existing) throw new HttpError(404, 'not_found', 'La acción no existe.');
+  const body = await readJson(req);
+  const status = body.status === 'completed' ? 'completed' : body.status === 'pending' ? 'pending' : null;
+  if (!status) throw validationError('El estado debe ser pending o completed.');
+  const now = ctx.now().toISOString();
+  ctx.db.prepare('UPDATE record_actions SET status = ?, completed_at = ? WHERE id = ?').run(status, status === 'completed' ? now : null, actionId);
+  appendEntityEvent(ctx.db, { type: existing.entity_type, id: existing.entity_id, user, action: status === 'completed' ? 'action_completed' : 'action_reopened', detail: { actionId }, now });
+  sendJson(res, 200, { action: { id: actionId, text: existing.text, kind: existing.kind, status, userName: existing.user_name, createdAt: existing.created_at, completedAt: status === 'completed' ? now : null } });
 }
 
 function parseEventLimit(rawLimit) {
@@ -560,6 +807,11 @@ function decodeId(rawId) {
 
 const OPPORTUNITY_ITEM_PATTERN = /^\/api\/opportunities\/([^/]+)$/;
 const OPPORTUNITY_EVENTS_PATTERN = /^\/api\/opportunities\/([^/]+)\/events$/;
+const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people)\/([^/]+)$/;
+const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
+const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
+const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
+const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
 
 async function handleApi(ctx, req, res, pathname, query) {
   // CSRF guard runs before any handler, including the auth routes.
@@ -588,6 +840,51 @@ async function handleApi(ctx, req, res, pathname, query) {
   if (pathname === '/api/me') {
     if (req.method !== 'GET') return rejectMethod(res, 'GET');
     return me(ctx, req, res);
+  }
+
+  const masterItem = MASTER_ITEM_PATTERN.exec(pathname);
+  if (masterItem) {
+    if (req.method === 'PATCH') return mutateMaster(ctx, req, res, masterItem[1], masterItem[2]);
+    if (req.method === 'DELETE') return mutateMaster(ctx, req, res, masterItem[1], masterItem[2]);
+    return rejectMethod(res, 'PATCH', 'DELETE');
+  }
+  if (Object.hasOwn(MASTER_CONFIG, pathname.slice('/api/'.length)) && pathname.split('/').length === 3) {
+    const kind = pathname.slice('/api/'.length);
+    if (req.method === 'GET') return listMaster(ctx, req, res, kind);
+    if (req.method === 'POST') return mutateMaster(ctx, req, res, kind);
+    return rejectMethod(res, 'GET', 'POST');
+  }
+  if (pathname === '/api/initiatives') {
+    if (req.method === 'GET') return listInitiatives(ctx, req, res);
+    if (req.method === 'POST') return mutateInitiative(ctx, req, res);
+    return rejectMethod(res, 'GET', 'POST');
+  }
+  if (pathname === '/api/agreements') {
+    if (req.method === 'GET') return listAgreements(ctx, req, res);
+    if (req.method === 'POST') return createAgreement(ctx, req, res);
+    return rejectMethod(res, 'GET', 'POST');
+  }
+  const initiativeItem = INITIATIVE_ITEM_PATTERN.exec(pathname);
+  if (initiativeItem) {
+    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
+    return mutateInitiative(ctx, req, res, initiativeItem[1]);
+  }
+  const actionList = ACTIONS_PATTERN.exec(pathname);
+  if (actionList) {
+    const type = actionList[1] === 'initiatives' ? 'initiative' : 'opportunity';
+    if (req.method === 'GET') return listActions(ctx, req, res, type, actionList[2]);
+    if (req.method === 'POST') return createAction(ctx, req, res, type, actionList[2]);
+    return rejectMethod(res, 'GET', 'POST');
+  }
+  const initiativeEvents = INITIATIVE_EVENTS_PATTERN.exec(pathname);
+  if (initiativeEvents) {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return listEntityEvents(ctx, req, res, 'initiative', initiativeEvents[1]);
+  }
+  const actionItem = ACTION_ITEM_PATTERN.exec(pathname);
+  if (actionItem) {
+    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
+    return updateAction(ctx, req, res, actionItem[1]);
   }
 
   if (pathname === '/api/opportunities') {
