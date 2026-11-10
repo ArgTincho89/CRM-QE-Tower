@@ -1,9 +1,9 @@
-# fly.toml app configuration file generated for crm-qe-tower-argtincho89 on 2026-11-10T08:51:16+01:00
+# fly.toml app configuration file generated for crm-qe-tower on 2026-11-10T08:51:16+01:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'crm-qe-tower-argtincho89'
+app = 'crm-qe-tower'
 primary_region = 'lhr'
 
 [build]
