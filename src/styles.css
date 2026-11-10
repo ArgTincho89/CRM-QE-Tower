@@ -122,6 +122,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .kanban-column.negotiation { --stage-accent: #dc7138; --stage-tint: #fff0e7; }
 .kanban-column.won { --stage-accent: #159767; --stage-tint: #e8f7ef; }
 .kanban-column.waiting { --stage-accent: #788598; --stage-tint: #edf0f4; }
+.kanban-column.drag-over { border-radius: 8px; outline: 2px dashed var(--stage-accent, #1268d5); outline-offset: 2px; background: var(--stage-tint, #eef4fb); }
 .column-heading { height: 32px; display: flex; align-items: center; gap: 7px; margin-bottom: 6px; padding: 0 8px; border-radius: 6px; background: var(--stage-tint, #e9f3ff); }
 .stage-indicator { width: 7px; height: 7px; border-radius: 50%; background: #5297ea; }
 .column-heading.violet .stage-indicator, .card-stage-dot.violet { background: #8972db; }
@@ -140,6 +141,8 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .column-cards { display: grid; gap: 6px; }
 .opportunity-card { min-width: 0; display: block; padding: 6px 8px 5px; border: 1px solid #dfe6ef; border-left: 3px solid var(--stage-accent, #1375df); border-radius: 6px; background: white; box-shadow: 0 1px 3px #24344c09; text-align: left; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
 .opportunity-card:hover { transform: translateY(-1px); border-color: #aac8eb; border-left-color: var(--stage-accent, #1375df); box-shadow: 0 4px 10px #24344c12; }
+.opportunity-card[draggable='true'] { cursor: grab; }
+.opportunity-card.dragging { opacity: .45; cursor: grabbing; }
 .card-top { display: flex; align-items: center; height: 13px; gap: 6px; }
 .opportunity-id { color: #a1aaba; font-size: 8px; font-weight: 600; }
 .card-stage-dot { width: 6px; height: 6px; border-radius: 50%; background: #5297ea; }
@@ -159,7 +162,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .show-more:hover { color: #084eaa; text-decoration: underline; }
 .add-card { width: 100%; height: 25px; display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 4px; border: 1px dashed #cbd9e9; border-radius: 5px; background: #fff; color: #4779b1; font-size: 8px; cursor: pointer; }
 .add-card:hover { border-color: #9dbce0; color: #176bd0; background: #f6faff; }
-.empty-column { min-height: 95px; display: grid; place-items: center; padding: 12px; border: 1px dashed #e0e6ed; border-radius: 6px; color: #a0a9b6; font-size: 9px; text-align: center; }
+.empty-column { min-height: 95px; display: grid; place-items: center; padding: 12px; border: 1px dashed #e0e6ed; border-radius: 6px; color: #a0a9b6; font-size: 9px; text-align: center; pointer-events: none; }
 
 .list-view, .table-wrap { overflow: auto; border: 1px solid #e8edf2; border-radius: 8px; background: #fff; }
 .list-view { display: grid; }
@@ -264,6 +267,9 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .form-field.wide { grid-column: 1 / -1; }
 .form-field input, .form-field select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #e2e7ee; border-radius: 5px; background: white; color: #354258; font-size: 10px; font-weight: 400; }
 .form-field input::placeholder { color: #adb5c1; }
+.amount-field { position: relative; display: block; }
+.amount-field input { padding-right: 26px; }
+.amount-suffix { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); color: #9aa6b5; font-size: 10px; font-weight: 400; pointer-events: none; }
 .dialog-hint { display: flex; align-items: center; gap: 7px; margin-top: 17px; padding: 9px 10px; border-radius: 5px; background: #f7f9fc; color: #7e8b9d; font-size: 8px; line-height: 1.5; }
 .form-error { margin: 10px 0 0; color: #c34450; font-size: 9px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 21px; padding-top: 15px; border-top: 1px solid #edf0f4; }

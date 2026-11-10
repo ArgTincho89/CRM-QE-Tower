@@ -11,3 +11,9 @@ export function getColumnVisibility(cards, isExpanded) {
 export function toggleColumnExpanded(expandedColumns, stageId) {
   return { ...expandedColumns, [stageId]: !expandedColumns[stageId] };
 }
+
+export function moveOpportunityToStage(list, id, stageId) {
+  const index = list.findIndex((item) => item.id === id);
+  if (index === -1 || list[index].stage === stageId) return list;
+  return list.map((item, itemIndex) => itemIndex === index ? { ...item, stage: stageId } : item);
+}

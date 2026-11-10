@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { agreements, clients, crossSelling, proposals, seedOpportunities, stages, towerNames } from './data.js';
-import { COLLAPSED_CARD_LIMIT, getColumnVisibility, toggleColumnExpanded } from './kanban.js';
+import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
+import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 
 const STORAGE_KEY = 'crm-qe-demo-v1';
 
@@ -98,9 +99,16 @@ function App() {
   const [editing, setEditing] = useState(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [notice, setNotice] = useState('');
+  const noticeTimerRef = useRef(null);
+
+  const showNotice = (message) => {
+    setNotice(message);
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(''), 2600);
+  };
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(opportunities)); } catch { setNotice('No se pudo guardar en este navegador.'); }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(opportunities)); } catch { showNotice('No se pudo guardar en este navegador.'); }
   }, [opportunities]);
 
   const owners = useMemo(() => [...new Set(opportunities.map((item) => item.owner))].sort(), [opportunities]);
@@ -123,8 +131,15 @@ function App() {
       return exists ? current.map((item) => item.id === record.id ? record : item) : [record, ...current];
     });
     setEditing(null);
-    setNotice('Oportunidad guardada correctamente.');
-    window.setTimeout(() => setNotice(''), 2600);
+    showNotice('Oportunidad guardada correctamente.');
+  };
+
+  const moveOpportunity = (id, stageId) => {
+    const record = opportunities.find((item) => item.id === id);
+    if (!record || record.stage === stageId) return;
+    setOpportunities((current) => moveOpportunityToStage(current, id, stageId));
+    const stage = stages.find((item) => item.id === stageId);
+    showNotice(`«${record.title}» movida a ${stage?.label ?? stageId}.`);
   };
 
   const activePage = page === 'home' ? 'home' : page;
@@ -183,7 +198,7 @@ function App() {
               </div>
             </div>
             <div className="results-line"><span><strong>{filtered.length}</strong> oportunidades encontradas</span><button onClick={() => { setQuery(''); setStageFilter('all'); setTowerFilter('all'); setOwnerFilter('all'); }}>Limpiar filtros <Icon name="close" size={13} /></button></div>
-            {view === 'kanban' ? <Kanban opportunities={filtered} allOpportunities={opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditing} /> : <OpportunityRows opportunities={filtered} view={view} onEdit={setEditing} />}
+            {view === 'kanban' ? <Kanban opportunities={filtered} allOpportunities={opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditing} onMove={moveOpportunity} /> : <OpportunityRows opportunities={filtered} view={view} onEdit={setEditing} />}
           </> : <SecondaryPage page={page} opportunities={opportunities} onNavigate={navigate} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
@@ -198,16 +213,50 @@ function Kpi({ icon, color, label, value, detail, trend }) {
   return <article className="kpi-card"><div className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></div><div className="kpi-content"><span>{label}</span><div className="kpi-value-row"><strong>{value}</strong>{trend && <span className="trend-badge">↗ 20%</span>}</div><small>{detail}</small></div></article>;
 }
 
-function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColumn, onEdit }) {
+function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColumn, onEdit, onMove }) {
+  const [draggingId, setDraggingId] = useState(null);
+  const [dragOverStage, setDragOverStage] = useState(null);
+  const suppressClickRef = useRef(false);
+  const handleCardClick = (record) => {
+    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+    onEdit(record);
+  };
+  const handleDragStart = (event, record) => {
+    suppressClickRef.current = true;
+    setDraggingId(record.id);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', record.id);
+  };
+  const handleDragEnd = () => {
+    setDraggingId(null);
+    setDragOverStage(null);
+    window.requestAnimationFrame(() => { suppressClickRef.current = false; });
+  };
+  const handleDragOver = (event, stageId) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDragOverStage(stageId);
+  };
+  const handleDragLeave = (event, stageId) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setDragOverStage((current) => current === stageId ? null : current);
+  };
+  const handleDrop = (event, stageId) => {
+    event.preventDefault();
+    const id = event.dataTransfer.getData('text/plain') || draggingId;
+    setDraggingId(null);
+    setDragOverStage(null);
+    if (id) onMove(id, stageId);
+  };
   return <div className="kanban-board" aria-label="Pipeline comercial por etapa">
+    <p className="sr-only">Arrastra las tarjetas entre columnas o abre una tarjeta y cambia la etapa.</p>
     {stages.map((stage) => {
       const cards = opportunities.filter((item) => item.stage === stage.id);
       const totalCount = allOpportunities.filter((item) => item.stage === stage.id).length;
       const isExpanded = Boolean(expandedColumns[stage.id]);
       const { visibleCards, hiddenCount, canToggle } = getColumnVisibility(cards, isExpanded);
-      return <section className={`kanban-column ${stage.id}`} key={stage.id} aria-label={`${stage.label}: ${totalCount} oportunidades totales`}>
+      return <section className={`kanban-column ${stage.id}${dragOverStage === stage.id ? ' drag-over' : ''}`} key={stage.id} aria-label={`${stage.label}: ${totalCount} oportunidades totales`} onDragEnter={(event) => handleDragOver(event, stage.id)} onDragOver={(event) => handleDragOver(event, stage.id)} onDragLeave={(event) => handleDragLeave(event, stage.id)} onDrop={(event) => handleDrop(event, stage.id)}>
         <div className={`column-heading ${stage.tone}`}><span className="stage-indicator" /><h3>{stage.label}</h3><span className="column-count">{totalCount}</span><button className="column-menu" aria-label={`Opciones de ${stage.label}`}><Icon name="dots" size={17} /></button></div>
-        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.id} record={record} onEdit={onEdit} />)}{cards.length === 0 && <div className="empty-column">No hay oportunidades para estos filtros.</div>}</div>
+        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.id} record={record} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} isDragging={draggingId === record.id} />)}{cards.length === 0 && <div className="empty-column">No hay oportunidades para estos filtros.</div>}</div>
         {(canToggle || (isExpanded && totalCount > COLLAPSED_CARD_LIMIT)) && <button className="show-more" aria-expanded={isExpanded} onClick={() => onToggleColumn(stage.id)}>{isExpanded ? '− Ver menos' : `+ Ver más (${hiddenCount})`}</button>}
         <button className="add-card" onClick={() => onEdit({ stage: stage.id })}><Icon name="plus" size={15} /> Añadir oportunidad</button>
       </section>;
@@ -215,9 +264,9 @@ function Kanban({ opportunities, allOpportunities, expandedColumns, onToggleColu
   </div>;
 }
 
-function OpportunityCard({ record, onEdit }) {
+function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, isDragging }) {
   const stage = stages.find((item) => item.id === record.stage);
-  return <button className="opportunity-card" onClick={() => onEdit(record)} aria-label={`Editar ${record.title}, ${record.account}`}>
+  return <button className={`opportunity-card${isDragging ? ' dragging' : ''}`} draggable onDragStart={(event) => onDragStart(event, record)} onDragEnd={onDragEnd} onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${record.title}, ${record.account}`}>
     <div className="card-top"><span className="opportunity-id">{record.id}</span><span className={`card-stage-dot ${stage.tone}`} title={stage.label} /><span className="card-menu"><Icon name="dots" size={16} /></span></div>
     <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{record.account.charAt(0)}</span><span>{record.account}</span></div>
     <div className="card-value-row"><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></div>
@@ -231,14 +280,14 @@ function OpportunityRows({ opportunities, view, onEdit }) {
 }
 
 function SecondaryPage({ page, opportunities, onNavigate }) {
-  const grouped = towerNames.map((tower) => ({ tower, count: opportunities.filter((item) => item.tower === tower).length, amount: opportunities.filter((item) => item.tower === tower).reduce((sum, item) => sum + Number(item.amount.replace(/[^0-9]/g, '')), 0) }));
+  const grouped = towerNames.map((tower) => ({ tower, count: opportunities.filter((item) => item.tower === tower).length, amount: opportunities.filter((item) => item.tower === tower).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">MARTES, 10 DE JUNIO</div><h2>Buen día, Martín</h2><p>Este es el pulso de tu actividad comercial QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account} · {item.tower}</small></span><b>{item.amount}</b></div>)}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver oportunidades" onAction={() => onNavigate('opportunities')}><div className="task-list"><p><span className="task-date">12 JUN</span> Revisar alcance con Grupo Albor <small>Data · Lucía Martín</small></p><p><span className="task-date">14 JUN</span> Enviar propuesta a Aceros del Norte <small>SAP · Diego Ramos</small></p><p><span className="task-date">16 JUN</span> Reunión de calificación con Nova Energía <small>Cloud · Carlos Vega</small></p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Preferencias de demostración</h2><p>Los cambios de oportunidades se guardan únicamente en el almacenamiento local de este navegador. No hay una cuenta o sincronización multiusuario conectada.</p><button className="button button-secondary" onClick={() => { localStorage.removeItem(STORAGE_KEY); window.location.reload(); }}>Restaurar datos de ejemplo</button></div></div>;
   if (page === 'clients') return <DataPanel title="Cartera de clientes" description="Las oportunidades influyen en el desarrollo de la cuenta; el valor de negocio corporativo no se suma como ingreso QE." headers={['Cliente', 'Sector', 'Responsable', 'Oportunidades QE', 'Señal de desarrollo', 'Estado']} rows={clients.map((item) => [item.name, item.sector, item.owner, item.opportunities, item.signal, item.status])} />;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
   if (page === 'agreements') return <DataPanel title="Acuerdos vigentes y renovaciones" description="Control de acuerdos marco comerciales. Los contratos y aprobaciones se gestionan en los sistemas corporativos." headers={['ID', 'Acuerdo', 'Cliente', 'Fin de vigencia', 'Responsable', 'Estado']} rows={agreements.map((item) => [item.id, item.title, item.client, item.end, item.owner, item.status])} />;
   if (page === 'crossSelling') return <DataPanel title="Iniciativas de cross-selling" description="Una señal puede registrarse desde una cuenta antes de formalizar una oportunidad comercial." headers={['Cuenta', 'Iniciativa', 'Tower sugerida', 'Oportunidad QE', 'Responsable', 'Estado']} rows={crossSelling.map((item) => [item.account, item.idea, item.tower, item.linked, item.owner, item.status])} />;
-  if (page === 'towers') return <div className="tower-grid">{grouped.map((item) => <article className="tower-card" key={item.tower}><div className="tower-card-heading"><span className="tower-symbol">{item.tower.slice(0, 2).toUpperCase()}</span><span className="tower-card-arrow"><Icon name="arrow" size={16} /></span></div><h3>{item.tower}</h3><p>Torre de servicio</p><div className="tower-stats"><span><strong>{item.count}</strong> oportunidades</span><strong>{formatEuro(item.amount)}</strong></div><button onClick={() => onNavigate('pipeline')}>Ver en pipeline <Icon name="arrow" size={14} /></button></article>)}</div>;
+  if (page === 'towers') return <div className="tower-grid">{grouped.map((item) => <article className="tower-card" key={item.tower}><div className="tower-card-heading"><span className="tower-symbol">{item.tower.slice(0, 2).toUpperCase()}</span><span className="tower-card-arrow"><Icon name="arrow" size={16} /></span></div><h3>{item.tower}</h3><p>Torre de servicio</p><div className="tower-stats"><span><strong>{item.count}</strong> oportunidades</span><strong>{formatCurrency(item.amount)}</strong></div><button onClick={() => onNavigate('pipeline')}>Ver en pipeline <Icon name="arrow" size={14} /></button></article>)}</div>;
   return <Analytics opportunities={opportunities} grouped={grouped} />;
 }
 
@@ -251,24 +300,22 @@ function DataPanel({ title, description, headers, rows }) {
 }
 
 function Analytics({ opportunities, grouped }) {
-  const totalAmount = opportunities.reduce((sum, item) => sum + Number(item.amount.replace(/[^0-9]/g, '')), 0);
+  const totalAmount = opportunities.reduce((sum, item) => sum + parseAmount(item.amount), 0);
   const max = Math.max(...grouped.map((item) => item.count), 1);
-  return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros de la vista local de demostración</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatEuro(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En negociación</span><strong>{opportunities.filter((item) => item.stage === 'negotiation').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
-}
-
-function formatEuro(amount) {
-  return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(amount);
+  return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros de la vista local de demostración</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatCurrency(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En negociación</span><strong>{opportunities.filter((item) => item.stage === 'negotiation').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
 }
 
 function OpportunityDialog({ record, onClose, onSave }) {
   const dialogRef = useRef(null);
+  const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
   const [form, setForm] = useState({
     id: record.id || `O-${String(Date.now()).slice(-4)}`,
-    title: record.title || '', account: record.account || '', amount: record.amount || '',
+    title: record.title || '', account: record.account || '',
     stage: record.stage || 'prospecting', tower: record.tower || 'Data', owner: record.owner || 'Lucía Martín',
     due: record.due || '', tags: record.tags || [],
   });
+  const [amountText, setAmountText] = useState(() => formatAmountInput(record.amount || ''));
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -278,10 +325,31 @@ function OpportunityDialog({ record, onClose, onSave }) {
   }, []);
 
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const handleAmountChange = (event) => {
+    const input = event.target;
+    const caret = input.selectionStart ?? input.value.length;
+    const digitsBefore = input.value.slice(0, caret).replace(/[^0-9,]/g, '').length;
+    const formatted = formatAmountInput(input.value);
+    setAmountText(formatted);
+    window.requestAnimationFrame(() => {
+      const field = amountInputRef.current;
+      if (!field) return;
+      let position = 0;
+      let seen = 0;
+      while (position < formatted.length && seen < digitsBefore) {
+        if (/[0-9,]/.test(formatted[position])) seen += 1;
+        position += 1;
+      }
+      field.setSelectionRange(position, position);
+    });
+  };
+  const handleAmountBlur = () => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')));
   const submit = (event) => {
     event.preventDefault();
-    if (!form.title.trim() || !form.account.trim() || !form.amount.trim()) { setError('Completa el nombre, cliente e importe estimado.'); return; }
-    onSave({ ...form, id: form.id.trim(), title: form.title.trim(), account: form.account.trim(), amount: form.amount.trim(), due: form.due.trim() || 'Por definir' });
+    if (!form.title.trim() || !form.account.trim()) { setError('Completa el nombre y el cliente.'); return; }
+    const amount = parseAmount(amountText);
+    if (!(amount > 0)) { setError('Indica un importe estimado mayor que cero.'); return; }
+    onSave({ ...form, id: form.id.trim(), title: form.title.trim(), account: form.account.trim(), amount: formatCurrency(amount), due: form.due.trim() || 'Por definir' });
   };
 
   return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="dialog-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -290,7 +358,7 @@ function OpportunityDialog({ record, onClose, onSave }) {
       <div className="form-grid">
         <label className="form-field wide">Nombre de la oportunidad *<input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required /></label>
         <label className="form-field">Cliente / cuenta *<input value={form.account} onChange={(event) => update('account', event.target.value)} placeholder="Nombre de la cuenta" required /></label>
-        <label className="form-field">Importe estimado *<input value={form.amount} onChange={(event) => update('amount', event.target.value)} placeholder="Ej. 125.000 €" required /></label>
+        <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
         <label className="form-field">Tower<select value={form.tower} onChange={(event) => update('tower', event.target.value)}>{towerNames.map((tower) => <option key={tower}>{tower}</option>)}</select></label>
         <label className="form-field">Responsable<input value={form.owner} onChange={(event) => update('owner', event.target.value)} placeholder="Nombre y apellido" /></label>
