@@ -455,12 +455,21 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .compact-dialog { width: min(calc(100% - 36px), 470px); }
 .record-actions { margin-top: 16px; padding: 12px; border: 1px solid #e8edf2; border-radius: 8px; background: #fbfcfe; }
 .record-actions h3 { margin: 0 0 9px; color: #334157; font-size: 15px; }
+.action-group { margin-top: 12px; }
+.action-group h4 { margin: 0; color: #526176; font-size: 13px; }
 .action-entry { display: grid; grid-template-columns: 145px minmax(0, 1fr) auto; gap: 7px; }
 .action-entry input, .action-entry select { min-width: 0; height: 34px; padding: 0 9px; border: 1px solid #e2e7ee; border-radius: 5px; background: #fff; color: #354258; font-size: 14px; }
 .action-list { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
-.action-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 8px; border-top: 1px solid #edf0f4; color: #4d5b70; font-size: 14px; }
-.action-list li > span { min-width: 0; overflow-wrap: anywhere; }
+.action-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding-top: 8px; border-top: 1px solid #edf0f4; color: #4d5b70; font-size: 14px; }
+.action-content { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .action-list small { display: block; margin-top: 3px; color: #8c98a8; font-size: 12px; }
+.completed-action { color: #8792a1; text-decoration: line-through; }
+.action-toggle { flex: 0 0 auto; }
+.comment-entry { display: flex; gap: 6px; margin-top: 7px; }
+.comment-entry input { min-width: 0; flex: 1; height: 30px; padding: 0 8px; border: 1px solid #e2e7ee; border-radius: 5px; background: #fff; color: #354258; font-size: 13px; }
+.comment-entry .button { min-height: 30px; padding: 0 8px; }
+.action-comments { display: grid; gap: 5px; margin: 7px 0 0; padding: 7px 0 0 12px; border-top: 1px solid #edf0f4; list-style: disc; }
+.action-comments li { display: list-item; padding: 0; border: 0; font-size: 13px; }
 .empty-actions { margin: 10px 0 0; color: #8792a1; font-size: 13px; }
 @media (max-width: 620px) { .action-entry { grid-template-columns: 1fr auto; } .action-entry select { grid-column: 1 / -1; } }
 

@@ -67,12 +67,17 @@ const SCHEMA_STATEMENTS = [
       status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
   `CREATE TABLE IF NOT EXISTS record_actions (
-      id TEXT PRIMARY KEY, entity_type TEXT NOT NULL CHECK(entity_type IN ('initiative','opportunity')),
-      entity_id TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'action' CHECK(kind IN ('note','action')),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','note')),
-      user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
-      created_at TEXT NOT NULL, completed_at TEXT
-    )`,
+       id TEXT PRIMARY KEY, entity_type TEXT NOT NULL CHECK(entity_type IN ('initiative','opportunity')),
+       entity_id TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'action' CHECK(kind IN ('note','action')),
+       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','note')),
+       user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
+       created_at TEXT NOT NULL, completed_at TEXT
+     )`,
+  `CREATE TABLE IF NOT EXISTS record_action_comments (
+       id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES record_actions(id) ON DELETE CASCADE,
+       user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
+       text TEXT NOT NULL, created_at TEXT NOT NULL
+     )`,
   `CREATE TABLE IF NOT EXISTS entity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL,
       entity_id TEXT NOT NULL, user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -125,6 +130,7 @@ export function applySchema(db) {
     db.exec('ALTER TABLE towers ADD COLUMN responsible_id TEXT REFERENCES people(id)');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_record_action_comments_action ON record_action_comments(action_id, created_at)');
 }
 
 /**

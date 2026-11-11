@@ -842,7 +842,16 @@ function listActions(ctx, req, res, type, rawId) {
     : ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id);
   if (!exists) throw new HttpError(404, 'not_found', 'El registro no existe.');
   const rows = ctx.db.prepare('SELECT * FROM record_actions WHERE entity_type = ? AND entity_id = ? ORDER BY created_at DESC').all(type, id);
-  sendJson(res, 200, { actions: rows.map((row) => ({ id: row.id, text: row.text, kind: row.kind, status: row.status, userName: row.user_name, createdAt: row.created_at, completedAt: row.completed_at })) });
+  const comments = ctx.db.prepare(`SELECT c.id, c.action_id, c.text, c.user_name, c.created_at
+    FROM record_action_comments c JOIN record_actions a ON a.id = c.action_id
+    WHERE a.entity_type = ? AND a.entity_id = ? ORDER BY c.created_at, c.id`).all(type, id);
+  const commentsByAction = new Map();
+  for (const comment of comments) {
+    const actionComments = commentsByAction.get(comment.action_id) ?? [];
+    actionComments.push({ id: comment.id, text: comment.text, userName: comment.user_name, createdAt: comment.created_at });
+    commentsByAction.set(comment.action_id, actionComments);
+  }
+  sendJson(res, 200, { actions: rows.map((row) => ({ id: row.id, text: row.text, kind: row.kind, status: row.status, userName: row.user_name, createdAt: row.created_at, completedAt: row.completed_at, comments: commentsByAction.get(row.id) ?? [] })) });
 }
 
 function listEntityEvents(ctx, req, res, type, rawId) {
@@ -857,31 +866,53 @@ function listEntityEvents(ctx, req, res, type, rawId) {
 async function createAction(ctx, req, res, type, rawId) {
   const user = requireUser(ctx, req);
   const id = decodeId(rawId);
-  const exists = type === 'initiative' ? ctx.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id) : ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id);
-  if (!exists) throw new HttpError(404, 'not_found', 'El registro no existe.');
   const body = await readJson(req);
   const text = parseTextField(body.text, 'acción', 500);
   const kind = body.kind === 'note' ? 'note' : 'action';
   const status = kind === 'note' ? 'note' : 'pending';
   const now = ctx.now().toISOString();
   const actionId = randomUUID();
-  ctx.db.prepare('INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_id,user_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(actionId, type, id, text, kind, status, user.id, user.name, now);
-  appendEntityEvent(ctx.db, { type, id, user, action: 'action_added', detail: { actionId }, now });
-  sendJson(res, 201, { action: { id: actionId, text, kind, status, userName: user.name, createdAt: now, completedAt: null } });
+  withTransaction(ctx.db, () => {
+    const table = type === 'initiative' ? 'initiatives' : 'opportunities';
+    if (!ctx.db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) throw new HttpError(404, 'not_found', 'El registro no existe.');
+    ctx.db.prepare('INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_id,user_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(actionId, type, id, text, kind, status, user.id, user.name, now);
+    appendEntityEvent(ctx.db, { type, id, user, action: 'action_added', detail: { actionId }, now });
+  });
+  sendJson(res, 201, { action: { id: actionId, text, kind, status, userName: user.name, createdAt: now, completedAt: null, comments: [] } });
 }
 
 async function updateAction(ctx, req, res, rawActionId) {
   const user = requireUser(ctx, req);
   const actionId = decodeId(rawActionId);
-  const existing = ctx.db.prepare('SELECT * FROM record_actions WHERE id = ?').get(actionId);
-  if (!existing) throw new HttpError(404, 'not_found', 'La acción no existe.');
   const body = await readJson(req);
   const status = body.status === 'completed' ? 'completed' : body.status === 'pending' ? 'pending' : null;
   if (!status) throw validationError('El estado debe ser pending o completed.');
   const now = ctx.now().toISOString();
-  ctx.db.prepare('UPDATE record_actions SET status = ?, completed_at = ? WHERE id = ?').run(status, status === 'completed' ? now : null, actionId);
-  appendEntityEvent(ctx.db, { type: existing.entity_type, id: existing.entity_id, user, action: status === 'completed' ? 'action_completed' : 'action_reopened', detail: { actionId }, now });
-  sendJson(res, 200, { action: { id: actionId, text: existing.text, kind: existing.kind, status, userName: existing.user_name, createdAt: existing.created_at, completedAt: status === 'completed' ? now : null } });
+  const result = withTransaction(ctx.db, () => {
+    const existing = ctx.db.prepare('SELECT * FROM record_actions WHERE id = ?').get(actionId);
+    if (!existing) throw new HttpError(404, 'not_found', 'La acción no existe.');
+    ctx.db.prepare('UPDATE record_actions SET status = ?, completed_at = ? WHERE id = ?').run(status, status === 'completed' ? now : null, actionId);
+    appendEntityEvent(ctx.db, { type: existing.entity_type, id: existing.entity_id, user, action: status === 'completed' ? 'action_completed' : 'action_reopened', detail: { actionId }, now });
+    return { id: actionId, text: existing.text, kind: existing.kind, status, userName: existing.user_name, createdAt: existing.created_at, completedAt: status === 'completed' ? now : null };
+  });
+  sendJson(res, 200, { action: { ...result, comments: ctx.db.prepare('SELECT id, text, user_name AS userName, created_at AS createdAt FROM record_action_comments WHERE action_id = ? ORDER BY created_at, id').all(actionId) } });
+}
+
+async function createActionComment(ctx, req, res, rawActionId) {
+  const user = requireUser(ctx, req);
+  const actionId = decodeId(rawActionId);
+  const body = await readJson(req);
+  const text = parseTextField(body.text, 'comentario', 500);
+  const now = ctx.now().toISOString();
+  const commentId = randomUUID();
+  const comment = withTransaction(ctx.db, () => {
+    const action = ctx.db.prepare('SELECT * FROM record_actions WHERE id = ?').get(actionId);
+    if (!action || action.kind !== 'action') throw new HttpError(404, 'not_found', 'La acción no existe.');
+    ctx.db.prepare('INSERT INTO record_action_comments (id,action_id,user_id,user_name,text,created_at) VALUES (?,?,?,?,?,?)').run(commentId, actionId, user.id, user.name, text, now);
+    appendEntityEvent(ctx.db, { type: action.entity_type, id: action.entity_id, user, action: 'action_comment_added', detail: { actionId, commentId }, now });
+    return { id: commentId, text, userName: user.name, createdAt: now };
+  });
+  sendJson(res, 201, { comment });
 }
 
 function parseEventLimit(rawLimit) {
@@ -931,6 +962,7 @@ const OPPORTUNITY_EVENTS_PATTERN = /^\/api\/opportunities\/([^/]+)\/events$/;
 const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people)\/([^/]+)$/;
 const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
 const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
+const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;
 const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
 const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
 
@@ -1007,6 +1039,11 @@ async function handleApi(ctx, req, res, pathname, query) {
   if (actionItem) {
     if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
     return updateAction(ctx, req, res, actionItem[1]);
+  }
+  const actionComments = ACTION_COMMENTS_PATTERN.exec(pathname);
+  if (actionComments) {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return createActionComment(ctx, req, res, actionComments[1]);
   }
 
   if (pathname === '/api/opportunities') {

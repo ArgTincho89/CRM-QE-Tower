@@ -149,6 +149,108 @@ describe('CRM API', () => {
     }
   });
 
+  test('members can list and update records created by the admin', async () => {
+    const fresh = await startTestServer();
+    try {
+      const admin = await fresh.register({ email: 'shared-admin@example.com', name: 'Shared Admin' });
+      const member = await fresh.register({ email: 'shared-member@example.com', name: 'Shared Member' });
+      assert.equal(admin.status, 201);
+      assert.equal(admin.body.user.role, 'admin');
+      assert.equal(member.status, 201);
+      assert.equal(member.body.user.role, 'member');
+
+      const client = await fresh.json('POST', '/api/clients', {
+        body: { name: 'Admin Client', sector: 'Technology' }, cookie: admin.cookie,
+      });
+      const firstPerson = await fresh.json('POST', '/api/people', {
+        body: { name: 'Admin Responsible', email: 'admin-responsible@example.com' }, cookie: admin.cookie,
+      });
+      const secondPerson = await fresh.json('POST', '/api/people', {
+        body: { name: 'Replacement Responsible', email: 'replacement@example.com' }, cookie: admin.cookie,
+      });
+      const tower = await fresh.json('POST', '/api/towers', {
+        body: { name: 'Admin Tower', responsibleId: firstPerson.body.record.id }, cookie: admin.cookie,
+      });
+      const initiative = await fresh.json('POST', '/api/initiatives', {
+        body: {
+          title: 'Admin Initiative', clientId: client.body.record.id,
+          towerId: tower.body.record.id, ownerId: firstPerson.body.record.id,
+        },
+        cookie: admin.cookie,
+      });
+      const opportunity = await fresh.json('POST', '/api/opportunities', {
+        body: {
+          ...OPPORTUNITY_PAYLOAD,
+          title: 'Admin Opportunity',
+          clientId: client.body.record.id,
+          towerId: tower.body.record.id,
+          ownerId: firstPerson.body.record.id,
+        },
+        cookie: admin.cookie,
+      });
+      for (const response of [client, firstPerson, secondPerson, tower, initiative, opportunity]) {
+        assert.equal(response.status, 201);
+      }
+
+      const [clients, towers, people, initiatives, opportunities] = await Promise.all([
+        fresh.json('GET', '/api/clients', { cookie: member.cookie }),
+        fresh.json('GET', '/api/towers', { cookie: member.cookie }),
+        fresh.json('GET', '/api/people', { cookie: member.cookie }),
+        fresh.json('GET', '/api/initiatives', { cookie: member.cookie }),
+        fresh.json('GET', '/api/opportunities', { cookie: member.cookie }),
+      ]);
+      for (const response of [clients, towers, people, initiatives, opportunities]) {
+        assert.equal(response.status, 200);
+      }
+      assert.ok(clients.body.records.some((record) => record.id === client.body.record.id));
+      assert.ok(towers.body.records.some((record) => record.id === tower.body.record.id));
+      assert.ok(people.body.records.some((record) => record.id === firstPerson.body.record.id));
+      assert.ok(initiatives.body.initiatives.some((record) => record.id === initiative.body.initiative.id));
+      assert.ok(opportunities.body.opportunities.some((record) => record.id === opportunity.body.opportunity.id));
+
+      const updatedClient = await fresh.json('PATCH', `/api/clients/${client.body.record.id}`, {
+        body: { name: 'Member Client', sector: 'Finance' }, cookie: member.cookie,
+      });
+      const updatedTower = await fresh.json('PATCH', `/api/towers/${tower.body.record.id}`, {
+        body: { name: 'Member Tower', responsibleId: secondPerson.body.record.id }, cookie: member.cookie,
+      });
+      const updatedPerson = await fresh.json('PATCH', `/api/people/${firstPerson.body.record.id}`, {
+        body: { name: 'Member Responsible', email: 'member-responsible@example.com' }, cookie: member.cookie,
+      });
+      const updatedInitiative = await fresh.json('PATCH', `/api/initiatives/${initiative.body.initiative.id}`, {
+        body: { title: 'Member Initiative' }, cookie: member.cookie,
+      });
+      const updatedOpportunity = await fresh.json('PATCH', `/api/opportunities/${opportunity.body.opportunity.id}`, {
+        body: { title: 'Member Opportunity' }, cookie: member.cookie,
+      });
+      for (const response of [updatedClient, updatedTower, updatedPerson, updatedInitiative, updatedOpportunity]) {
+        assert.equal(response.status, 200);
+      }
+
+      const [updatedClients, updatedTowers, updatedPeople, updatedInitiatives, updatedOpportunities] = await Promise.all([
+        fresh.json('GET', '/api/clients', { cookie: member.cookie }),
+        fresh.json('GET', '/api/towers', { cookie: member.cookie }),
+        fresh.json('GET', '/api/people', { cookie: member.cookie }),
+        fresh.json('GET', '/api/initiatives', { cookie: member.cookie }),
+        fresh.json('GET', '/api/opportunities', { cookie: member.cookie }),
+      ]);
+      const savedClient = updatedClients.body.records.find((record) => record.id === client.body.record.id);
+      assert.equal(savedClient.name, 'Member Client');
+      assert.equal(savedClient.sector, 'Finance');
+      const savedTower = updatedTowers.body.records.find((record) => record.id === tower.body.record.id);
+      assert.equal(savedTower.name, 'Member Tower');
+      assert.equal(savedTower.responsibleId, secondPerson.body.record.id);
+      assert.equal(savedTower.responsibleName, 'Replacement Responsible');
+      const savedPerson = updatedPeople.body.records.find((record) => record.id === firstPerson.body.record.id);
+      assert.equal(savedPerson.name, 'Member Responsible');
+      assert.equal(savedPerson.email, 'member-responsible@example.com');
+      assert.equal(updatedInitiatives.body.initiatives.find((record) => record.id === initiative.body.initiative.id).title, 'Member Initiative');
+      assert.equal(updatedOpportunities.body.opportunities.find((record) => record.id === opportunity.body.opportunity.id).title, 'Member Opportunity');
+    } finally {
+      await fresh.cleanup();
+    }
+  });
+
   test('registration is closed when INVITE_CODE is not configured', async () => {
     const closed = await startTestServer({ inviteCode: '' });
     try {
@@ -437,6 +539,19 @@ describe('CRM API', () => {
     assert.equal(note.body.action.kind, 'note');
     assert.equal(note.body.action.status, 'note');
     assert.equal(action.body.action.status, 'pending');
+    assert.deepEqual(action.body.action.comments, []);
+    const comment = await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text: 'Confirmar disponibilidad' }, cookie: session });
+    assert.equal(comment.status, 201);
+    assert.equal(comment.body.comment.text, 'Confirmar disponibilidad');
+    assert.equal(comment.body.comment.userName, 'Ada Lovelace');
+    assert.ok(Number.isFinite(Date.parse(comment.body.comment.createdAt)));
+    assert.equal((await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text: 'Unauthorized' } })).status, 401);
+    assert.equal((await app.json('POST', `/api/actions/${note.body.action.id}/comments`, { body: { text: 'No corresponde' }, cookie: session })).status, 404);
+    for (const text of ['', '   ', 'x'.repeat(501)]) {
+      const invalidComment = await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text }, cookie: session });
+      assert.equal(invalidComment.status, 400);
+      assert.equal(invalidComment.body.error.code, 'validation_error');
+    }
     const completed = await app.json('PATCH', `/api/actions/${action.body.action.id}`, { body: { status: 'completed' }, cookie: session });
     assert.equal(completed.body.action.status, 'completed');
     const actions = await app.json('GET', `/api/initiatives/${created.body.initiative.id}/actions`, { cookie: session });
@@ -444,9 +559,26 @@ describe('CRM API', () => {
     assert.equal(actions.body.actions.find((item) => item.id === action.body.action.id).userName, 'Ada Lovelace');
     assert.equal(actions.body.actions.find((item) => item.id === action.body.action.id).status, 'completed');
     assert.equal(actions.body.actions.find((item) => item.id === note.body.action.id).text, 'Alinear alcance');
+    assert.deepEqual(actions.body.actions.find((item) => item.id === action.body.action.id).comments, [comment.body.comment]);
+    assert.deepEqual(actions.body.actions.find((item) => item.id === note.body.action.id).comments, []);
+    const reopened = await app.json('PATCH', `/api/actions/${action.body.action.id}`, { body: { status: 'pending' }, cookie: session });
+    assert.equal(reopened.body.action.status, 'pending');
+    assert.equal(reopened.body.action.completedAt, null);
     const audit = await app.json('GET', `/api/initiatives/${created.body.initiative.id}/events`, { cookie: session });
     assert.ok(audit.body.events.some((event) => event.action === 'action_added'));
     assert.ok(audit.body.events.some((event) => event.action === 'action_completed'));
+    assert.ok(audit.body.events.some((event) => event.action === 'action_reopened'));
+    assert.ok(audit.body.events.some((event) => event.action === 'action_comment_added' && event.detail.commentId === comment.body.comment.id));
+
+    app.db.exec(`CREATE TRIGGER reject_action_comment_event BEFORE INSERT ON entity_events
+      WHEN NEW.action = 'action_comment_added' BEGIN SELECT RAISE(ABORT, 'rejected'); END`);
+    try {
+      const failedComment = await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text: 'Must roll back' }, cookie: session });
+      assert.equal(failedComment.status, 500);
+      assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM record_action_comments WHERE action_id = ?').get(action.body.action.id).count, 1);
+    } finally {
+      app.db.exec('DROP TRIGGER reject_action_comment_event');
+    }
 
     const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo de soporte', clientId: client.body.record.id }, cookie: session });
     assert.equal(agreement.status, 201);
@@ -492,6 +624,8 @@ describe('CRM API', () => {
     const id = created.body.opportunity.id;
     const action = await app.json('POST', `/api/opportunities/${id}/actions`, { body: { text: 'Preparar propuesta' }, cookie: session });
     assert.equal(action.status, 201);
+    const comment = await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text: 'Revisar versión final' }, cookie: session });
+    assert.equal(comment.status, 201);
     assert.ok(app.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get(id));
     assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id));
 
@@ -500,6 +634,7 @@ describe('CRM API', () => {
     assert.equal(deleted.body.deleted, true);
     assert.equal(app.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id), undefined);
     assert.equal(app.db.prepare('SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('opportunity', id), undefined);
+    assert.equal(app.db.prepare('SELECT id FROM record_action_comments WHERE action_id = ?').get(action.body.action.id), undefined);
     assert.equal(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id), undefined);
     assert.equal(app.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get(id), undefined);
     assert.equal((await app.json('GET', `/api/opportunities/${id}/events`, { cookie: session })).status, 404);

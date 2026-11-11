@@ -82,3 +82,4 @@ export const createAgreement = (body) => request('/agreements', { method: 'POST'
 export const listActions = (type, id) => request(`/${type}/${encodeURIComponent(id)}/actions`);
 export const createAction = (type, id, body) => request(`/${type}/${encodeURIComponent(id)}/actions`, { method: 'POST', body });
 export const updateAction = (id, body) => request(`/actions/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+export const createActionComment = (id, body) => request(`/actions/${encodeURIComponent(id)}/comments`, { method: 'POST', body });

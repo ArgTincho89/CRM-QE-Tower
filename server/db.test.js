@@ -14,7 +14,7 @@ function count(db, table) {
 test('a fresh database contains no demo or business records', () => {
   const temp = createTempDatabase();
   try {
-    for (const table of ['opportunities', 'initiatives', 'clients', 'towers', 'people', 'framework_agreements', 'card_events', 'record_actions']) {
+    for (const table of ['opportunities', 'initiatives', 'clients', 'towers', 'people', 'framework_agreements', 'card_events', 'record_actions', 'record_action_comments']) {
       assert.equal(count(temp.db, table), 0, `${table} should be empty on first boot`);
     }
     assert.equal(seedDatabase(temp.db), 0);
@@ -67,6 +67,20 @@ test('deleting an opportunity cascades to its append-only history rows', () => {
     assert.equal(count(temp.db, 'card_events'), 1);
     temp.db.prepare('DELETE FROM opportunities WHERE id = ?').run('O-0001');
     assert.equal(count(temp.db, 'card_events'), 0);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('deleting an action cascades to its comments', () => {
+  const temp = createTempDatabase();
+  try {
+    const now = new Date().toISOString();
+    temp.db.prepare(`INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_name,created_at) VALUES ('action-1','opportunity','O-0001','Prepare review','action','pending','Test User',?)`).run(now);
+    temp.db.prepare(`INSERT INTO record_action_comments (id,action_id,user_name,text,created_at) VALUES ('comment-1','action-1','Test User','Check the latest draft',?)`).run(now);
+    assert.equal(count(temp.db, 'record_action_comments'), 1);
+    temp.db.prepare('DELETE FROM record_actions WHERE id = ?').run('action-1');
+    assert.equal(count(temp.db, 'record_action_comments'), 0);
   } finally {
     temp.cleanup();
   }
