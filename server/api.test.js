@@ -69,6 +69,16 @@ describe('CRM API', () => {
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   });
 
+  test('GET /api/version is public and returns the package.json version', async () => {
+    const { readFileSync } = await import('node:fs');
+    const expected = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    const response = await fetch(`${app.baseUrl}/api/version`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { version: expected });
+    const post = await fetch(`${app.baseUrl}/api/version`, { method: 'POST', headers: { origin: app.baseUrl } });
+    assert.equal(post.status, 405);
+  });
+
   test('malformed and oversized JSON bodies are rejected with typed errors', async () => {
     const invalid = await fetch(`${app.baseUrl}/api/auth/login`, {
       method: 'POST',

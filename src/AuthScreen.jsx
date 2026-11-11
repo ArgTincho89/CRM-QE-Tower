@@ -3,7 +3,7 @@ import { login, register } from './api.js';
 
 const MIN_PASSWORD_LENGTH = 8;
 
-export default function AuthScreen({ onAuthenticated }) {
+export default function AuthScreen({ onAuthenticated, version = '' }) {
   const [mode, setMode] = useState('login');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -81,6 +81,7 @@ export default function AuthScreen({ onAuthenticated }) {
             <span className="eyebrow">SEIDOR · QUALITY ENGINEERING</span>
             <h1 id="auth-title">CRM QE</h1>
             <p>Tablero comercial compartido del equipo QE.</p>
+            {version && <small className="auth-version">v{version}</small>}
           </div>
         </div>
 

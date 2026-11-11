@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import {
   clearSessionCookie,
@@ -637,6 +638,15 @@ function setSessionCookie(ctx, res, token) {
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+// Single version source: package.json, read once at startup.
+const APP_VERSION = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
+
+function version(res) {
+  sendJson(res, 200, { version: APP_VERSION });
+}
 
 function health(ctx, res) {
   sendJson(res, 200, { status: 'ok', time: ctx.now().toISOString() });
@@ -1460,6 +1470,11 @@ async function handleApi(ctx, req, res, pathname, query) {
   if (pathname === '/api/health') {
     if (req.method !== 'GET') return rejectMethod(res, 'GET');
     return health(ctx, res);
+  }
+
+  if (pathname === '/api/version') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return version(res);
   }
 
   if (pathname === '/api/auth/register') {

@@ -3,8 +3,9 @@ import { initiativeCategories, initiativePriorities, initiativeStages, initiativ
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
+import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
 import { createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, restoreInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
+import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, restoreInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -86,6 +87,7 @@ function App() {
   const [lobs, setLobs] = useState([]);
   const [people, setPeople] = useState([]);
   const [initiatives, setInitiatives] = useState([]);
+  const [appVersion, setAppVersion] = useState('');
   const [agreements, setAgreements] = useState([]);
   const [oppState, setOppState] = useState('loading');
   const [page, setPage] = useState('pipeline');
@@ -121,6 +123,13 @@ function App() {
     if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = window.setTimeout(() => setNotice(''), 2600);
   };
+
+  // Single version source: package.json, served by GET /api/version.
+  useEffect(() => {
+    let cancelled = false;
+    getVersion().then(({ version }) => { if (!cancelled) setAppVersion(String(version || '')); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Resolve the session on first load.
   useEffect(() => {
@@ -498,13 +507,14 @@ function App() {
   }
 
   if (session.status === 'anonymous') {
-    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+    return <AuthScreen onAuthenticated={handleAuthenticated} version={appVersion} />;
   }
 
   const user = session.user;
   const activePage = page === 'home' ? 'home' : page;
   const [title, subtitle] = pageTitles[activePage] || pageTitles.pipeline;
   const opportunityMetric = opportunities.length;
+  const weightedPipeline = computeWeightedPipeline(opportunities);
 
   return (
     <div className="app-shell">
@@ -516,7 +526,7 @@ function App() {
             <Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'pipeline' && <span className="nav-count">{opportunities.length}</span>}
           </button>)}
         </nav>
-        <div className="sidebar-footer"><span className="footer-dot" /> CRM QE <span className="footer-version">v1.0</span></div>
+        <div className="sidebar-footer"><span className="footer-dot" /> CRM QE <span className="footer-version">{appVersion ? `v${appVersion}` : ''}</span></div>
       </aside>
       {mobileNav && <button className="nav-backdrop" aria-label="Cerrar navegación" onClick={() => setMobileNav(false)} />}
 
@@ -538,7 +548,7 @@ function App() {
         <div className="content-wrap">
           <div className="page-heading">
             <div><div className="eyebrow"><span className="eyebrow-dot" /> ESPAÑA <span className="eyebrow-divider">/</span> QUALITY ENGINEERING</div><h1>{title}</h1><p>{subtitle}</p></div>
-            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{(['initiatives', 'crossSelling'].includes(page) || page === 'pipeline') && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
+            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
           </div>
 
           {page === 'pipeline' ? <>
@@ -548,7 +558,8 @@ function App() {
               <Kpi icon="arrow" color="orange" label="Propuestas externas" value={String(proposals.filter((item) => item.type === 'Externa').length)} detail="Datos de referencia" />
               <Kpi icon="file" color="teal" label="Propuestas internas / Estimaciones" value={String(proposals.filter((item) => item.type === 'Interna').length)} detail="Datos de referencia" />
               <Kpi icon="layers" color="blue" label="Acuerdos Marco" value={String(agreements.filter((item) => item.status === 'active').length)} detail="Registros activos" />
-              <Kpi icon="chart" color="green" label="Pipeline QE" value={formatCurrency([...opportunities, ...initiatives].reduce((sum, item) => sum + parseAmount(item.amount), 0))} detail="Valor estimado" />
+              <Kpi icon="chart" color="green" label="Pipeline QE" value={formatCurrency(computePipelineQe(opportunities))} detail="Importe × participación QA" />
+              {weightedPipeline !== null && <Kpi icon="target" color="violet" label="Ponderado por probabilidad" value={formatCurrency(weightedPipeline)} detail="Oportunidades con probabilidad; no suma al Pipeline QE" />}
             </section>
             <div className="pipeline-toolbar">
               <div className="toolbar-title"><h2>Pipeline comercial</h2><span className="live-pill"><span /> Actualizado ahora</span></div>
@@ -560,7 +571,7 @@ function App() {
                 <div className="view-switch" aria-label="Tipo de vista">{[['kanban', 'grid', 'Kanban'], ['list', 'list', 'Lista'], ['table', 'table', 'Tabla']].map(([id, icon, label]) => <button key={id} title={label} aria-label={`Vista ${label}`} aria-pressed={view === id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon name={icon} size={16} /></button>)}</div>
               </div>
             </div>
-            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
+            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} services={services} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
             <div className="results-line"><span><strong>{page === 'pipeline' ? (view === 'kanban' ? advancedFilteredPipelineCards.length : filteredPipelineOpportunities.length) : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
             {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
@@ -586,7 +597,7 @@ function Kpi({ icon, color, label, value, detail, trend }) {
   return <article className="kpi-card"><div className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></div><div className="kpi-content"><span>{label}</span><div className="kpi-value-row"><strong>{value}</strong>{trend && <span className="trend-badge">↗ 20%</span>}</div><small>{detail}</small></div></article>;
 }
 
-function AdvancedFilters({ filters, people, hidden, onChange }) {
+function AdvancedFilters({ filters, people, services = [], lobs = [], towers = [], hidden, onChange }) {
   const field = (name, label, type = 'text', options = null) => (
     <label className="advanced-filter-field" key={name}>
       <span>{label}</span>
@@ -596,15 +607,15 @@ function AdvancedFilters({ filters, people, hidden, onChange }) {
     </label>
   );
   return <section className="advanced-filters-panel" id="advanced-filters-panel" aria-label="Filtros avanzados del pipeline" hidden={hidden}>
-    {field('entityType', 'Tipo de registro', 'text', [['all', 'Todos'], ['opportunity', 'Oportunidad'], ['initiative', 'Iniciativa']])}
     {field('account', 'Cliente / cuenta')}
-    {field('category', 'Categoría de iniciativa', 'text', [['all', 'Todas'], ...initiativeCategories.map((category) => [category, category])])}
+    {field('serviceId', 'Servicio', 'text', [['all', 'Todos'], ...services.map((item) => [item.id, item.active === false ? `${item.name} (inactivo)` : item.name])])}
+    {field('lobId', 'LoB', 'text', [['all', 'Todas'], ...lobs.map((item) => [item.id, item.name])])}
+    {field('towerId', 'Tower', 'text', [['all', 'Todas'], ...towers.map((item) => [item.id, item.name])])}
     {field('bidManagerId', 'Bid Manager', 'text', [['all', 'Todos'], ...people.map((person) => [person.id, person.name])])}
     {field('minAmount', 'Importe mínimo', 'number')}
     {field('maxAmount', 'Importe máximo', 'number')}
     {field('minQaPercent', 'QA mínimo (%)', 'number')}
     {field('maxQaPercent', 'QA máximo (%)', 'number')}
-    {field('status', 'Estado de iniciativa')}
     {field('externalNumber', 'N.º externo')}
     {field('due', 'Próximo hito')}
     {field('tags', 'Etiquetas')}

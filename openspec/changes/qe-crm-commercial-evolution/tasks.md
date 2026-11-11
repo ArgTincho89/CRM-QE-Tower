@@ -65,12 +65,12 @@ Delivery: feature-branch chain on `feat/qe-crm-evolution`; PR #1 targets the tra
 
 ## 7. Pipeline QE, filters, version surfaces
 
-- [ ] 7.1 Pipeline QE = Σ `amount × qa_percent / 100` over active opportunities only; global across filters.
-- [ ] 7.2 Opportunity probability-weighted amount shown separately, only when probability exists.
-- [ ] 7.3 Entity-scoped filters for Services/LoB/Towers and archive state.
-- [ ] 7.4 `GET /api/version` from `package.json`; render on login and sidebar footer.
-- [ ] 7.5 Bump `package.json` to `1.1.0` and update README persistence/version notes.
-- [ ] 7.6 Tests for KPI scope, weighted amounts, version endpoint, and filter behavior.
+- [x] 7.1 Pipeline QE = Σ `amount × qa_percent / 100` over active opportunities only; global across filters.
+- [x] 7.2 Opportunity probability-weighted amount shown separately, only when probability exists.
+- [x] 7.3 Entity-scoped filters for Services/LoB/Towers and archive state.
+- [x] 7.4 `GET /api/version` from `package.json`; render on login and sidebar footer.
+- [x] 7.5 Bump `package.json` to `1.1.0` and update README persistence/version notes.
+- [x] 7.6 Tests for KPI scope, weighted amounts, version endpoint, and filter behavior.
 
 ## Verification Gate
 

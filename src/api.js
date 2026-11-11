@@ -47,6 +47,7 @@ async function request(path, { method = 'GET', body } = {}) {
   return payload;
 }
 
+export const getVersion = () => request('/version');
 export const getMe = () => request('/me');
 export const login = (body) => request('/auth/login', { method: 'POST', body });
 export const register = (body) => request('/auth/register', { method: 'POST', body });

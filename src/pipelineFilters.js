@@ -2,15 +2,15 @@ import { parseAmount } from './money.js';
 
 export function createDefaultAdvancedFilters() {
   return {
-    entityType: 'all',
     account: '',
-    category: 'all',
+    serviceId: 'all',
+    lobId: 'all',
+    towerId: 'all',
     bidManagerId: 'all',
     minAmount: '',
     maxAmount: '',
     minQaPercent: '',
     maxQaPercent: '',
-    status: '',
     externalNumber: '',
     due: '',
     tags: '',
@@ -37,12 +37,21 @@ function withinDateRange(value, from, to) {
   return (!from || date >= from) && (!to || date <= to);
 }
 
+function hasRelation(list, id) {
+  return id === 'all' || (Array.isArray(list) && list.some((item) => item.id === id));
+}
+
+/**
+ * Filters Opportunity cards. The Pipeline page only shows Opportunities, so
+ * Initiative-specific criteria (record type, category, status) do not exist here.
+ * Services, LoBs, and Towers are matched independently against each many-to-many
+ * relation; selecting a Tower never implies a LoB.
+ */
 export function filterPipelineCards(cards, filters) {
   return cards.filter((record) => {
-    const isInitiative = record.entityType === 'initiative';
-    if (filters.entityType !== 'all' && filters.entityType !== record.entityType) return false;
-    if (filters.category !== 'all' && (!isInitiative || record.category !== filters.category)) return false;
-    if (filters.status && (!isInitiative || !includesText(record.status, filters.status))) return false;
+    if (!hasRelation(record.services, filters.serviceId)) return false;
+    if (!hasRelation(record.lobs, filters.lobId)) return false;
+    if (!hasRelation(record.towers, filters.towerId)) return false;
 
     if (!includesText(`${record.account || ''} ${record.clientId || ''}`, filters.account)) return false;
     if (filters.bidManagerId !== 'all' && record.bidManagerId !== filters.bidManagerId) return false;
@@ -52,13 +61,10 @@ export function filterPipelineCards(cards, filters) {
     if (!withinDateRange(record.createdAt, filters.createdFrom, filters.createdTo)) return false;
     if (!withinDateRange(record.updatedAt, filters.updatedFrom, filters.updatedTo)) return false;
 
-    // Opportunity-only filters are ignored for initiatives unless category/status/type explicitly selects them.
-    if (!isInitiative) {
-      if (!includesText(record.number, filters.externalNumber)) return false;
-      if (!includesText(record.due, filters.due)) return false;
-      const tags = Array.isArray(record.tags) ? record.tags.join(' ') : record.tags;
-      if (!includesText(tags, filters.tags)) return false;
-    }
+    if (!includesText(record.number, filters.externalNumber)) return false;
+    if (!includesText(record.due, filters.due)) return false;
+    const tags = Array.isArray(record.tags) ? record.tags.join(' ') : record.tags;
+    if (!includesText(tags, filters.tags)) return false;
     return true;
   });
 }

@@ -11,9 +11,11 @@ npm run dev
 
 Create a production bundle with `npm run build`, or serve the bundle locally with `npm run preview`.
 
-## Demo data and persistence
+## Persistence and versioning
 
-The first browser visit seeds the opportunity board with example records. Opportunity edits and new records are stored in that browser's `localStorage`; clearing site data restores the examples. This is demo-only persistence: data is not backed up, shared between users, synchronized across devices, or durable like a database. Other modules currently show illustrative read-only data. No backend, corporate CRM integration, authentication, or authorization is connected.
+Data is stored server-side in SQLite behind an authenticated Node API (`server/`); the browser holds only the session cookie. Records are shared between authenticated users and survive restarts as long as the SQLite volume is preserved. Run `npm start` to serve the API and the built bundle. No corporate CRM integration is connected.
+
+The application version has a single source, the `version` field in `package.json`. The server exposes it at `GET /api/version`, and the UI shows it on the login screen and in the sidebar footer. Every production deployment must bump it with compatibility-based SemVer: patch for fixes, copy, or visual changes; minor for compatible capabilities; major for breaking workflow, API, or data-contract changes. Current version: 1.1.0.
 
 Opportunity value is an estimate for the QE pipeline. It must not be interpreted as contracted QE revenue or as the value of a deal influenced in the corporate CRM. Proposals and estimates remain separate from opportunities and link to them using an opportunity ID where available.
 
