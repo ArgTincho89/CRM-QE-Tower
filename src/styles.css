@@ -163,7 +163,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .card-value-row { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin: 4px 0 5px; }
 .card-value-row strong { color: #39465a; font-size: 14px; font-weight: 700; white-space: nowrap; }
 .tower-pill { overflow: hidden; max-width: 91px; padding: 2px 5px; border-radius: 999px; background: #eff4fa; color: #546b87; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.card-bottom { display: flex; align-items: center; justify-content: space-between; min-height: 18px; padding-top: 3px; border-top: 1px solid #edf0f4; }
+.card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 4px; flex-wrap: wrap; min-height: 18px; padding-top: 3px; border-top: 1px solid #edf0f4; }
 .card-date { display: flex; align-items: center; gap: 4px; color: #929dad; font-size: 12px; white-space: nowrap; }
 .card-owner { display: flex; align-items: center; }
 .show-more { width: 100%; min-height: 21px; margin-top: 5px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #1268d5; font-size: 13px; font-weight: 700; text-align: left; cursor: pointer; }
@@ -450,6 +450,19 @@ h1, h2, h3, h4, p { margin-top: 0; }
 
 .inline-link { justify-self: start; padding: 0; border: 0; background: transparent; color: #176ccf; font-size: 13px; cursor: pointer; }
 .inline-link:hover { text-decoration: underline; }
+.form-field textarea { width: 100%; padding: 8px 10px; border: 1px solid #e2e7ee; border-radius: 5px; background: white; color: #354258; font: inherit; font-weight: 400; resize: vertical; }
+.relation-field { display: grid; gap: 6px; margin: 16px 0 0; padding: 0; border: 0; }
+.relation-field > legend { padding: 0; color: #59677c; font-size: 13px; font-weight: 600; }
+.relation-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.relation-option { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #e2e7ee; border-radius: 999px; background: white; color: #546b87; font-size: 12px; cursor: pointer; }
+.relation-option.selected { border-color: #bcd4f4; background: #eef5fd; color: #176ccf; }
+.relation-option input { margin: 0; }
+.link-editor { display: grid; gap: 6px; }
+.link-row { display: grid; grid-template-columns: 1fr 2fr auto; gap: 6px; align-items: center; }
+.link-row input { height: 34px; padding: 0 10px; border: 1px solid #e2e7ee; border-radius: 5px; }
+.weighted-amount { display: block; color: #6b7a90; font-size: 11px; }
+.pep-pill { padding: 2px 6px; border-radius: 999px; background: #eaf8f0; color: #3e9870; font-size: 11px; font-weight: 600; }
+@media (max-width: 720px) { .link-row { grid-template-columns: 1fr; } }
 .master-actions { display: flex; gap: 6px; align-items: center; }
 .master-actions .button { min-height: 30px; padding: 0 9px; }
 .compact-dialog { width: min(calc(100% - 36px), 470px); }

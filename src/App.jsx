@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { proposals, stages } from './data.js';
+import { opportunityOrigins, opportunityOutcomes, proposals, stages } from './data.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getMe, login, logout, listOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, createInitiative, updateInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
+import { getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, createInitiative, updateInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -97,6 +97,9 @@ function App() {
   const [view, setView] = useState('kanban');
   const [expandedColumns, setExpandedColumns] = useState({});
   const [editing, setEditing] = useState(null);
+  const [archivedOpportunities, setArchivedOpportunities] = useState([]);
+  const [archivedView, setArchivedView] = useState(false);
+  const [archivedLoading, setArchivedLoading] = useState(false);
   const [editingInitiative, setEditingInitiative] = useState(null);
   const [editingAgreement, setEditingAgreement] = useState(null);
   const [masterEditing, setMasterEditing] = useState(null);
@@ -289,7 +292,7 @@ function App() {
 
   const deleteBoardCard = async (record) => {
     const typeLabel = record.entityType === 'initiative' ? 'iniciativa' : 'oportunidad';
-    if (!window.confirm(`¿Eliminar la ${typeLabel} «${record.title}»? Esta acción es irreversible y eliminará la tarjeta seleccionada junto con sus acciones e historial.`)) return false;
+    if (!window.confirm(`¿Archivar la ${typeLabel} «${record.title}»? Se ocultará del tablero activo y podrás restaurarla con todo su historial.`)) return false;
     try {
       if (record.entityType === 'initiative') {
         await deleteInitiative(record.id);
@@ -298,11 +301,40 @@ function App() {
         await deleteOpportunity(record.id);
         setOpportunities((current) => current.filter((item) => item.id !== record.id));
       }
-      showNotice(`Se eliminó la ${typeLabel} «${record.title}».`);
+      showNotice(`Se archivó la ${typeLabel} «${record.title}».`);
       return true;
     } catch (err) {
-      showNotice(err?.message || `No se pudo eliminar la ${typeLabel}.`, 'error');
+      showNotice(err?.message || `No se pudo archivar la ${typeLabel}.`, 'error');
       return false;
+    }
+  };
+
+  const loadArchivedOpportunities = async () => {
+    setArchivedLoading(true);
+    try {
+      const { opportunities: list } = await listArchivedOpportunities();
+      setArchivedOpportunities(Array.isArray(list) ? list : []);
+    } catch (err) {
+      showNotice(err?.message || 'No se pudieron cargar las oportunidades archivadas.', 'error');
+    } finally {
+      setArchivedLoading(false);
+    }
+  };
+
+  const toggleArchivedView = () => {
+    const next = !archivedView;
+    setArchivedView(next);
+    if (next) loadArchivedOpportunities();
+  };
+
+  const restoreArchivedOpportunity = async (record) => {
+    try {
+      const { opportunity } = await restoreOpportunity(record.id);
+      setArchivedOpportunities((current) => current.filter((item) => item.id !== opportunity.id));
+      setOpportunities((current) => [opportunity, ...current]);
+      showNotice(`Se restauró la oportunidad «${opportunity.title}».`);
+    } catch (err) {
+      showNotice(err?.message || 'No se pudo restaurar la oportunidad.', 'error');
     }
   };
 
@@ -327,6 +359,19 @@ function App() {
         bidManagerId: record.bidManagerId || '',
         qaPercent: Number(record.qaPercent || 0),
         closureReason: record.closureReason || '',
+        origin: record.origin || '',
+        probability: record.probability === '' || record.probability === null ? null : Number(record.probability),
+        expectedCloseDate: record.expectedCloseDate || '',
+        nextMilestone: record.nextMilestone || '',
+        nextMilestoneDate: record.nextMilestoneDate || '',
+        need: record.need || '',
+        initiativeId: record.initiativeId || '',
+        outcome: record.outcome || '',
+        pep: record.pep || '',
+        towerIds: record.towerIds || [],
+        lobIds: record.lobIds || [],
+        serviceIds: record.serviceIds || [],
+        links: record.links || [],
       };
       let opportunity;
       if (isExisting && record.id) {
@@ -497,12 +542,12 @@ function App() {
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
             {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onDelete={deleteBoardCard} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
           </> : page === 'opportunities'
-            ? <OpportunityManagementPanel opportunities={opportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason}`.toLowerCase().includes(query.trim().toLowerCase()))} onEdit={setEditing} loading={oppState === 'loading'} error={oppState === 'error'} onRetry={reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} />
+            ? <OpportunityManagementPanel opportunities={archivedView ? archivedOpportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason} ${item.archivedByName}`.toLowerCase().includes(query.trim().toLowerCase())) : opportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason}`.toLowerCase().includes(query.trim().toLowerCase()))} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} />
             : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteTower={removeTower} onEditAgreement={setEditingAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
-      {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
+      {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
       {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} towers={towers} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} />}
       {editingAgreement !== null && <AgreementDialog clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
       {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} lobs={lobs} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
@@ -647,7 +692,8 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete
       <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : record.number && <span className="external-opportunity-number">N.º {record.number}</span>}<span className={`card-stage-dot ${stage?.tone || ''}`} title={stage?.label || record.stage} /></div>
       <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
       <div className="card-value-row"><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></div>
-      <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'clock' : record.due.includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? record.statusLabel : record.due}</span><span className="card-owner"><Avatar name={record.owner} compact /></span></div>
+      {!isInitiative && record.weightedAmount !== null && record.weightedAmount !== undefined && <small className="weighted-amount">Ponderado: {formatCurrency(Number(record.weightedAmount))}</small>}
+      <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'clock' : (record.due || '').includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? record.statusLabel : (record.due || 'Por definir')}</span>{!isInitiative && record.outcome && <span className={`status-pill ${opportunityOutcomes.find((item) => item.id === record.outcome)?.tone || 'gray'}`}>{opportunityOutcomes.find((item) => item.id === record.outcome)?.label || record.outcome}</span>}{!isInitiative && record.pep && <span className="pep-pill" title={record.pep}>PEP</span>}<span className="card-owner"><Avatar name={record.owner} compact /></span></div>
     </button>
     <div className="card-menu-container" ref={menuRef} data-card-menu>
       <button type="button" className="card-menu-button" ref={triggerRef} draggable={false} aria-label={`Opciones de ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}><Icon name="dots" size={16} /></button>
@@ -685,26 +731,27 @@ function DataPanel({ title, description, headers, rows }) {
   return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{rows.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{headers.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={`${row[0]}-${index}`}>{row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cellIndex === row.length - 1 ? <span className={`status-pill ${String(cell).toLowerCase().includes('vigente') || cell === 'Activo' || cell === 'Ganada' ? 'green' : 'violet'}`}>{cell}</span> : cell}</td>)}</tr>)}</tbody></table></div><div className="panel-footnote"><span className="info-mark">i</span> Los datos de propuestas y estimaciones se conservan como referencia mientras se define su gestión persistente.</div></section>;
 }
 
-function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, searchQuery, onClearSearch }) {
+function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, searchQuery, onClearSearch, archivedView, onToggleArchived, onRestore }) {
   return <section className="secondary-panel opportunity-management-panel">
     <div className="secondary-panel-heading">
-      <div><h2>Oportunidades</h2><p>Registros comerciales independientes de las iniciativas.</p></div>
-      <span className="record-count">{opportunities.length} registros</span>
+      <div><h2>{archivedView ? 'Oportunidades archivadas' : 'Oportunidades'}</h2><p>{archivedView ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.' : 'Registros comerciales independientes de las iniciativas.'}</p></div>
+      <div className="heading-actions"><span className="record-count">{opportunities.length} registros</span><button className="button button-secondary" onClick={onToggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver activas' : 'Ver archivadas'}</button></div>
     </div>
-    {loading && <div className="board-state"><p>Cargando oportunidades…</p></div>}
+    {loading && <div className="board-state"><p>{archivedView ? 'Cargando oportunidades archivadas…' : 'Cargando oportunidades…'}</p></div>}
     {error && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={onRetry}>Reintentar</button></div>}
     {!loading && !error && <div className="table-wrap"><table className="data-table opportunity-management-table"><thead><tr>
       <th>ID interno</th><th>N.º externo</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
     </tr></thead><tbody>{opportunities.map((item) => {
       const stage = stages.find((entry) => entry.id === item.stage);
       return <tr key={item.id}>
-        <td>{item.id}</td><td>{item.number || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td>
+        <td>{item.id}</td><td>{item.number || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
         <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td>{item.tower || '—'}</td>
         <td>{item.owner || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
-        <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td><td><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button></td>
+        <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
+        <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button>}</td>
       </tr>;
     })}</tbody></table>
-    {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{searchQuery ? 'No hay oportunidades que coincidan con la búsqueda.' : 'Todavía no hay oportunidades.'}</p>{searchQuery && <button className="button button-secondary" onClick={onClearSearch}>Limpiar búsqueda</button>}</div>}
+    {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{searchQuery ? `No hay oportunidades archivadas que coincidan con la búsqueda.` : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{searchQuery && <button className="button button-secondary" onClick={onClearSearch}>Limpiar búsqueda</button>}</div>}
     </div>}
   </section>;
 }
@@ -715,7 +762,19 @@ function Analytics({ opportunities, grouped }) {
   return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros del pipeline actual</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatCurrency(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En propuesta</span><strong>{opportunities.filter((item) => item.stage === 'proposal').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
 }
 
-function OpportunityDialog({ record, clients, towers, people, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh }) {
+function RelationPicker({ legend, hint, options, selected, onChange, disabled }) {
+  return <fieldset className="relation-field">
+    <legend>{legend}</legend>
+    {hint && <span className="field-hint">{hint}</span>}
+    <div className="relation-options">
+      {options.length === 0
+        ? <span className="field-hint">No hay opciones disponibles.</span>
+        : options.map((option) => <label key={option.id} className={`relation-option${selected.includes(option.id) ? ' selected' : ''}`}><input type="checkbox" checked={selected.includes(option.id)} onChange={() => onChange(selected.includes(option.id) ? selected.filter((id) => id !== option.id) : [...selected, option.id])} disabled={disabled} /><span>{option.name}</span></label>)}
+    </div>
+  </fieldset>;
+}
+
+function OpportunityDialog({ record, clients, towers, services, lobs, people, initiatives, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh }) {
   const dialogRef = useRef(null);
   const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
@@ -724,7 +783,14 @@ function OpportunityDialog({ record, clients, towers, people, onQuickCreate, onC
     title: record.title || '', account: record.account || '',
     stage: record.stage || 'prospecting', tower: record.tower || '', owner: record.owner || '',
     due: record.due || '', tags: record.tags || [], number: record.number || '',
-    clientId: record.clientId || '', towerId: record.towerId || '', ownerId: record.ownerId || '', bidManagerId: record.bidManagerId || '', qaPercent: record.qaPercent ?? 0, closureReason: record.closureReason || '',
+    clientId: record.clientId || '', ownerId: record.ownerId || '', bidManagerId: record.bidManagerId || '', qaPercent: record.qaPercent ?? 0, closureReason: record.closureReason || '',
+    origin: record.origin || '', probability: record.probability === null || record.probability === undefined ? '' : String(record.probability),
+    expectedCloseDate: record.expectedCloseDate || '', nextMilestone: record.nextMilestone || '', nextMilestoneDate: record.nextMilestoneDate || '',
+    need: record.need || '', initiativeId: record.initiativeId || '', outcome: record.outcome || '', pep: record.pep || '',
+    towerIds: (record.towers || []).map((item) => item.id),
+    lobIds: (record.lobs || []).map((item) => item.id),
+    serviceIds: (record.services || []).map((item) => item.id),
+    links: (record.links || []).map((link) => ({ title: link.title || 'Enlace Workspace', url: link.url || '' })),
   });
   const [amountText, setAmountText] = useState(() => formatAmountInput(record.amount || ''));
   const [error, setError] = useState('');
@@ -759,6 +825,12 @@ function OpportunityDialog({ record, clients, towers, people, onQuickCreate, onC
     });
   };
   const handleAmountBlur = () => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')));
+  const updateLink = (index, field, value) => setForm((current) => ({ ...current, links: current.links.map((link, position) => (position === index ? { ...link, [field]: value } : link)) }));
+  const addLink = () => setForm((current) => (current.links.length >= 20 ? current : { ...current, links: [...current.links, { title: 'Enlace Workspace', url: '' }] }));
+  const removeLink = (index) => setForm((current) => ({ ...current, links: current.links.filter((_, position) => position !== index) }));
+  const isResult = form.stage === 'result';
+  const probabilityValue = form.probability === '' ? null : Number(form.probability);
+  const weightedPreview = probabilityValue === null || Number.isNaN(probabilityValue) ? null : (parseAmount(amountText) * probabilityValue) / 100;
   const submit = async (event) => {
     event.preventDefault();
     if (saving) return;
@@ -766,7 +838,14 @@ function OpportunityDialog({ record, clients, towers, people, onQuickCreate, onC
     const amount = parseAmount(amountText);
     if (!(amount >= 0)) { setError('El importe debe ser igual o superior a cero.'); return; }
     if (Number(form.qaPercent) < 0 || Number(form.qaPercent) > 100) { setError('La participación QA debe estar entre 0 y 100 %.'); return; }
+    if (probabilityValue !== null && (Number.isNaN(probabilityValue) || probabilityValue < 0 || probabilityValue > 100)) { setError('La probabilidad debe estar entre 0 y 100 %.'); return; }
+    if (isResult && !form.outcome) { setError('Selecciona el resultado (Ganada, Perdida o Descartada).'); return; }
+    if (isResult && !form.expectedCloseDate) { setError('La etapa Resultado requiere una fecha estimada de cierre.'); return; }
+    if (isResult && form.outcome !== 'won' && !form.closureReason.trim()) { setError('Indica el motivo de pérdida o descarte.'); return; }
     setError('');
+    const selectedTowers = towers.filter((item) => form.towerIds.includes(item.id));
+    const milestone = form.nextMilestone.trim();
+    const milestoneDate = form.nextMilestoneDate.trim();
     try {
       await onSave({
         id: form.id,
@@ -774,12 +853,25 @@ function OpportunityDialog({ record, clients, towers, people, onQuickCreate, onC
         account: clients.find((item) => item.id === form.clientId)?.name || form.account.trim(),
         amount: formatCurrency(amount),
         stage: form.stage,
-        tower: towers.find((item) => item.id === form.towerId)?.name || form.tower,
+        tower: selectedTowers[0]?.name || form.tower,
         owner: people.find((item) => item.id === form.ownerId)?.name || form.owner,
-        due: form.due.trim() || 'Por definir',
+        due: milestoneDate || milestone || 'Por definir',
         tags: form.tags,
-        number: form.number.trim(), clientId: form.clientId, towerId: form.towerId, ownerId: form.ownerId,
+        number: form.number.trim(), clientId: form.clientId, towerId: '', ownerId: form.ownerId,
         bidManagerId: form.bidManagerId, qaPercent: Number(form.qaPercent), closureReason: form.closureReason.trim(),
+        origin: form.origin,
+        probability: probabilityValue === null || Number.isNaN(probabilityValue) ? null : probabilityValue,
+        expectedCloseDate: form.expectedCloseDate,
+        nextMilestone: milestone,
+        nextMilestoneDate: milestoneDate,
+        need: form.need.trim(),
+        initiativeId: form.initiativeId,
+        outcome: isResult ? form.outcome : '',
+        pep: form.pep.trim(),
+        towerIds: form.towerIds,
+        lobIds: form.lobIds,
+        serviceIds: form.serviceIds,
+        links: form.links.map((link) => ({ title: link.title.trim(), url: link.url.trim() })).filter((link) => link.title && link.url),
       });
     } catch {
       // The parent surfaces the API message through saveError.
@@ -795,13 +887,32 @@ function OpportunityDialog({ record, clients, towers, people, onQuickCreate, onC
         <label className="form-field">Cliente / cuenta<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></label>
         <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
-        <label className="form-field">Tower<select value={form.towerId} onChange={(event) => update('towerId', event.target.value)} disabled={saving}><option value="">Sin tower asociada</option>{towers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('towers', (id) => update('towerId', id))}>+ Crear tower</button></label>
+        <label className="form-field">Origen<select value={form.origin} onChange={(event) => update('origin', event.target.value)} disabled={saving}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
+        <label className="form-field">Probabilidad (%)<input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado: ${formatCurrency(weightedPreview)}.`}</span></label>
+        <label className="form-field">Fecha estimada de cierre<input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} disabled={saving} /></label>
+        <label className="form-field">Iniciativa de origen<select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} disabled={saving}><option value="">Sin iniciativa</option>{initiatives.filter((item) => !item.archivedAt).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><span className="field-hint">Los ciclos de vida de la iniciativa y la oportunidad son independientes.</span></label>
+        <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
+        <label className="form-field">Fecha del próximo hito<input type="date" value={form.nextMilestoneDate} onChange={(event) => update('nextMilestoneDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)} disabled={saving}><option value="">Sin responsable</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))}>+ Crear responsable</button></label>
         <label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)} disabled={saving}><option value="">Sin asignar</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))}>+ Crear responsable</button></label>
-        <label className="form-field">Participación del equipo QA (%)<input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} /></label>
-        {(form.stage === 'won' || form.stage === 'lost') && <label className="form-field wide">Motivo de cierre<input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} maxLength="160" disabled={saving} /></label>}
-        <label className="form-field">Próximo hito<input value={form.due} onChange={(event) => update('due', event.target.value)} placeholder="Ej. 20 jun" disabled={saving} /></label>
+        <label className="form-field">Participación del equipo QA (%)<input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} /><span className="field-hint">Alimenta el KPI Pipeline QE.</span></label>
+        {isResult && <label className="form-field">Resultado *<select value={form.outcome} onChange={(event) => update('outcome', event.target.value)} disabled={saving}><option value="">Selecciona un resultado</option>{opportunityOutcomes.map((outcome) => <option key={outcome.id} value={outcome.id}>{outcome.label}</option>)}</select></label>}
+        {isResult && form.outcome !== 'won' && <label className="form-field wide">Motivo de cierre<input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} maxLength="160" disabled={saving} /></label>}
+        {form.outcome === 'won' && <label className="form-field wide">PEP<input value={form.pep} onChange={(event) => update('pep', event.target.value)} placeholder="Identificador PEP" maxLength="160" disabled={saving} /><span className="field-hint">Obligatorio para la etapa Resultado con resultado Ganada. Se conserva si cambia el resultado.</span></label>}
+        <label className="form-field wide">Descripción / necesidad<textarea rows="3" value={form.need} onChange={(event) => update('need', event.target.value)} placeholder="Contexto, alcance y necesidad del cliente" maxLength="2000" disabled={saving} /></label>
       </div>
+      <RelationPicker legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
+      <RelationPicker legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
+      <RelationPicker legend="Servicios" hint="Solo se ofrecen servicios activos; los vínculos históricos se conservan." options={services.filter((item) => item.active || form.serviceIds.includes(item.id))} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
+      <fieldset className="relation-field">
+        <legend>Enlaces Workspace</legend>
+        <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>
+        <div className="link-editor">
+          {form.links.length === 0 && <span className="field-hint">Todavía no hay enlaces.</span>}
+          {form.links.map((link, index) => <div className="link-row" key={index}><input aria-label={`Título del enlace ${index + 1}`} value={link.title} onChange={(event) => updateLink(index, 'title', event.target.value)} placeholder="Enlace Workspace" maxLength="120" disabled={saving} /><input aria-label={`URL del enlace ${index + 1}`} value={link.url} onChange={(event) => updateLink(index, 'url', event.target.value)} placeholder="https://workspaces.example/..." maxLength="500" disabled={saving} /><button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={saving}><Icon name="close" size={16} /></button></div>)}
+        </div>
+        <button type="button" className="inline-link" onClick={addLink} disabled={saving || form.links.length >= 20}>+ Añadir enlace</button>
+      </fieldset>
       {isEditing && <CardHistory opportunityId={form.id} refreshKey={historyRefresh} />}
       {isEditing && <RecordActions type="opportunities" id={form.id} />}
       <div className="dialog-hint"><span className="info-mark">i</span> Las propuestas y estimaciones se gestionan como registros independientes vinculados.</div>

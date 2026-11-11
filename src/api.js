@@ -52,9 +52,12 @@ export const login = (body) => request('/auth/login', { method: 'POST', body });
 export const register = (body) => request('/auth/register', { method: 'POST', body });
 export const logout = () => request('/auth/logout', { method: 'POST' });
 export const listOpportunities = () => request('/opportunities');
+export const listArchivedOpportunities = () => request('/opportunities?archived=1');
 export const createOpportunity = (body) => request('/opportunities', { method: 'POST', body });
 export const updateOpportunity = (id, body) =>
   request(`/opportunities/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+export const archiveOpportunity = (id) => request(`/opportunities/${encodeURIComponent(id)}/archive`, { method: 'POST' });
+export const restoreOpportunity = (id) => request(`/opportunities/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 export const deleteOpportunity = (id) => request(`/opportunities/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listEvents = (id, { limit } = {}) => {
   const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
