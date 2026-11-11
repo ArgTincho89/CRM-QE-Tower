@@ -43,7 +43,7 @@ Delivery: feature-branch chain on `feat/qe-crm-evolution`; PR #1 targets the tra
 - [x] 4.1 Add Services and LoB navigation entries and pages with list/search/create/edit/deactivate and related-record details.
 - [x] 4.2 Add `lob_id` to the Tower form/list/filter with a LoB selector.
 - [x] 4.3 Extend `src/api.js` with service, LoB, archive, and version helpers.
-- [ ] 4.4 Reusable searchable `MultiSelect` component; wire into Tower/form contexts.
+- [x] 4.4 Reusable searchable `MultiSelect` component; wire into Tower/form contexts.
 - [x] 4.5 Styles for chips, badges, and inactive states using existing tokens.
 
 ## 5. Frontend opportunities
@@ -52,7 +52,7 @@ Delivery: feature-branch chain on `feat/qe-crm-evolution`; PR #1 targets the tra
 - [x] 5.2 Form fields: multi LoB/Tower/Service, origin, probability, close date, milestone date, need, loss reason, PEP.
 - [x] 5.3 Result outcome handling, PEP visibility on `Ganada`, and Workspace links editor/render.
 - [x] 5.4 Detail view with relations, initiative origin link, archive/restore, archive filter.
-- [ ] 5.5 Tests for board moves, outcome rules, weighted display, and archive filtering.
+- [x] 5.5 Tests for board moves, outcome rules, weighted display, and archive filtering.
 
 ## 6. Frontend initiatives
 
@@ -74,7 +74,7 @@ Delivery: feature-branch chain on `feat/qe-crm-evolution`; PR #1 targets the tra
 
 ## Verification Gate
 
-- [ ] `npm test` passes with all new coverage.
-- [ ] `npm run build` passes.
-- [ ] Migration dry run on a sanitized copy plus backup/restore check.
-- [ ] No production mutation before deploy approval.
+- [x] `npm test` passes with all new coverage.
+- [x] `npm run build` passes.
+- [x] Migration dry run on a sanitized copy plus backup/restore check.
+- [x] No production mutation before deploy approval.

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, proposals, stages } from './data.js';
+import { filterOpportunityRecords, validateOpportunityResult } from './opportunities.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
@@ -577,7 +579,7 @@ function App() {
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
             {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onDelete={deleteBoardCard} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
           </> : page === 'opportunities'
-            ? <OpportunityManagementPanel opportunities={archivedView ? archivedOpportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason} ${item.archivedByName}`.toLowerCase().includes(query.trim().toLowerCase())) : opportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason}`.toLowerCase().includes(query.trim().toLowerCase()))} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} />
+            ? <OpportunityManagementPanel opportunities={filterOpportunityRecords(opportunities, archivedOpportunities, query, archivedView)} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} />
             : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onDelete={deleteBoardCard} />
             : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteTower={removeTower} onEditAgreement={setEditingAgreement} />}
@@ -829,15 +831,31 @@ function Analytics({ opportunities, grouped }) {
   return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros del pipeline actual</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatCurrency(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En propuesta</span><strong>{opportunities.filter((item) => item.stage === 'proposal').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
 }
 
-function RelationPicker({ legend, hint, options, selected, onChange, disabled }) {
-  return <fieldset className="relation-field">
+function MultiSelect({ legend, hint, options, selected, onChange, disabled }) {
+  const [query, setQuery] = useState('');
+  const baseId = useId();
+  const listId = `${baseId}-list`;
+  const chips = selectedOptions(options, selected);
+  const visible = filterOptions(options, query);
+  return <fieldset className="relation-field multi-select" disabled={disabled}>
     <legend>{legend}</legend>
-    {hint && <span className="field-hint">{hint}</span>}
-    <div className="relation-options">
+    {hint && <span className="field-hint" id={`${baseId}-hint`}>{hint}</span>}
+    {chips.length > 0 && <ul className="multi-select-chips" aria-label={`${legend} seleccionados`}>
+      {chips.map((option) => <li key={option.id} className={`relation-option selected${option.active === false ? ' inactive' : ''}`}><span>{option.name}{option.active === false ? ' (inactivo)' : ''}</span><button type="button" className="chip-remove" onClick={() => onChange(removeSelection(selected, option.id))} aria-label={`Quitar ${option.name}`}>×</button></li>)}
+    </ul>}
+    <input type="search" className="multi-select-search" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setQuery(''); }} placeholder={`Buscar ${legend.toLowerCase()}…`} aria-label={`Buscar en ${legend}`} aria-controls={listId} aria-describedby={hint ? `${baseId}-hint` : undefined} />
+    <div className="relation-options multi-select-options" id={listId} role="group" aria-label={`Opciones de ${legend}`}>
       {options.length === 0
         ? <span className="field-hint">No hay opciones disponibles.</span>
-        : options.map((option) => <label key={option.id} className={`relation-option${selected.includes(option.id) ? ' selected' : ''}`}><input type="checkbox" checked={selected.includes(option.id)} onChange={() => onChange(selected.includes(option.id) ? selected.filter((id) => id !== option.id) : [...selected, option.id])} disabled={disabled} /><span>{option.name}</span></label>)}
+        : visible.length === 0
+          ? <span className="field-hint" role="status">Sin coincidencias.</span>
+          : visible.map((option) => {
+            const isSelected = selected.includes(option.id);
+            const assignable = isAssignable(option, selected);
+            return <label key={option.id} className={`relation-option${isSelected ? ' selected' : ''}${option.active === false ? ' inactive' : ''}`}><input type="checkbox" checked={isSelected} onChange={() => onChange(toggleSelection(selected, option))} disabled={!assignable} /><span>{option.name}{option.active === false ? ' (inactivo)' : ''}</span></label>;
+          })}
     </div>
+    <span className="sr-only" role="status" aria-live="polite">{selected.length} seleccionados</span>
   </fieldset>;
 }
 
@@ -906,9 +924,8 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
     if (!(amount >= 0)) { setError('El importe debe ser igual o superior a cero.'); return; }
     if (Number(form.qaPercent) < 0 || Number(form.qaPercent) > 100) { setError('La participación QA debe estar entre 0 y 100 %.'); return; }
     if (probabilityValue !== null && (Number.isNaN(probabilityValue) || probabilityValue < 0 || probabilityValue > 100)) { setError('La probabilidad debe estar entre 0 y 100 %.'); return; }
-    if (isResult && !form.outcome) { setError('Selecciona el resultado (Ganada, Perdida o Descartada).'); return; }
-    if (isResult && !form.expectedCloseDate) { setError('La etapa Resultado requiere una fecha estimada de cierre.'); return; }
-    if (isResult && form.outcome !== 'won' && !form.closureReason.trim()) { setError('Indica el motivo de pérdida o descarte.'); return; }
+    const resultError = validateOpportunityResult(form);
+    if (resultError) { setError(resultError); return; }
     setError('');
     const selectedTowers = towers.filter((item) => form.towerIds.includes(item.id));
     const milestone = form.nextMilestone.trim();
@@ -968,9 +985,9 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
         {form.outcome === 'won' && <label className="form-field wide">PEP<input value={form.pep} onChange={(event) => update('pep', event.target.value)} placeholder="Identificador PEP" maxLength="160" disabled={saving} /><span className="field-hint">Obligatorio para la etapa Resultado con resultado Ganada. Se conserva si cambia el resultado.</span></label>}
         <label className="form-field wide">Descripción / necesidad<textarea rows="3" value={form.need} onChange={(event) => update('need', event.target.value)} placeholder="Contexto, alcance y necesidad del cliente" maxLength="2000" disabled={saving} /></label>
       </div>
-      <RelationPicker legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
-      <RelationPicker legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
-      <RelationPicker legend="Servicios" hint="Solo se ofrecen servicios activos; los vínculos históricos se conservan." options={services.filter((item) => item.active || form.serviceIds.includes(item.id))} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
+      <MultiSelect legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
+      <MultiSelect legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
+      <MultiSelect legend="Servicios" hint="Los servicios inactivos se muestran pero no pueden asignarse; los vínculos históricos se conservan." options={services} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
       <fieldset className="relation-field">
         <legend>Enlaces Workspace</legend>
         <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>
@@ -1089,7 +1106,7 @@ function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, o
         <label className="form-field">Fecha de la próxima acción<input type="date" value={form.nextActionDate} onChange={(event) => update('nextActionDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field wide">Descripción<textarea rows="3" value={form.description} onChange={(event) => update('description', event.target.value)} placeholder="Contexto y objetivo de la iniciativa" maxLength="2000" disabled={saving} /></label>
       </div>
-      <RelationPicker legend="Servicios" hint="Solo se ofrecen servicios activos; los vínculos históricos se conservan." options={services.filter((item) => item.active || form.serviceIds.includes(item.id))} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
+      <MultiSelect legend="Servicios" hint="Los servicios inactivos se muestran pero no pueden asignarse; los vínculos históricos se conservan." options={services} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
       <fieldset className="relation-field">
         <legend>Enlaces Workspace</legend>
         <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>
