@@ -397,7 +397,6 @@ function App() {
             <Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'pipeline' && <span className="nav-count">{opportunities.length}</span>}
           </button>)}
         </nav>
-        <div className="sidebar-tip"><div className="tip-icon">✦</div><div><strong>Una oportunidad empieza con una conversación</strong><p>Registra señales de tus cuentas para encontrar nuevas formas de colaborar.</p><button onClick={() => navigate('crossSelling')}>Ver cross-selling <Icon name="arrow" size={14} /></button></div></div>
         <div className="sidebar-footer"><span className="footer-dot" /> CRM QE <span className="footer-version">v1.0</span></div>
       </aside>
       {mobileNav && <button className="nav-backdrop" aria-label="Cerrar navegación" onClick={() => setMobileNav(false)} />}
