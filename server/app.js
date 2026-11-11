@@ -16,7 +16,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
-import { opportunityOrigins, stages } from '../src/data.js';
+import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
 import {
   HttpError,
@@ -32,6 +32,10 @@ const STAGES = new Set(stages.map(({ id }) => id));
 const OPPORTUNITY_ORIGINS = new Set(opportunityOrigins);
 const OUTCOMES = new Set(['won', 'lost', 'discarded']);
 const RESULT_STAGE = 'result';
+const INITIATIVE_STAGE_IDS = new Set(initiativeStages.map(({ id }) => id));
+const INITIATIVE_CATEGORIES = new Set(initiativeCategories);
+const INITIATIVE_PRIORITIES = new Set(initiativePriorities);
+const INITIATIVE_STATUS_IDS = new Set(initiativeStatuses.map(({ id }) => id));
 
 const FIELD_LIMITS = {
   title: 160,
@@ -65,19 +69,27 @@ function notFoundError() {
   return new HttpError(404, 'not_found', 'La oportunidad no existe.');
 }
 
+/**
+ * `DELETE` is a logical archive from now on: records keep their identifiers, history,
+ * relations, and comments, and can be restored. Nothing is physically deleted.
+ */
 function deleteRecord(ctx, req, res, type, rawId) {
-  requireUser(ctx, req);
+  const user = requireUser(ctx, req);
   const id = decodeId(rawId);
   const table = type === 'initiative' ? 'initiatives' : 'opportunities';
+  const nowIso = ctx.now().toISOString();
   withTransaction(ctx.db, () => {
-    if (!ctx.db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) {
+    const existing = ctx.db.prepare(`SELECT id, archived_at FROM ${table} WHERE id = ?`).get(id);
+    if (!existing) {
       throw new HttpError(404, 'not_found', type === 'initiative' ? 'La iniciativa no existe.' : 'La oportunidad no existe.');
     }
-    ctx.db.prepare('DELETE FROM record_actions WHERE entity_type = ? AND entity_id = ?').run(type, id);
-    ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(type, id);
-    ctx.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+    if (existing.archived_at) throw new HttpError(409, 'record_archived', 'El registro ya está archivado.');
+    ctx.db
+      .prepare(`UPDATE ${table} SET archived_at = ?, archived_by_id = ?, archived_by_name = ?, updated_at = ? WHERE id = ?`)
+      .run(nowIso, user.id, user.name, nowIso, id);
+    appendEntityEvent(ctx.db, { type, id, user, action: 'archived', now: nowIso });
   });
-  sendJson(res, 200, { deleted: true });
+  sendJson(res, 200, { deleted: true, archived: true });
 }
 
 function unauthorizedError() {
@@ -217,8 +229,57 @@ function mapMaster(row, kind) {
   return mapped;
 }
 
-function mapInitiative(row) {
-  return { id: row.id, title: row.title, category: row.category, clientId: row.client_id || '', towerId: row.tower_id || '', ownerId: row.owner_id || '', bidManagerId: row.bid_manager_id || '', amount: row.amount, qaPercent: Number(row.qa_percent), status: row.status, closureReason: row.closure_reason, stage: row.stage, createdAt: row.created_at, updatedAt: row.updated_at };
+function mapInitiative(row, db) {
+  const services = db ? loadJoinRows(db, 'initiative_services', 'services', 'initiative_id', 'service_id', row.id) : [];
+  const links = db ? loadWorkspaceLinks(db, 'initiative', row.id) : [];
+  const opportunities = db
+    ? db
+        .prepare(
+          `SELECT id, title, stage, amount, owner, expected_close_date, outcome, archived_at
+             FROM opportunities WHERE initiative_id = ? ORDER BY created_at DESC, id DESC`,
+        )
+        .all(row.id)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          stage: item.stage,
+          amount: formatCurrency(Number(parseAmount(item.amount))),
+          owner: item.owner || '',
+          expectedCloseDate: item.expected_close_date || '',
+          outcome: item.outcome || '',
+          archived: Boolean(item.archived_at),
+        }))
+    : [];
+
+  return {
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    clientId: row.client_id || '',
+    clientName: row.client_name || '',
+    priority: row.priority || 'Media',
+    nextAction: row.next_action || '',
+    nextActionDate: row.next_action_date || '',
+    description: row.description || '',
+    operationalStatus: row.operational_status || 'active',
+    stage: row.stage,
+    services,
+    links,
+    opportunities,
+    linkedOpportunityCount: opportunities.length,
+    archivedAt: row.archived_at || '',
+    archivedByName: row.archived_by_name || '',
+    // Historical values stay readable even though the active form no longer edits them.
+    towerId: row.tower_id || '',
+    ownerId: row.owner_id || '',
+    bidManagerId: row.bid_manager_id || '',
+    amount: row.amount,
+    qaPercent: Number(row.qa_percent),
+    status: row.status,
+    closureReason: row.closure_reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function mapAgreement(row) {
@@ -367,6 +428,38 @@ function assertActiveRecords(db, table, ids, field) {
   for (const id of ids) {
     if (!find.get(id)) throw validationError(`El registro seleccionado en "${field}" no existe o está inactivo.`);
   }
+}
+
+function parseInitiativeStage(value) {
+  if (value === undefined || value === null || value === '') return 'pending';
+  if (typeof value !== 'string' || !INITIATIVE_STAGE_IDS.has(value.trim())) {
+    throw validationError(`La etapa de la iniciativa debe ser una de: ${[...INITIATIVE_STAGE_IDS].join(', ')}.`);
+  }
+  return value.trim();
+}
+
+function parseInitiativeCategory(value) {
+  if (value === undefined || value === null || value === '') return 'Otros';
+  if (typeof value !== 'string' || !INITIATIVE_CATEGORIES.has(value.trim())) {
+    throw validationError('La categoría de la iniciativa no es válida.');
+  }
+  return value.trim();
+}
+
+function parseInitiativePriority(value) {
+  if (value === undefined || value === null || value === '') return 'Media';
+  if (typeof value !== 'string' || !INITIATIVE_PRIORITIES.has(value.trim())) {
+    throw validationError('La prioridad debe ser Alta, Media o Baja.');
+  }
+  return value.trim();
+}
+
+function parseInitiativeStatus(value) {
+  if (value === undefined || value === null || value === '') return 'active';
+  if (typeof value !== 'string' || !INITIATIVE_STATUS_IDS.has(value.trim())) {
+    throw validationError('El estado operativo debe ser active, paused o discarded.');
+  }
+  return value.trim();
 }
 
 function parseWorkspaceLinks(value) {
@@ -1078,32 +1171,52 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
   sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row, kind) });
 }
 
-function listInitiatives(ctx, req, res) {
+const INITIATIVE_DISPLAY_SELECT = `SELECT initiatives.*, clients.name AS client_name
+    FROM initiatives LEFT JOIN clients ON clients.id = initiatives.client_id`;
+
+function getInitiativeForDisplay(db, id) {
+  return db.prepare(`${INITIATIVE_DISPLAY_SELECT} WHERE initiatives.id = ?`).get(id);
+}
+
+function listInitiatives(ctx, req, res, query) {
   requireUser(ctx, req);
-  const rows = ctx.db.prepare('SELECT * FROM initiatives ORDER BY created_at DESC, id DESC').all();
-  sendJson(res, 200, { initiatives: rows.map(mapInitiative) });
+  const archived = query?.get('archived') === '1';
+  const rows = ctx.db
+    .prepare(
+      `${INITIATIVE_DISPLAY_SELECT}
+        WHERE initiatives.archived_at IS ${archived ? 'NOT NULL' : 'NULL'}
+        ORDER BY initiatives.created_at DESC, initiatives.id DESC`,
+    )
+    .all();
+  sendJson(res, 200, { initiatives: rows.map((row) => mapInitiative(row, ctx.db)) });
+}
+
+function notFoundInitiativeError() {
+  return new HttpError(404, 'not_found', 'La iniciativa no existe.');
 }
 
 async function mutateInitiative(ctx, req, res, rawId = null) {
   const user = requireUser(ctx, req);
   const body = await readJson(req);
   const now = ctx.now().toISOString();
+  const serviceIds = parseIdList(body.serviceIds ?? body.service_ids, 'servicios');
+  const links = parseWorkspaceLinks(body.links);
+  const hasServiceIds = Object.hasOwn(body, 'serviceIds') || Object.hasOwn(body, 'service_ids');
+  const hasLinks = Object.hasOwn(body, 'links');
+  assertActiveRecords(ctx.db, 'services', serviceIds, 'servicios');
   let id;
   if (req.method === 'POST') {
     const fields = {
       title: parseTextField(body.title, 'title', 160),
-      category: body.category === undefined ? 'external' : body.category,
+      category: parseInitiativeCategory(body.category),
       client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
-      tower_id: optionalTowerId(ctx.db, body.towerId),
-      owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
-      bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
-      amount: parseAmount(body.amount ?? 0),
-      qa_percent: parsePercent(body.qaPercent ?? 0),
-      status: typeof body.status === 'string' && body.status.trim() ? body.status.trim().slice(0, 40) : 'open',
-      closure_reason: typeof body.closureReason === 'string' ? body.closureReason.trim().slice(0, 160) : '',
-      stage: parseStage(body.stage ?? 'prospecting'),
+      priority: parseInitiativePriority(body.priority),
+      next_action: parseShortText(body.nextAction),
+      next_action_date: parseOptionalDate(body.nextActionDate, 'nextActionDate'),
+      description: parseShortText(body.description, 2000),
+      operational_status: parseInitiativeStatus(body.operationalStatus),
+      stage: parseInitiativeStage(body.stage),
     };
-    if (!['internal', 'cross_selling', 'external'].includes(fields.category)) throw validationError('La categoría de la iniciativa no es válida.');
     const columns = ['id', ...Object.keys(fields), 'created_at', 'updated_at'];
     const insert = ctx.db.prepare(`INSERT INTO initiatives (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`);
     let createdId;
@@ -1112,6 +1225,8 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
         createdId = withTransaction(ctx.db, () => {
           const nextId = nextInitiativeId(ctx.db);
           insert.run(nextId, ...Object.values(fields), now, now);
+          replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', nextId, 'service_id', serviceIds);
+          replaceWorkspaceLinks(ctx.db, 'initiative', nextId, links, user, now);
           appendEntityEvent(ctx.db, { type: 'initiative', id: nextId, user, action: 'created', now });
           return nextId;
         });
@@ -1124,27 +1239,25 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
   } else {
     id = decodeId(rawId);
     const existing = ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id);
-    if (!existing) throw new HttpError(404, 'not_found', 'La iniciativa no existe.');
+    if (!existing) throw notFoundInitiativeError();
+    if (existing.archived_at) {
+      throw new HttpError(409, 'record_archived', 'Restaura la iniciativa antes de editarla.');
+    }
     const parsers = {
       title: (value) => parseTextField(value, 'title', 160),
-      category: (value) => {
-        if (!['internal', 'cross_selling', 'external'].includes(value)) throw validationError('La categoría de la iniciativa no es válida.');
-        return value;
-      },
+      category: parseInitiativeCategory,
       clientId: (value) => optionalId(ctx.db, 'clients', value, 'cliente'),
-      towerId: (value) => optionalTowerId(ctx.db, value),
-      ownerId: (value) => optionalId(ctx.db, 'people', value, 'responsable'),
-      bidManagerId: (value) => optionalId(ctx.db, 'people', value, 'bid manager'),
-      amount: parseAmount,
-      qaPercent: parsePercent,
-      status: (value) => typeof value === 'string' && value.trim() ? value.trim().slice(0, 40) : 'open',
-      closureReason: (value) => typeof value === 'string' ? value.trim().slice(0, 160) : '',
-      stage: parseStage,
+      priority: parseInitiativePriority,
+      nextAction: parseShortText,
+      nextActionDate: (value) => parseOptionalDate(value, 'nextActionDate'),
+      description: (value) => parseShortText(value, 2000),
+      operationalStatus: parseInitiativeStatus,
+      stage: parseInitiativeStage,
     };
     const columns = {
-      title: 'title', category: 'category', clientId: 'client_id', towerId: 'tower_id',
-      ownerId: 'owner_id', bidManagerId: 'bid_manager_id', amount: 'amount',
-      qaPercent: 'qa_percent', status: 'status', closureReason: 'closure_reason', stage: 'stage',
+      title: 'title', category: 'category', clientId: 'client_id', priority: 'priority',
+      nextAction: 'next_action', nextActionDate: 'next_action_date', description: 'description',
+      operationalStatus: 'operational_status', stage: 'stage',
     };
     const fields = {};
     for (const [apiField, column] of Object.entries(columns)) {
@@ -1156,10 +1269,35 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
     if (changedFields.length > 0) {
       const assignments = changedFields.map((field) => `${field} = ?`).join(', ');
       ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
-      appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: 'updated', detail: { fields: changedFields }, now });
+    }
+    if (hasServiceIds) replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', id, 'service_id', serviceIds);
+    if (hasLinks) replaceWorkspaceLinks(ctx.db, 'initiative', id, links, user, now);
+    if (changedFields.length > 0 || hasServiceIds || hasLinks) {
+      appendEntityEvent(ctx.db, {
+        type: 'initiative',
+        id,
+        user,
+        action: 'updated',
+        detail: { fields: [...changedFields, ...(hasServiceIds ? ['services'] : []), ...(hasLinks ? ['links'] : [])] },
+        now,
+      });
     }
   }
-  sendJson(res, req.method === 'POST' ? 201 : 200, { initiative: mapInitiative(ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id)) });
+  sendJson(res, req.method === 'POST' ? 201 : 200, { initiative: mapInitiative(getInitiativeForDisplay(ctx.db, id), ctx.db) });
+}
+
+function setInitiativeArchive(ctx, req, res, rawId, archived) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const nowIso = ctx.now().toISOString();
+  withTransaction(ctx.db, () => {
+    if (!ctx.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id)) throw notFoundInitiativeError();
+    ctx.db
+      .prepare('UPDATE initiatives SET archived_at = ?, archived_by_id = ?, archived_by_name = ?, updated_at = ? WHERE id = ?')
+      .run(archived ? nowIso : null, archived ? user.id : null, archived ? user.name : '', nowIso, id);
+    appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: archived ? 'archived' : 'restored', now: nowIso });
+  });
+  sendJson(res, 200, { initiative: mapInitiative(getInitiativeForDisplay(ctx.db, id), ctx.db) });
 }
 
 function listAgreements(ctx, req, res) {
@@ -1312,6 +1450,7 @@ const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/
 const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
 const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;
 const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
+const INITIATIVE_ARCHIVE_PATTERN = /^\/api\/initiatives\/([^/]+)\/(archive|restore)$/;
 const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
 
 async function handleApi(ctx, req, res, pathname, query) {
@@ -1356,9 +1495,14 @@ async function handleApi(ctx, req, res, pathname, query) {
     return rejectMethod(res, 'GET', 'POST');
   }
   if (pathname === '/api/initiatives') {
-    if (req.method === 'GET') return listInitiatives(ctx, req, res);
+    if (req.method === 'GET') return listInitiatives(ctx, req, res, query);
     if (req.method === 'POST') return mutateInitiative(ctx, req, res);
     return rejectMethod(res, 'GET', 'POST');
+  }
+  const initiativeArchiveMatch = INITIATIVE_ARCHIVE_PATTERN.exec(pathname);
+  if (initiativeArchiveMatch) {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return setInitiativeArchive(ctx, req, res, initiativeArchiveMatch[1], initiativeArchiveMatch[2] === 'archive');
   }
   if (pathname === '/api/agreements') {
     if (req.method === 'GET') return listAgreements(ctx, req, res);
