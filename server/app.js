@@ -94,6 +94,7 @@ function mapOpportunity(row) {
     towerId: row.tower_id || '',
     ownerId: row.owner_id || '',
     bidManagerId: row.bid_manager_id || '',
+    bidManager: row.linked_bid_manager_name || '',
     qaPercent: Number(row.qa_percent || 0),
     closureReason: row.closure_reason || '',
     createdAt: row.created_at,
@@ -105,18 +106,27 @@ const OPPORTUNITY_DISPLAY_SELECT = `
   SELECT opportunities.*,
          clients.name AS linked_client_name,
          towers.name AS linked_tower_name,
-         people.name AS linked_owner_name
+          people.name AS linked_owner_name,
+          bid_managers.name AS linked_bid_manager_name
     FROM opportunities
     LEFT JOIN clients ON clients.id = opportunities.client_id
     LEFT JOIN towers ON towers.id = opportunities.tower_id
-    LEFT JOIN people ON people.id = opportunities.owner_id`;
+     LEFT JOIN people ON people.id = opportunities.owner_id
+     LEFT JOIN people AS bid_managers ON bid_managers.id = opportunities.bid_manager_id`;
 
 function getOpportunityForDisplay(db, id) {
   return db.prepare(`${OPPORTUNITY_DISPLAY_SELECT} WHERE opportunities.id = ?`).get(id);
 }
 
-function mapMaster(row) {
-  return { id: row.id, name: row.name, sector: row.sector ?? undefined, email: row.email ?? undefined, active: row.status === 'active', createdAt: row.created_at, updatedAt: row.updated_at };
+function mapMaster(row, kind) {
+  const mapped = { id: row.id, name: row.name, sector: row.sector ?? undefined, email: row.email ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at };
+  if (kind === 'towers') {
+    mapped.responsibleId = row.responsible_id || '';
+    mapped.responsibleName = row.responsible_name || '';
+    return mapped;
+  }
+  mapped.active = row.status === 'active';
+  return mapped;
 }
 
 function mapInitiative(row) {
@@ -212,6 +222,14 @@ function optionalId(db, table, value, field) {
   return value;
 }
 
+function optionalTowerId(db, value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !db.prepare('SELECT id FROM towers WHERE id = ?').get(value)) {
+    throw validationError('La tower seleccionada no existe.');
+  }
+  return value;
+}
+
 function appendEntityEvent(db, { type, id, user, action, detail = {}, now }) {
   db.prepare(`INSERT INTO entity_events (entity_type, entity_id, user_id, user_name, action, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(type, id, user?.id ?? null, user?.name ?? 'Sistema', action, JSON.stringify(detail), now);
@@ -246,7 +264,7 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'amount') return parseAmount(value);
   if (field === 'qa_percent') return parsePercent(value);
   if (field === 'client_id') return optionalId(db, 'clients', value, 'cliente');
-  if (field === 'tower_id') return optionalId(db, 'towers', value, 'tower');
+  if (field === 'tower_id') return optionalTowerId(db, value);
   if (field === 'owner_id' || field === 'bid_manager_id') return optionalId(db, 'people', value, 'responsable');
   if (field === 'number' || field === 'closure_reason') return typeof value === 'string' ? value.trim().slice(0, 160) : '';
   return parseTextField(value, field, FIELD_LIMITS[field]);
@@ -270,24 +288,32 @@ function insertCardEvent(db, { cardId, user, action, detail, createdAt }) {
 }
 
 /**
- * Builds the next `O-NNNN` id from the highest numeric suffix currently stored.
+ * Builds the next prefixed id from the highest numeric suffix currently stored.
  * Uniqueness is re-checked for every candidate, and the caller retries the whole
  * insert on a unique violation (two processes on the same file).
  */
-function nextOpportunityId(db) {
+function nextPrefixedId(db, table, prefix) {
   const row = db
-    .prepare("SELECT MAX(CAST(substr(id, 3) AS INTEGER)) AS max_id FROM opportunities WHERE id GLOB 'O-[0-9]*'")
+    .prepare(`SELECT MAX(CAST(substr(id, ${prefix.length + 2}) AS INTEGER)) AS max_id FROM ${table} WHERE id GLOB '${prefix}-[0-9]*'`)
     .get();
   const highest = Number(row?.max_id ?? 0);
   const start = Number.isFinite(highest) ? highest : 0;
-  const exists = db.prepare('SELECT 1 AS found FROM opportunities WHERE id = ?');
+  const exists = db.prepare(`SELECT 1 AS found FROM ${table} WHERE id = ?`);
 
   for (let offset = 1; offset <= 10000; offset += 1) {
-    const candidate = `O-${String((start + offset) % 10000).padStart(4, '0')}`;
+    const candidate = `${prefix}-${String((start + offset) % 10000).padStart(4, '0')}`;
     if (!exists.get(candidate)) return candidate;
   }
 
   throw new HttpError(500, 'id_generation_failed', 'No se pudo generar un identificador único.');
+}
+
+function nextOpportunityId(db) {
+  return nextPrefixedId(db, 'opportunities', 'OP');
+}
+
+function nextInitiativeId(db) {
+  return nextPrefixedId(db, 'initiatives', 'IN');
 }
 
 function getClientIp(req, config) {
@@ -476,7 +502,7 @@ async function createOpportunity(ctx, req, res) {
     tags: JSON.stringify(body.tags === undefined ? [] : parseTags(body.tags)),
     number: typeof body.number === 'string' ? body.number.trim().slice(0, 160) : '',
     client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
-    tower_id: optionalId(ctx.db, 'towers', body.towerId, 'tower'),
+    tower_id: optionalTowerId(ctx.db, body.towerId),
     owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
     bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
     qa_percent: parsePercent(body.qaPercent ?? 0),
@@ -615,8 +641,17 @@ const MASTER_CONFIG = {
 function listMaster(ctx, req, res, kind) {
   requireUser(ctx, req);
   const { table } = MASTER_CONFIG[kind];
-  const rows = ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
-  sendJson(res, 200, { records: rows.map(mapMaster) });
+  const rows = kind === 'towers'
+    ? ctx.db.prepare(`SELECT towers.*, people.name AS responsible_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id ORDER BY towers.name COLLATE NOCASE`).all()
+    : ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
+  sendJson(res, 200, { records: rows.map((row) => mapMaster(row, kind)) });
+}
+
+function getMasterRow(db, kind, id) {
+  if (kind === 'towers') {
+    return db.prepare('SELECT towers.*, people.name AS responsible_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id WHERE towers.id = ?').get(id);
+  }
+  return db.prepare(`SELECT * FROM ${MASTER_CONFIG[kind].table} WHERE id = ?`).get(id);
 }
 
 async function mutateMaster(ctx, req, res, kind, rawId = null) {
@@ -630,29 +665,55 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
       if (field === 'name') return parseTextField(body[field], field, 120);
       return typeof body[field] === 'string' ? body[field].trim().slice(0, 160) : '';
     });
+    const responsibleId = kind === 'towers' ? optionalId(ctx.db, 'people', body.responsibleId, 'responsable') : null;
+    if (kind === 'towers' && !responsibleId) throw validationError('Selecciona un responsable para la tower.');
     if (kind === 'towers' && ctx.db.prepare('SELECT id FROM towers WHERE name = ?').get(values[0])) throw new HttpError(409, 'duplicate_record', 'Ya existe una tower con ese nombre.');
     const id = randomUUID();
-    const columns = ['id', ...fields, 'status', 'created_at', 'updated_at'];
-    ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, 'active', now, now);
+    const columns = ['id', ...fields, ...(kind === 'towers' ? ['responsible_id'] : []), 'status', 'created_at', 'updated_at'];
+    ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, ...(kind === 'towers' ? [responsibleId] : []), 'active', now, now);
     appendEntityEvent(ctx.db, { type: kind, id, user, action: 'created', now });
-    row = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+    row = getMasterRow(ctx.db, kind, id);
   } else {
     const id = decodeId(rawId);
     const current = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
     if (!current) throw new HttpError(404, 'not_found', 'El registro no existe.');
     if (req.method === 'DELETE') {
+      if (kind === 'towers') {
+        withTransaction(ctx.db, () => {
+          const opportunity = ctx.db.prepare('SELECT id FROM opportunities WHERE tower_id = ? LIMIT 1').get(id);
+          const initiative = ctx.db.prepare('SELECT id FROM initiatives WHERE tower_id = ? LIMIT 1').get(id);
+          if (opportunity || initiative) {
+            throw new HttpError(409, 'tower_in_use', 'No se puede eliminar esta tower porque está vinculada a oportunidades o iniciativas.');
+          }
+          appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deleted', now });
+          ctx.db.prepare('DELETE FROM towers WHERE id = ?').run(id);
+        });
+        sendJson(res, 200, { deleted: true });
+        return;
+      }
       ctx.db.prepare(`UPDATE ${table} SET status = 'inactive', updated_at = ? WHERE id = ?`).run(now, id);
       appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deactivated', now });
     } else {
       const changes = fields.filter((field) => Object.hasOwn(body, field)).map((field) => [field, field === 'name' ? parseTextField(body[field], field, 120) : String(body[field] ?? '').trim().slice(0, 160)]);
-      if (Object.hasOwn(body, 'active')) changes.push(['status', body.active ? 'active' : 'inactive']);
-      if (!changes.length) { sendJson(res, 200, { [plural.slice(0, -1)]: mapMaster(current) }); return; }
+      if (kind === 'towers') {
+        if (Object.hasOwn(body, 'active')) throw validationError('Las towers no tienen estado activo o inactivo.');
+        if (Object.hasOwn(body, 'responsibleId')) {
+          const responsibleId = optionalId(ctx.db, 'people', body.responsibleId, 'responsable');
+          if (!responsibleId) throw validationError('Selecciona un responsable para la tower.');
+          changes.push(['responsible_id', responsibleId]);
+        }
+      } else if (Object.hasOwn(body, 'active')) changes.push(['status', body.active ? 'active' : 'inactive']);
+      if (!changes.length) {
+        const mapped = mapMaster(getMasterRow(ctx.db, kind, id), kind);
+        sendJson(res, 200, kind === 'towers' ? { record: mapped } : { [plural.slice(0, -1)]: mapped });
+        return;
+      }
       ctx.db.prepare(`UPDATE ${table} SET ${changes.map(([field]) => `${field} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...changes.map(([, value]) => value), now, id);
       appendEntityEvent(ctx.db, { type: kind, id, user, action: changes.some(([field]) => field === 'status') ? 'status_changed' : 'updated', detail: { fields: changes.map(([field]) => field) }, now });
     }
-    row = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
+    row = getMasterRow(ctx.db, kind, id);
   }
-  sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row) });
+  sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row, kind) });
 }
 
 function listInitiatives(ctx, req, res) {
@@ -671,7 +732,7 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
       title: parseTextField(body.title, 'title', 160),
       category: body.category === undefined ? 'external' : body.category,
       client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
-      tower_id: optionalId(ctx.db, 'towers', body.towerId, 'tower'),
+      tower_id: optionalTowerId(ctx.db, body.towerId),
       owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
       bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
       amount: parseAmount(body.amount ?? 0),
@@ -681,10 +742,23 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
       stage: parseStage(body.stage ?? 'prospecting'),
     };
     if (!['internal', 'cross_selling', 'external'].includes(fields.category)) throw validationError('La categoría de la iniciativa no es válida.');
-    id = randomUUID();
     const columns = ['id', ...Object.keys(fields), 'created_at', 'updated_at'];
-    ctx.db.prepare(`INSERT INTO initiatives (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...Object.values(fields), now, now);
-    appendEntityEvent(ctx.db, { type: 'initiative', id, user, action: 'created', now });
+    const insert = ctx.db.prepare(`INSERT INTO initiatives (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`);
+    let createdId;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        createdId = withTransaction(ctx.db, () => {
+          const nextId = nextInitiativeId(ctx.db);
+          insert.run(nextId, ...Object.values(fields), now, now);
+          appendEntityEvent(ctx.db, { type: 'initiative', id: nextId, user, action: 'created', now });
+          return nextId;
+        });
+        break;
+      } catch (error) {
+        if (!isUniqueViolation(error) || attempt >= 4) throw error;
+      }
+    }
+    id = createdId;
   } else {
     id = decodeId(rawId);
     const existing = ctx.db.prepare('SELECT * FROM initiatives WHERE id = ?').get(id);
@@ -696,7 +770,7 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
         return value;
       },
       clientId: (value) => optionalId(ctx.db, 'clients', value, 'cliente'),
-      towerId: (value) => optionalId(ctx.db, 'towers', value, 'tower'),
+      towerId: (value) => optionalTowerId(ctx.db, value),
       ownerId: (value) => optionalId(ctx.db, 'people', value, 'responsable'),
       bidManagerId: (value) => optionalId(ctx.db, 'people', value, 'bid manager'),
       amount: parseAmount,

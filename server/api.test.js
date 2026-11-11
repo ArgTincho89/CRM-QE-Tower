@@ -264,7 +264,7 @@ describe('CRM API', () => {
 
     assert.equal(response.status, 201);
     const opportunity = response.body.opportunity;
-    assert.match(opportunity.id, /^O-\d{4}$/);
+    assert.match(opportunity.id, /^OP-\d{4}$/);
     assert.equal(opportunity.title, OPPORTUNITY_PAYLOAD.title);
     assert.equal(opportunity.stage, 'prospecting');
     assert.deepEqual(opportunity.tags, ['Cross-selling', 'Alta prioridad']);
@@ -302,8 +302,8 @@ describe('CRM API', () => {
 
   test('master records can be created, linked and deactivated without deleting references', async () => {
     const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente maestro', sector: 'Tecnología' }, cookie: session });
-    const tower = await app.json('POST', '/api/towers', { body: { name: 'QE Platform' }, cookie: session });
     const person = await app.json('POST', '/api/people', { body: { name: 'Responsable QE', email: 'qe@example.com' }, cookie: session });
+    const tower = await app.json('POST', '/api/towers', { body: { name: 'QE Platform', responsibleId: person.body.record.id }, cookie: session });
     assert.equal(client.status, 201);
     assert.equal(tower.status, 201);
     assert.equal(person.status, 201);
@@ -317,6 +317,12 @@ describe('CRM API', () => {
     assert.equal(linked.body.opportunity.clientId, client.body.record.id);
     assert.equal(linked.body.opportunity.qaPercent, 35);
 
+    const blockedTowerDelete = await app.json('DELETE', `/api/towers/${tower.body.record.id}`, { cookie: session });
+    assert.equal(blockedTowerDelete.status, 409);
+    assert.equal(blockedTowerDelete.body.error.code, 'tower_in_use');
+    assert.match(blockedTowerDelete.body.error.message, /oportunidades o iniciativas/i);
+    assert.ok(app.db.prepare('SELECT id FROM towers WHERE id = ?').get(tower.body.record.id));
+
     const deactivate = await app.json('DELETE', `/api/clients/${client.body.record.id}`, { cookie: session });
     assert.equal(deactivate.status, 200);
     assert.equal(deactivate.body.record.active, false);
@@ -328,13 +334,58 @@ describe('CRM API', () => {
     assert.equal(inactiveLink.status, 400);
   });
 
+  test('towers require and can change a responsible, hide lifecycle status, and delete only when unreferenced', async () => {
+    const firstPerson = await app.json('POST', '/api/people', { body: { name: 'Tower Owner One' }, cookie: session });
+    const secondPerson = await app.json('POST', '/api/people', { body: { name: 'Tower Owner Two' }, cookie: session });
+    const missingResponsible = await app.json('POST', '/api/towers', { body: { name: 'Tower sin responsable' }, cookie: session });
+    assert.equal(missingResponsible.status, 400);
+    assert.equal(missingResponsible.body.error.code, 'validation_error');
+
+    const created = await app.json('POST', '/api/towers', { body: { name: 'Tower administrable', responsibleId: firstPerson.body.record.id }, cookie: session });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.record.responsibleId, firstPerson.body.record.id);
+    assert.equal(created.body.record.responsibleName, 'Tower Owner One');
+    assert.equal(Object.hasOwn(created.body.record, 'active'), false);
+
+    const changed = await app.json('PATCH', `/api/towers/${created.body.record.id}`, { body: { responsibleId: secondPerson.body.record.id }, cookie: session });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.record.responsibleId, secondPerson.body.record.id);
+    assert.equal(changed.body.record.responsibleName, 'Tower Owner Two');
+
+    const lifecycleChange = await app.json('PATCH', `/api/towers/${created.body.record.id}`, { body: { active: false }, cookie: session });
+    assert.equal(lifecycleChange.status, 400);
+    assert.match(lifecycleChange.body.error.message, /no tienen estado activo o inactivo/i);
+
+    const deleted = await app.json('DELETE', `/api/towers/${created.body.record.id}`, { cookie: session });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal(app.db.prepare('SELECT id FROM towers WHERE id = ?').get(created.body.record.id), undefined);
+
+    const legacyInactive = await app.json('POST', '/api/towers', { body: { name: 'Tower legacy inactiva', responsibleId: firstPerson.body.record.id }, cookie: session });
+    app.db.prepare("UPDATE towers SET status = 'inactive' WHERE id = ?").run(legacyInactive.body.record.id);
+    const listedTowers = await app.json('GET', '/api/towers', { cookie: session });
+    const inactiveRecord = listedTowers.body.records.find((tower) => tower.id === legacyInactive.body.record.id);
+    assert.equal(Object.hasOwn(inactiveRecord, 'active'), false);
+    const linkedLegacyTower = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, towerId: legacyInactive.body.record.id }, cookie: session });
+    assert.equal(linkedLegacyTower.status, 201);
+    const blockedLegacyDelete = await app.json('DELETE', `/api/towers/${legacyInactive.body.record.id}`, { cookie: session });
+    assert.equal(blockedLegacyDelete.status, 409);
+
+    const initiativeTower = await app.json('POST', '/api/towers', { body: { name: 'Tower vinculada a iniciativa', responsibleId: firstPerson.body.record.id }, cookie: session });
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa con tower', towerId: initiativeTower.body.record.id }, cookie: session });
+    assert.equal(initiative.status, 201);
+    const blockedByInitiative = await app.json('DELETE', `/api/towers/${initiativeTower.body.record.id}`, { cookie: session });
+    assert.equal(blockedByInitiative.status, 409);
+    assert.ok(app.db.prepare('SELECT id FROM initiatives WHERE id = ? AND tower_id = ?').get(initiative.body.initiative.id, initiativeTower.body.record.id));
+  });
+
   test('opportunity display fields use linked master names and retain legacy fallbacks', async () => {
     const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente vinculado' }, cookie: session });
-    const tower = await app.json('POST', '/api/towers', { body: { name: 'Tower vinculada' }, cookie: session });
     const owner = await app.json('POST', '/api/people', { body: { name: 'Responsable vinculado' }, cookie: session });
     const replacementClient = await app.json('POST', '/api/clients', { body: { name: 'Cliente actualizado' }, cookie: session });
-    const replacementTower = await app.json('POST', '/api/towers', { body: { name: 'Tower actualizada' }, cookie: session });
     const replacementOwner = await app.json('POST', '/api/people', { body: { name: 'Responsable actualizado' }, cookie: session });
+    const tower = await app.json('POST', '/api/towers', { body: { name: 'Tower vinculada', responsibleId: owner.body.record.id }, cookie: session });
+    const replacementTower = await app.json('POST', '/api/towers', { body: { name: 'Tower actualizada', responsibleId: replacementOwner.body.record.id }, cookie: session });
 
     const linked = await app.json('POST', '/api/opportunities', {
       body: { ...OPPORTUNITY_PAYLOAD, account: '', tower: '', owner: '', clientId: client.body.record.id, towerId: tower.body.record.id, ownerId: owner.body.record.id },
@@ -477,8 +528,44 @@ describe('CRM API', () => {
     });
 
     assert.notEqual(first.body.opportunity.id, second.body.opportunity.id);
-    assert.match(first.body.opportunity.id, /^O-\d{4}$/);
-    assert.match(second.body.opportunity.id, /^O-\d{4}$/);
+    assert.match(first.body.opportunity.id, /^OP-\d{4}$/);
+    assert.match(second.body.opportunity.id, /^OP-\d{4}$/);
+  });
+
+  test('opportunity and initiative IDs start at their prefixes and advance without changing legacy records', async () => {
+    const fresh = await startTestServer();
+    try {
+      const registered = await fresh.register({ email: 'sequence@example.com', name: 'Sequence User', password: 'password123' });
+      const cookie = registered.cookie;
+      const opportunity = await fresh.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie });
+      fresh.db.exec(`CREATE TRIGGER reject_initiative_event BEFORE INSERT ON entity_events
+        WHEN NEW.entity_type = 'initiative' BEGIN SELECT RAISE(ABORT, 'test rollback'); END`);
+      const rolledBack = await fresh.json('POST', '/api/initiatives', { body: { title: 'No debe persistir' }, cookie });
+      assert.equal(rolledBack.status, 500);
+      assert.equal(fresh.db.prepare('SELECT COUNT(*) AS count FROM initiatives').get().count, 0);
+      fresh.db.exec('DROP TRIGGER reject_initiative_event');
+      const initiative = await fresh.json('POST', '/api/initiatives', { body: { title: 'Primera iniciativa', amount: '100' }, cookie });
+      assert.equal(opportunity.body.opportunity.id, 'OP-0001');
+      assert.equal(initiative.body.initiative.id, 'IN-0001');
+
+      const now = new Date().toISOString();
+      fresh.db.prepare(`INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('OP-0012','Legacy OP','','0','prospecting','','','','[]',?,?)`).run(now, now);
+      fresh.db.prepare(`INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('O-0009','Legacy O','','0','prospecting','','','','[]',?,?)`).run(now, now);
+      fresh.db.prepare(`INSERT INTO card_events (card_id,user_name,action,detail,created_at) VALUES ('OP-0012','Sistema','created','{}',?)`).run(now);
+      fresh.db.prepare(`INSERT INTO initiatives (id,title,created_at,updated_at) VALUES ('IN-0007','Legacy IN',?,?)`).run(now, now);
+      fresh.db.prepare(`INSERT INTO initiatives (id,title,created_at,updated_at) VALUES ('legacy-initiative','Legacy initiative',?,?)`).run(now, now);
+
+      const nextOpportunity = await fresh.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Siguiente oportunidad' }, cookie });
+      const nextInitiative = await fresh.json('POST', '/api/initiatives', { body: { title: 'Siguiente iniciativa' }, cookie });
+      assert.equal(nextOpportunity.body.opportunity.id, 'OP-0013');
+      assert.equal(nextInitiative.body.initiative.id, 'IN-0008');
+      assert.ok(fresh.db.prepare('SELECT id FROM opportunities WHERE id = ?').get('O-0009'));
+      assert.ok(fresh.db.prepare('SELECT id FROM opportunities WHERE id = ?').get('OP-0012'));
+      assert.ok(fresh.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get('OP-0012'));
+      assert.ok(fresh.db.prepare('SELECT id FROM initiatives WHERE id = ?').get('legacy-initiative'));
+    } finally {
+      await fresh.cleanup();
+    }
   });
 
   test('PATCH with identical values writes no event', async () => {

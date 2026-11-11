@@ -22,8 +22,9 @@ const SCHEMA_STATEMENTS = [
       status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
   `CREATE TABLE IF NOT EXISTS towers (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+       responsible_id TEXT REFERENCES people(id),
+       status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
   `CREATE TABLE IF NOT EXISTS people (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL DEFAULT '',
@@ -118,6 +119,10 @@ export function applySchema(db) {
   const initiativeColumns = db.prepare('PRAGMA table_info(initiatives)').all().map((row) => row.name);
   if (!initiativeColumns.includes('stage')) {
     db.exec("ALTER TABLE initiatives ADD COLUMN stage TEXT NOT NULL DEFAULT 'prospecting'");
+  }
+  const towerColumns = db.prepare('PRAGMA table_info(towers)').all().map((row) => row.name);
+  if (!towerColumns.includes('responsible_id')) {
+    db.exec('ALTER TABLE towers ADD COLUMN responsible_id TEXT REFERENCES people(id)');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
 }

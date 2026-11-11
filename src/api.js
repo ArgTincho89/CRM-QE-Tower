@@ -67,7 +67,7 @@ export const deactivateClient = (id) => request(`/clients/${encodeURIComponent(i
 export const listTowers = () => request('/towers');
 export const createTower = (body) => request('/towers', { method: 'POST', body });
 export const updateTower = (id, body) => request(`/towers/${encodeURIComponent(id)}`, { method: 'PATCH', body });
-export const deactivateTower = (id) => request(`/towers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+export const deleteTower = (id) => request(`/towers/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listPeople = () => request('/people');
 export const createPerson = (body) => request('/people', { method: 'POST', body });
 export const updatePerson = (id, body) => request(`/people/${encodeURIComponent(id)}`, { method: 'PATCH', body });
