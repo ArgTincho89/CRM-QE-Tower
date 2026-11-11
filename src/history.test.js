@@ -23,7 +23,7 @@ test('describeEvent created', () => {
 test('describeEvent moved with both stages', () => {
   assert.equal(
     describeEvent({ action: 'moved', detail: { from: 'prospecting', to: 'proposal' } }),
-    'Movió la tarjeta de «Prospección (Backlog)» a «Propuesta / Oferta»',
+    'Movió la tarjeta de «Prospección» a «Propuesta / Pliego»',
   );
 });
 

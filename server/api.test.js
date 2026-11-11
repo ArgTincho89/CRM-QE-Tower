@@ -397,7 +397,7 @@ describe('CRM API', () => {
     assert.equal(badStage.body.error.code, 'validation_error');
     assert.match(badStage.body.error.message, /etapa/i);
     const removedStage = await app.json('POST', '/api/opportunities', {
-      body: { ...OPPORTUNITY_PAYLOAD, stage: 'negotiation' }, cookie: session,
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'analysis' }, cookie: session,
     });
     assert.equal(removedStage.status, 400);
   });
@@ -563,6 +563,172 @@ describe('CRM API', () => {
     assert.equal(legacy.body.opportunity.account, OPPORTUNITY_PAYLOAD.account);
     assert.equal(legacy.body.opportunity.tower, OPPORTUNITY_PAYLOAD.tower);
     assert.equal(legacy.body.opportunity.owner, OPPORTUNITY_PAYLOAD.owner);
+  });
+
+  test('opportunities persist multi-value relations, commercial fields, and weighted amounts', async () => {
+    const firstOwner = await app.json('POST', '/api/people', { body: { name: 'Tower Owner Multi One' }, cookie: session });
+    const secondOwner = await app.json('POST', '/api/people', { body: { name: 'Tower Owner Multi Two' }, cookie: session });
+    const towerA = await app.json('POST', '/api/towers', { body: { name: 'Tower multi A', responsibleId: firstOwner.body.record.id }, cookie: session });
+    const towerB = await app.json('POST', '/api/towers', { body: { name: 'Tower multi B', responsibleId: secondOwner.body.record.id }, cookie: session });
+    const lobA = await app.json('POST', '/api/lobs', { body: { name: 'LoB multi A' }, cookie: session });
+    const lobB = await app.json('POST', '/api/lobs', { body: { name: 'LoB multi B' }, cookie: session });
+    const services = await app.json('GET', '/api/services', { cookie: session });
+    const serviceA = services.body.records.find((item) => item.name === 'QA Automation');
+    const serviceB = services.body.records.find((item) => item.name === 'API Testing');
+
+    const created = await app.json('POST', '/api/opportunities', {
+      body: {
+        title: 'Oportunidad multi',
+        account: 'Cliente multi',
+        amount: '10000',
+        stage: 'contacted',
+        towerIds: [towerA.body.record.id, towerB.body.record.id, towerA.body.record.id],
+        lobIds: [lobA.body.record.id, lobB.body.record.id],
+        serviceIds: [serviceA.id, serviceB.id],
+        probability: 40,
+        expectedCloseDate: '2026-12-31',
+        nextMilestone: 'Enviar propuesta',
+        nextMilestoneDate: '2026-11-30',
+        need: 'Cubrir QA del core',
+        origin: 'Prospección directa',
+        qaPercent: 50,
+        pep: 'PEP-42',
+        links: [
+          { title: 'Enlace Workspace 1', url: 'https://workspaces.example/one' },
+          { title: 'Enlace Workspace 2', url: 'https://workspaces.example/two' },
+        ],
+      },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    const opportunity = created.body.opportunity;
+    assert.equal(opportunity.stage, 'contacted');
+    assert.equal(opportunity.origin, 'Prospección directa');
+    assert.equal(opportunity.probability, 40);
+    assert.deepEqual(opportunity.towers.map((item) => item.id).sort(), [towerA.body.record.id, towerB.body.record.id].sort());
+    assert.deepEqual(opportunity.lobs.map((item) => item.id).sort(), [lobA.body.record.id, lobB.body.record.id].sort());
+    assert.equal(opportunity.services.length, 2);
+    assert.equal(opportunity.links.length, 2);
+    assert.equal(opportunity.weightedAmount, 4000);
+    assert.equal(opportunity.qaWeightedAmount, 5000);
+    assert.equal(opportunity.expectedCloseDate, '2026-12-31');
+    assert.equal(opportunity.nextMilestone, 'Enviar propuesta');
+    assert.equal(opportunity.pep, 'PEP-42');
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM opportunity_towers WHERE opportunity_id = ?').get(opportunity.id).count, 2);
+
+    const withoutProbability = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, title: 'Sin probabilidad', amount: '1000' },
+      cookie: session,
+    });
+    assert.equal(withoutProbability.body.opportunity.probability, null);
+    assert.equal(withoutProbability.body.opportunity.weightedAmount, null);
+    assert.deepEqual(withoutProbability.body.opportunity.lobs, []);
+
+    const updated = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, {
+      body: { towerIds: [towerB.body.record.id], lobIds: [lobA.body.record.id], serviceIds: [serviceA.id], links: [{ title: 'Solo uno', url: 'https://workspaces.example/one' }] },
+      cookie: session,
+    });
+    assert.equal(updated.status, 200);
+    assert.deepEqual(updated.body.opportunity.towers.map((item) => item.id), [towerB.body.record.id]);
+    assert.deepEqual(updated.body.opportunity.lobs.map((item) => item.id), [lobA.body.record.id]);
+    assert.equal(updated.body.opportunity.services.length, 1);
+    assert.equal(updated.body.opportunity.links.length, 1);
+  });
+
+  test('opportunity origin, outcome, close date, loss reason, and archived edits are validated', async () => {
+    const badOrigin = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, origin: 'Inventado' }, cookie: session });
+    assert.equal(badOrigin.status, 400);
+    const badProbability = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, probability: 140 }, cookie: session });
+    assert.equal(badProbability.status, 400);
+    const badLink = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, links: [{ title: 'Malo', url: 'ftp://example.com' }] }, cookie: session });
+    assert.equal(badLink.status, 400);
+
+    const resultWithoutOutcome = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result' }, cookie: session });
+    assert.equal(resultWithoutOutcome.status, 400);
+    const resultWithoutDate = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'won' }, cookie: session });
+    assert.equal(resultWithoutDate.status, 400);
+    const lostWithoutReason = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'lost', expectedCloseDate: '2026-12-01' },
+      cookie: session,
+    });
+    assert.equal(lostWithoutReason.status, 400);
+    const outcomeOutsideResult = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, outcome: 'won' }, cookie: session });
+    assert.equal(outcomeOutsideResult.status, 400);
+
+    const won = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'won', expectedCloseDate: '2026-12-01', pep: 'PEP-1' },
+      cookie: session,
+    });
+    assert.equal(won.status, 201);
+    assert.equal(won.body.opportunity.outcome, 'won');
+    const movedBack = await app.json('PATCH', `/api/opportunities/${won.body.opportunity.id}`, { body: { stage: 'proposal' }, cookie: session });
+    assert.equal(movedBack.status, 200);
+    assert.equal(movedBack.body.opportunity.outcome, '');
+    assert.equal(movedBack.body.opportunity.pep, 'PEP-1');
+
+    const archived = await app.json('POST', `/api/opportunities/${won.body.opportunity.id}/archive`, { cookie: session });
+    assert.equal(archived.status, 200);
+    assert.ok(archived.body.opportunity.archivedAt);
+    const blockedEdit = await app.json('PATCH', `/api/opportunities/${won.body.opportunity.id}`, { body: { title: 'No permitido' }, cookie: session });
+    assert.equal(blockedEdit.status, 409);
+    assert.equal(blockedEdit.body.error.code, 'record_archived');
+  });
+
+  test('archiving hides opportunities from the active board and restore preserves data', async () => {
+    const created = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, title: 'Archivable', links: [{ title: 'Doc', url: 'https://example.com/doc' }] },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    const id = created.body.opportunity.id;
+    const archived = await app.json('POST', `/api/opportunities/${id}/archive`, { cookie: session });
+    assert.equal(archived.status, 200);
+    assert.equal(archived.body.opportunity.links.length, 1);
+    const active = await app.json('GET', '/api/opportunities', { cookie: session });
+    assert.equal(active.body.opportunities.some((item) => item.id === id), false);
+    const archivedList = await app.json('GET', '/api/opportunities?archived=1', { cookie: session });
+    const archivedRow = archivedList.body.opportunities.find((item) => item.id === id);
+    assert.ok(archivedRow);
+    assert.equal(archivedRow.archivedByName, 'Ada Lovelace');
+    const restored = await app.json('POST', `/api/opportunities/${id}/restore`, { cookie: session });
+    assert.equal(restored.status, 200);
+    assert.equal(restored.body.opportunity.archivedAt, '');
+    assert.equal(restored.body.opportunity.links.length, 1);
+    const activeAgain = await app.json('GET', '/api/opportunities', { cookie: session });
+    assert.equal(activeAgain.body.opportunities.some((item) => item.id === id), true);
+  });
+
+  test('opportunities link to an initiative without coupling lifecycles and default the origin', async () => {
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente iniciativa origen' }, cookie: session });
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa origen', clientId: client.body.record.id }, cookie: session });
+    assert.equal(initiative.status, 201);
+    const derived = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, title: 'Derivada', account: '', clientId: client.body.record.id, initiativeId: initiative.body.initiative.id },
+      cookie: session,
+    });
+    assert.equal(derived.status, 201);
+    assert.equal(derived.body.opportunity.origin, 'Iniciativa interna');
+    assert.equal(derived.body.opportunity.initiativeId, initiative.body.initiative.id);
+    assert.equal(derived.body.opportunity.initiativeTitle, 'Iniciativa origen');
+    const editable = await app.json('PATCH', `/api/opportunities/${derived.body.opportunity.id}`, { body: { origin: 'Cliente existente' }, cookie: session });
+    assert.equal(editable.body.opportunity.origin, 'Cliente existente');
+    const missingInitiative = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, initiativeId: 'IN-9999' }, cookie: session });
+    assert.equal(missingInitiative.status, 400);
+  });
+
+  test('inactive services cannot be newly assigned but stay on historical links', async () => {
+    const services = await app.json('GET', '/api/services', { cookie: session });
+    const service = services.body.records.find((item) => item.name === 'Accessibility Testing');
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [service.id] }, cookie: session });
+    assert.equal(created.status, 201);
+    await app.json('DELETE', `/api/services/${service.id}`, { cookie: session });
+    const blocked = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [service.id] }, cookie: session });
+    assert.equal(blocked.status, 400);
+    const listed = await app.json('GET', '/api/opportunities', { cookie: session });
+    const row = listed.body.opportunities.find((item) => item.id === created.body.opportunity.id);
+    assert.equal(row.services.length, 1);
+    assert.equal(row.services[0].status, 'inactive');
+    await app.json('PATCH', `/api/services/${service.id}`, { body: { active: true }, cookie: session });
   });
 
   test('initiative and framework agreement records persist, with notes and action completion', async () => {
@@ -859,14 +1025,14 @@ describe('CRM API', () => {
     const { id } = created.body.opportunity;
 
     const patch = await app.json('PATCH', `/api/opportunities/${id}`, {
-      body: { stage: 'lost', title: 'Doble cambio aplicado' },
+      body: { stage: 'contacted', title: 'Doble cambio aplicado' },
       cookie: session,
     });
 
     assert.equal(patch.status, 200);
     assert.equal(patch.body.events.length, 2);
     assert.equal(patch.body.events[0].action, 'moved');
-    assert.deepEqual(patch.body.events[0].detail, { from: 'prospecting', to: 'lost' });
+    assert.deepEqual(patch.body.events[0].detail, { from: 'prospecting', to: 'contacted' });
     assert.equal(patch.body.events[1].action, 'updated');
     assert.deepEqual(patch.body.events[1].detail, { fields: ['title'] });
 

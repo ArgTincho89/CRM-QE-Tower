@@ -16,7 +16,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
-import { stages } from '../src/data.js';
+import { opportunityOrigins, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
 import {
   HttpError,
@@ -29,6 +29,9 @@ import {
 } from './http.js';
 
 const STAGES = new Set(stages.map(({ id }) => id));
+const OPPORTUNITY_ORIGINS = new Set(opportunityOrigins);
+const OUTCOMES = new Set(['won', 'lost', 'discarded']);
+const RESULT_STAGE = 'result';
 
 const FIELD_LIMITS = {
   title: 160,
@@ -40,7 +43,12 @@ const FIELD_LIMITS = {
 };
 
 /** Field names a PATCH may touch. The order also drives the `updated` event payload. */
-const EDITABLE_FIELDS = ['title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number', 'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason'];
+const EDITABLE_FIELDS = [
+  'title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number',
+  'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason',
+  'origin', 'probability', 'expected_close_date', 'next_milestone', 'next_milestone_date',
+  'need', 'initiative_id', 'outcome', 'pep',
+];
 
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 40;
@@ -93,14 +101,59 @@ function safeParseJson(raw, fallback) {
   }
 }
 
-function mapOpportunity(row) {
+function loadJoinRows(db, table, valueTable, ownerColumn, valueColumn, ownerId) {
+  return db
+    .prepare(
+      `SELECT v.id, v.name, v.status FROM ${table} j
+         JOIN ${valueTable} v ON v.id = j.${valueColumn}
+        WHERE j.${ownerColumn} = ?
+        ORDER BY v.name COLLATE NOCASE`,
+    )
+    .all(ownerId);
+}
+
+function replaceJoinRows(db, table, ownerColumn, ownerId, valueColumn, ids) {
+  db.prepare(`DELETE FROM ${table} WHERE ${ownerColumn} = ?`).run(ownerId);
+  const insert = db.prepare(`INSERT OR IGNORE INTO ${table} (${ownerColumn}, ${valueColumn}) VALUES (?, ?)`);
+  for (const id of ids) insert.run(ownerId, id);
+}
+
+function loadWorkspaceLinks(db, entityType, entityId) {
+  return db
+    .prepare('SELECT id, title, url FROM workspace_links WHERE entity_type = ? AND entity_id = ? ORDER BY created_at, id')
+    .all(entityType, entityId);
+}
+
+function replaceWorkspaceLinks(db, entityType, entityId, links, user, now) {
+  db.prepare('DELETE FROM workspace_links WHERE entity_type = ? AND entity_id = ?').run(entityType, entityId);
+  const insert = db.prepare(
+    `INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at, created_by_id, created_by_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const link of links) {
+    insert.run(randomUUID(), entityType, entityId, link.title, link.url, now, user?.id ?? null, user?.name ?? '');
+  }
+}
+
+function mapOpportunity(row, db) {
+  const towers = db ? loadJoinRows(db, 'opportunity_towers', 'towers', 'opportunity_id', 'tower_id', row.id) : [];
+  const lobs = db ? loadJoinRows(db, 'opportunity_lobs', 'lobs', 'opportunity_id', 'lob_id', row.id) : [];
+  const services = db ? loadJoinRows(db, 'opportunity_services', 'services', 'opportunity_id', 'service_id', row.id) : [];
+  const links = db ? loadWorkspaceLinks(db, 'opportunity', row.id) : [];
+  const initiative = row.initiative_id && db
+    ? db.prepare('SELECT id, title FROM initiatives WHERE id = ?').get(row.initiative_id)
+    : null;
+  const amountValue = Number(parseAmount(row.amount));
+  const probability = row.probability === null || row.probability === undefined ? null : Number(row.probability);
+  const qaPercent = Number(row.qa_percent || 0);
+
   return {
     id: row.id,
     title: row.title,
     account: row.linked_client_name || row.account || '',
-    amount: formatCurrency(Number(parseAmount(row.amount))),
+    amount: formatCurrency(amountValue),
     stage: row.stage,
-    tower: row.linked_tower_name || row.tower || '',
+    tower: row.linked_tower_name || row.tower || towers[0]?.name || '',
     owner: row.linked_owner_name || row.owner || '',
     due: row.due,
     tags: safeParseJson(row.tags, []),
@@ -110,8 +163,26 @@ function mapOpportunity(row) {
     ownerId: row.owner_id || '',
     bidManagerId: row.bid_manager_id || '',
     bidManager: row.linked_bid_manager_name || '',
-    qaPercent: Number(row.qa_percent || 0),
+    qaPercent,
     closureReason: row.closure_reason || '',
+    origin: row.origin || '',
+    probability,
+    expectedCloseDate: row.expected_close_date || '',
+    nextMilestone: row.next_milestone || '',
+    nextMilestoneDate: row.next_milestone_date || '',
+    need: row.need || '',
+    initiativeId: row.initiative_id || '',
+    initiativeTitle: initiative?.title || '',
+    outcome: row.outcome || '',
+    pep: row.pep || '',
+    archivedAt: row.archived_at || '',
+    archivedByName: row.archived_by_name || '',
+    towers,
+    lobs,
+    services,
+    links,
+    qaWeightedAmount: (amountValue * qaPercent) / 100,
+    weightedAmount: probability === null ? null : (amountValue * probability) / 100,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -231,6 +302,89 @@ function parsePercent(value) {
   return number;
 }
 
+function parseProbability(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 100) {
+    throw validationError('La probabilidad de cierre debe ser un número entre 0 y 100.');
+  }
+  return Math.trunc(number);
+}
+
+function parseOrigin(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string' || !OPPORTUNITY_ORIGINS.has(value.trim())) {
+    throw validationError(`El origen debe ser uno de: ${[...OPPORTUNITY_ORIGINS].join(', ')}.`);
+  }
+  return value.trim();
+}
+
+function parseOutcome(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string' || !OUTCOMES.has(value.trim())) {
+    throw validationError('El resultado debe ser Ganada, Perdida o Descartada.');
+  }
+  return value.trim();
+}
+
+function parseOptionalDate(value, field) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    throw validationError(`El campo "${field}" debe ser una fecha válida (AAAA-MM-DD).`);
+  }
+  return value.trim();
+}
+
+function parseShortText(value, maxLength = 240) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function optionalInitiativeId(db, value) {
+  if (value === undefined || value === null || value === '') return null;
+  const found = db.prepare('SELECT id FROM initiatives WHERE id = ? AND archived_at IS NULL').get(value);
+  if (typeof value !== 'string' || !found) {
+    throw validationError('La iniciativa seleccionada no existe o está archivada.');
+  }
+  return value;
+}
+
+function parseIdList(value, field) {
+  if (value === undefined || value === null || value === '') return [];
+  if (!Array.isArray(value)) throw validationError(`"${field}" debe ser una lista de identificadores.`);
+  const ids = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw validationError(`"${field}" debe ser una lista de identificadores.`);
+    }
+    const id = item.trim();
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+function assertActiveRecords(db, table, ids, field) {
+  const find = db.prepare(`SELECT id FROM ${table} WHERE id = ? AND status = 'active'`);
+  for (const id of ids) {
+    if (!find.get(id)) throw validationError(`El registro seleccionado en "${field}" no existe o está inactivo.`);
+  }
+}
+
+function parseWorkspaceLinks(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw validationError('Los enlaces de Workspace deben ser una lista.');
+  if (value.length > 20) throw validationError('No se permiten más de 20 enlaces de Workspace.');
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') throw validationError('Cada enlace debe tener título y URL.');
+    const title = typeof item.title === 'string' ? item.title.trim() : '';
+    const url = typeof item.url === 'string' ? item.url.trim() : '';
+    if (!title) throw validationError('Cada enlace de Workspace necesita un título.');
+    if (title.length > 120) throw validationError('El título del enlace no puede superar los 120 caracteres.');
+    if (!/^https?:\/\//i.test(url)) throw validationError('La URL del enlace debe empezar por http:// o https://.');
+    if (url.length > 500) throw validationError('La URL del enlace no puede superar los 500 caracteres.');
+    return { title, url };
+  });
+}
+
 function optionalId(db, table, value, field) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || !db.prepare(`SELECT id FROM ${table} WHERE id = ? AND status = 'active'`).get(value)) {
@@ -283,8 +437,30 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'client_id') return optionalId(db, 'clients', value, 'cliente');
   if (field === 'tower_id') return optionalTowerId(db, value);
   if (field === 'owner_id' || field === 'bid_manager_id') return optionalId(db, 'people', value, 'responsable');
+  if (field === 'origin') return parseOrigin(value);
+  if (field === 'outcome') return parseOutcome(value);
+  if (field === 'probability') return parseProbability(value);
+  if (field === 'expected_close_date' || field === 'next_milestone_date') return parseOptionalDate(value, field);
+  if (field === 'next_milestone' || field === 'need' || field === 'pep') return parseShortText(value);
+  if (field === 'initiative_id') return optionalInitiativeId(db, value);
   if (field === 'number' || field === 'closure_reason') return typeof value === 'string' ? value.trim().slice(0, 160) : '';
   return parseTextField(value, field, FIELD_LIMITS[field]);
+}
+
+/**
+ * Cross-field rules for the final state of an opportunity.
+ * `result` needs an outcome and a close date; a non-won outcome needs a loss reason.
+ */
+function assertOpportunityState({ stage, outcome, expectedCloseDate, closureReason }) {
+  if (stage === RESULT_STAGE) {
+    if (!outcome) throw validationError('Selecciona el resultado (Ganada, Perdida o Descartada) para la etapa Resultado.');
+    if (!expectedCloseDate) throw validationError('La etapa Resultado requiere una fecha estimada de cierre.');
+    if (outcome !== 'won' && !closureReason) {
+      throw validationError('Indica el motivo de pérdida o descarte.');
+    }
+    return;
+  }
+  if (outcome) throw validationError('El resultado solo se registra en la etapa Resultado.');
 }
 
 function insertCardEvent(db, { cardId, user, action, detail, createdAt }) {
@@ -496,41 +672,91 @@ function me(ctx, req, res) {
   sendJson(res, 200, { user });
 }
 
-function listOpportunities(ctx, req, res) {
+function listOpportunities(ctx, req, res, query) {
   requireUser(ctx, req);
+  const archived = query?.get('archived') === '1';
   const rows = ctx.db
-    .prepare(`${OPPORTUNITY_DISPLAY_SELECT} ORDER BY opportunities.created_at DESC, opportunities.id DESC`)
+    .prepare(
+      `${OPPORTUNITY_DISPLAY_SELECT}
+        WHERE opportunities.archived_at IS ${archived ? 'NOT NULL' : 'NULL'}
+        ORDER BY opportunities.created_at DESC, opportunities.id DESC`,
+    )
     .all();
-  sendJson(res, 200, { opportunities: rows.map(mapOpportunity) });
+  sendJson(res, 200, { opportunities: rows.map((row) => mapOpportunity(row, ctx.db)) });
+}
+
+function assertRecordsExist(db, table, ids, field) {
+  const find = db.prepare(`SELECT id FROM ${table} WHERE id = ?`);
+  for (const id of ids) {
+    if (!find.get(id)) throw validationError(`El registro seleccionado en "${field}" no existe.`);
+  }
+}
+
+function hasAny(body, keys) {
+  return keys.some((key) => Object.hasOwn(body, key));
+}
+
+function readRelationIds(body, camelKey, snakeKey, field) {
+  return parseIdList(Object.hasOwn(body, camelKey) ? body[camelKey] : body[snakeKey], field);
 }
 
 async function createOpportunity(ctx, req, res) {
   const user = requireUser(ctx, req);
   const body = await readJson(req);
 
+  const stage = parseStage(body.stage ?? 'prospecting');
+  const outcome = parseOutcome(body.outcome);
+  const expectedCloseDate = parseOptionalDate(body.expectedCloseDate, 'expectedCloseDate');
+  const closureReason = parseShortText(body.closureReason, 160);
+  assertOpportunityState({ stage, outcome, expectedCloseDate, closureReason });
+
+  const initiativeId = optionalInitiativeId(ctx.db, body.initiativeId);
+  const origin = parseOrigin(body.origin) || (initiativeId ? 'Iniciativa interna' : '');
+  const legacyTowerId = optionalTowerId(ctx.db, body.towerId);
+  const relationTowerIds = readRelationIds(body, 'towerIds', 'tower_ids', 'towers');
+  const towerIds = relationTowerIds.length > 0 ? relationTowerIds : (legacyTowerId ? [legacyTowerId] : []);
+  const lobIds = readRelationIds(body, 'lobIds', 'lob_ids', 'LoBs');
+  const serviceIds = readRelationIds(body, 'serviceIds', 'service_ids', 'servicios');
+  const links = parseWorkspaceLinks(body.links);
+  assertRecordsExist(ctx.db, 'towers', towerIds, 'towers');
+  assertRecordsExist(ctx.db, 'lobs', lobIds, 'LoBs');
+  assertActiveRecords(ctx.db, 'services', serviceIds, 'servicios');
+
   const values = {
     title: parseTextField(body.title, 'title', FIELD_LIMITS.title),
     account: typeof body.account === 'string' ? body.account.trim() : '',
     amount: parseAmount(body.amount),
-    stage: parseStage(body.stage),
+    stage,
     tower: typeof body.tower === 'string' ? body.tower.trim() : '',
     owner: typeof body.owner === 'string' ? body.owner.trim() : '',
     due: typeof body.due === 'string' ? body.due.trim() : '',
     tags: JSON.stringify(body.tags === undefined ? [] : parseTags(body.tags)),
-    number: typeof body.number === 'string' ? body.number.trim().slice(0, 160) : '',
+    number: parseShortText(body.number, 160),
     client_id: optionalId(ctx.db, 'clients', body.clientId, 'cliente'),
-    tower_id: optionalTowerId(ctx.db, body.towerId),
+    tower_id: legacyTowerId,
     owner_id: optionalId(ctx.db, 'people', body.ownerId, 'responsable'),
     bid_manager_id: optionalId(ctx.db, 'people', body.bidManagerId, 'bid manager'),
     qa_percent: parsePercent(body.qaPercent ?? 0),
-    closure_reason: typeof body.closureReason === 'string' ? body.closureReason.trim().slice(0, 160) : '',
+    closure_reason: closureReason,
+    origin,
+    probability: parseProbability(body.probability),
+    expected_close_date: expectedCloseDate,
+    next_milestone: parseShortText(body.nextMilestone),
+    next_milestone_date: parseOptionalDate(body.nextMilestoneDate, 'nextMilestoneDate'),
+    need: parseShortText(body.need, 2000),
+    initiative_id: initiativeId,
+    outcome,
+    pep: parseShortText(body.pep),
   };
 
   const nowIso = ctx.now().toISOString();
   const insert = ctx.db.prepare(
     `INSERT INTO opportunities
-       (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at, number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at,
+        number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason,
+        origin, probability, expected_close_date, next_milestone, next_milestone_date, need,
+        initiative_id, outcome, pep)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -557,7 +783,20 @@ async function createOpportunity(ctx, req, res) {
           values.bid_manager_id,
           values.qa_percent,
           values.closure_reason,
+          values.origin,
+          values.probability,
+          values.expected_close_date,
+          values.next_milestone,
+          values.next_milestone_date,
+          values.need,
+          values.initiative_id,
+          values.outcome,
+          values.pep,
         );
+        replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
+        replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
+        replaceJoinRows(ctx.db, 'opportunity_services', 'opportunity_id', id, 'service_id', serviceIds);
+        replaceWorkspaceLinks(ctx.db, 'opportunity', id, links, user, nowIso);
         insertCardEvent(ctx.db, {
           cardId: id,
           user,
@@ -575,7 +814,7 @@ async function createOpportunity(ctx, req, res) {
   }
 
   const row = getOpportunityForDisplay(ctx.db, createdId);
-  sendJson(res, 201, { opportunity: mapOpportunity(row) });
+  sendJson(res, 201, { opportunity: mapOpportunity(row, ctx.db) });
 }
 
 async function patchOpportunity(ctx, req, res, rawId) {
@@ -584,12 +823,19 @@ async function patchOpportunity(ctx, req, res, rawId) {
 
   const existing = ctx.db.prepare('SELECT * FROM opportunities WHERE id = ?').get(id);
   if (!existing) throw notFoundError();
+  if (existing.archived_at) throw new HttpError(409, 'record_archived', 'Restaura la oportunidad antes de editarla.');
 
   const body = await readJson(req);
 
   const changes = {};
   const changedFields = [];
-  const apiFields = { clientId: 'client_id', towerId: 'tower_id', ownerId: 'owner_id', bidManagerId: 'bid_manager_id', qaPercent: 'qa_percent', closureReason: 'closure_reason' };
+  const apiFields = {
+    clientId: 'client_id', towerId: 'tower_id', ownerId: 'owner_id', bidManagerId: 'bid_manager_id',
+    qaPercent: 'qa_percent', closureReason: 'closure_reason', origin: 'origin', probability: 'probability',
+    expectedCloseDate: 'expected_close_date', nextMilestone: 'next_milestone',
+    nextMilestoneDate: 'next_milestone_date', need: 'need', initiativeId: 'initiative_id',
+    outcome: 'outcome', pep: 'pep',
+  };
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
     const field = apiFields[apiField] || apiField;
@@ -599,26 +845,66 @@ async function patchOpportunity(ctx, req, res, rawId) {
     changedFields.push(field);
   }
 
+  // Leaving the Resultado stage clears the outcome; a result requires one.
+  const finalStage = changes.stage ?? existing.stage;
+  let finalOutcome = changes.outcome ?? existing.outcome;
+  if (finalStage !== RESULT_STAGE && finalOutcome) {
+    changes.outcome = '';
+    if (!changedFields.includes('outcome')) changedFields.push('outcome');
+    finalOutcome = '';
+  }
+  assertOpportunityState({
+    stage: finalStage,
+    outcome: finalOutcome,
+    expectedCloseDate: changes.expected_close_date ?? existing.expected_close_date,
+    closureReason: changes.closure_reason ?? existing.closure_reason,
+  });
+
+  const hasTowerIds = hasAny(body, ['towerIds', 'tower_ids']);
+  const hasLobIds = hasAny(body, ['lobIds', 'lob_ids']);
+  const hasServiceIds = hasAny(body, ['serviceIds', 'service_ids']);
+  const hasLinks = Object.hasOwn(body, 'links');
+  const towerIds = hasTowerIds ? readRelationIds(body, 'towerIds', 'tower_ids', 'towers') : null;
+  const lobIds = hasLobIds ? readRelationIds(body, 'lobIds', 'lob_ids', 'LoBs') : null;
+  const serviceIds = hasServiceIds ? readRelationIds(body, 'serviceIds', 'service_ids', 'servicios') : null;
+  const links = hasLinks ? parseWorkspaceLinks(body.links) : null;
+  if (towerIds) assertRecordsExist(ctx.db, 'towers', towerIds, 'towers');
+  if (lobIds) assertRecordsExist(ctx.db, 'lobs', lobIds, 'LoBs');
+  if (serviceIds) assertActiveRecords(ctx.db, 'services', serviceIds, 'servicios');
+
+  const relationFields = [
+    ...(hasTowerIds ? ['towers'] : []),
+    ...(hasLobIds ? ['lobs'] : []),
+    ...(hasServiceIds ? ['services'] : []),
+    ...(hasLinks ? ['links'] : []),
+  ];
+
   // Nothing actually changed: return the row untouched and write no event.
-  if (changedFields.length === 0) {
-    sendJson(res, 200, { opportunity: mapOpportunity(getOpportunityForDisplay(ctx.db, id)), events: [] });
+  if (changedFields.length === 0 && relationFields.length === 0) {
+    sendJson(res, 200, { opportunity: mapOpportunity(getOpportunityForDisplay(ctx.db, id), ctx.db), events: [] });
     return;
   }
 
   const stageChanged = changedFields.includes('stage');
-  const otherChanged = changedFields.filter((field) => field !== 'stage');
+  const columnFields = changedFields.filter((field) => field !== 'stage');
   const nowIso = ctx.now().toISOString();
 
-  // Column names come from the fixed EDITABLE_FIELDS whitelist, never from the request body.
-  const assignments = changedFields.map((field) => `${field} = ?`).join(', ');
-  const update = ctx.db.prepare(
-    `UPDATE opportunities SET ${assignments}, updated_at = ? WHERE id = ?`,
-  );
-
   const events = [];
-  // The row update and its history entries are one atomic unit.
+  // The row update, its relation rows, and its history entries are one atomic unit.
   withTransaction(ctx.db, () => {
-    update.run(...changedFields.map((field) => changes[field]), nowIso, id);
+    if (changedFields.length > 0) {
+      const assignments = changedFields.map((field) => `${field} = ?`).join(', ');
+      ctx.db
+        .prepare(`UPDATE opportunities SET ${assignments}, updated_at = ? WHERE id = ?`)
+        .run(...changedFields.map((field) => changes[field]), nowIso, id);
+    } else {
+      ctx.db.prepare('UPDATE opportunities SET updated_at = ? WHERE id = ?').run(nowIso, id);
+    }
+
+    if (hasTowerIds) replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
+    if (hasLobIds) replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
+    if (hasServiceIds) replaceJoinRows(ctx.db, 'opportunity_services', 'opportunity_id', id, 'service_id', serviceIds);
+    if (hasLinks) replaceWorkspaceLinks(ctx.db, 'opportunity', id, links, user, nowIso);
 
     if (stageChanged) {
       events.push(
@@ -631,22 +917,44 @@ async function patchOpportunity(ctx, req, res, rawId) {
         }),
       );
     }
-    if (otherChanged.length > 0) {
+    if (columnFields.length > 0 || relationFields.length > 0) {
       events.push(
         insertCardEvent(ctx.db, {
           cardId: id,
           user,
           action: 'updated',
-          detail: { fields: otherChanged },
+          detail: { fields: [...columnFields, ...relationFields] },
           createdAt: nowIso,
         }),
       );
     }
-    appendEntityEvent(ctx.db, { type: 'opportunity', id, user, action: stageChanged ? 'updated' : 'updated', detail: { fields: changedFields }, now: nowIso });
+    appendEntityEvent(ctx.db, {
+      type: 'opportunity',
+      id,
+      user,
+      action: 'updated',
+      detail: { fields: [...changedFields, ...relationFields] },
+      now: nowIso,
+    });
   });
 
   const updated = getOpportunityForDisplay(ctx.db, id);
-  sendJson(res, 200, { opportunity: mapOpportunity(updated), events });
+  sendJson(res, 200, { opportunity: mapOpportunity(updated, ctx.db), events });
+}
+
+function setOpportunityArchive(ctx, req, res, rawId, archived) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const nowIso = ctx.now().toISOString();
+  withTransaction(ctx.db, () => {
+    const existing = ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id);
+    if (!existing) throw notFoundError();
+    ctx.db
+      .prepare('UPDATE opportunities SET archived_at = ?, archived_by_id = ?, archived_by_name = ?, updated_at = ? WHERE id = ?')
+      .run(archived ? nowIso : null, archived ? user.id : null, archived ? user.name : '', nowIso, id);
+    appendEntityEvent(ctx.db, { type: 'opportunity', id, user, action: archived ? 'archived' : 'restored', now: nowIso });
+  });
+  sendJson(res, 200, { opportunity: mapOpportunity(getOpportunityForDisplay(ctx.db, id), ctx.db) });
 }
 
 const MASTER_CONFIG = {
@@ -997,6 +1305,7 @@ function decodeId(rawId) {
 // ---------------------------------------------------------------------------
 
 const OPPORTUNITY_ITEM_PATTERN = /^\/api\/opportunities\/([^/]+)$/;
+const OPPORTUNITY_ARCHIVE_PATTERN = /^\/api\/opportunities\/([^/]+)\/(archive|restore)$/;
 const OPPORTUNITY_EVENTS_PATTERN = /^\/api\/opportunities\/([^/]+)\/events$/;
 const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people|services|lobs)\/([^/]+)$/;
 const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
@@ -1086,9 +1395,15 @@ async function handleApi(ctx, req, res, pathname, query) {
   }
 
   if (pathname === '/api/opportunities') {
-    if (req.method === 'GET') return listOpportunities(ctx, req, res);
+    if (req.method === 'GET') return listOpportunities(ctx, req, res, query);
     if (req.method === 'POST') return createOpportunity(ctx, req, res);
     return rejectMethod(res, 'GET', 'POST');
+  }
+
+  const archiveMatch = OPPORTUNITY_ARCHIVE_PATTERN.exec(pathname);
+  if (archiveMatch) {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return setOpportunityArchive(ctx, req, res, archiveMatch[1], archiveMatch[2] === 'archive');
   }
 
   const eventsMatch = OPPORTUNITY_EVENTS_PATTERN.exec(pathname);
