@@ -3,7 +3,7 @@ import { proposals, stages } from './data.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getMe, login, logout, listOpportunities, createOpportunity, updateOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, createInitiative, updateInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, listInitiativeEvents } from './api.js';
+import { getMe, login, logout, listOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, createInitiative, updateInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -275,6 +275,25 @@ function App() {
     }
   };
 
+  const deleteBoardCard = async (record) => {
+    const typeLabel = record.entityType === 'initiative' ? 'iniciativa' : 'oportunidad';
+    if (!window.confirm(`¿Eliminar la ${typeLabel} «${record.title}»? Esta acción es irreversible y eliminará la tarjeta seleccionada junto con sus acciones e historial.`)) return false;
+    try {
+      if (record.entityType === 'initiative') {
+        await deleteInitiative(record.id);
+        setInitiatives((current) => current.filter((item) => item.id !== record.id));
+      } else {
+        await deleteOpportunity(record.id);
+        setOpportunities((current) => current.filter((item) => item.id !== record.id));
+      }
+      showNotice(`Se eliminó la ${typeLabel} «${record.title}».`);
+      return true;
+    } catch (err) {
+      showNotice(err?.message || `No se pudo eliminar la ${typeLabel}.`, 'error');
+      return false;
+    }
+  };
+
   const saveOpportunity = async (record) => {
     setSaving(true);
     setSaveError('');
@@ -462,7 +481,7 @@ function App() {
             <div className="results-line"><span><strong>{page === 'pipeline' ? (view === 'kanban' ? advancedFilteredPipelineCards.length : filteredPipelineOpportunities.length) : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
             {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
-            {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
+            {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onDelete={deleteBoardCard} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
           </> : page === 'opportunities'
             ? <OpportunityManagementPanel opportunities={opportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason}`.toLowerCase().includes(query.trim().toLowerCase()))} onEdit={setEditing} loading={oppState === 'loading'} error={oppState === 'error'} onRetry={reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} />
             : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteTower={removeTower} onEditAgreement={setEditingAgreement} />}
@@ -512,7 +531,7 @@ function AdvancedFilters({ filters, people, hidden, onChange }) {
   </section>;
 }
 
-function Kanban({ cards, allCards, expandedColumns, onToggleColumn, onEdit, onMove }) {
+function Kanban({ cards, allCards, expandedColumns, onToggleColumn, onEdit, onMove, onDelete }) {
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverStage, setDragOverStage] = useState(null);
   const suppressClickRef = useRef(false);
@@ -556,22 +575,71 @@ function Kanban({ cards, allCards, expandedColumns, onToggleColumn, onEdit, onMo
       const { visibleCards, hiddenCount, canToggle } = getColumnVisibility(stageCards, isExpanded);
       return <section className={`kanban-column ${stage.id}${dragOverStage === stage.id ? ' drag-over' : ''}`} key={stage.id} aria-label={`${stage.label}: ${totalCount} registros totales`} onDragEnter={(event) => handleDragOver(event, stage.id)} onDragOver={(event) => handleDragOver(event, stage.id)} onDragLeave={(event) => handleDragLeave(event, stage.id)} onDrop={(event) => handleDrop(event, stage.id)}>
         <div className={`column-heading ${stage.tone}`}><span className="stage-indicator" /><h3>{stage.label}</h3><span className="column-count">{totalCount}</span><button className="column-menu" aria-label={`Opciones de ${stage.label}`}><Icon name="dots" size={17} /></button></div>
-        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.cardKey || record.id} record={record} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} isDragging={draggingId === (record.cardKey || record.id)} />)}{stageCards.length === 0 && <div className="empty-column">No hay registros para estos filtros.</div>}</div>
+        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.cardKey || record.id} record={record} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDelete={onDelete} isDragging={draggingId === (record.cardKey || record.id)} />)}{stageCards.length === 0 && <div className="empty-column">No hay registros para estos filtros.</div>}</div>
         {(canToggle || (isExpanded && totalCount > COLLAPSED_CARD_LIMIT)) && <button className="show-more" aria-expanded={isExpanded} onClick={() => onToggleColumn(stage.id)}>{isExpanded ? '− Ver menos' : `+ Ver más (${hiddenCount})`}</button>}
       </section>;
     })}
   </div>;
 }
 
-function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, isDragging }) {
+function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete, isDragging }) {
   const stage = stages.find((item) => item.id === record.stage);
   const isInitiative = record.entityType === 'initiative';
-  return <button className={`opportunity-card${isInitiative ? ' initiative-card' : ''}${isDragging ? ' dragging' : ''}`} draggable onDragStart={(event) => onDragStart(event, record)} onDragEnd={onDragEnd} onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}, ${record.account}`}>
-    <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : record.number && <span className="external-opportunity-number">N.º {record.number}</span>}<span className={`card-stage-dot ${stage.tone}`} title={stage.label} /><span className="card-menu"><Icon name="dots" size={16} /></span></div>
-    <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
-    <div className="card-value-row"><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></div>
-    <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'clock' : record.due.includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? record.statusLabel : record.due}</span><span className="card-owner"><Avatar name={record.owner} compact /></span></div>
-  </button>;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const menuRef = useRef(null);
+  const triggerRef = useRef(null);
+  const actionRef = useRef(null);
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    actionRef.current?.focus();
+    const handlePointerDown = (event) => {
+      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const handleFocusIn = (event) => {
+      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setMenuOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('focusin', handleFocusIn);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('focusin', handleFocusIn);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen]);
+  const handleDelete = async () => {
+    setDeleting(true);
+    const deleted = await onDelete(record);
+    setDeleting(false);
+    if (deleted) setMenuOpen(false);
+  };
+  const handleDragStart = (event) => {
+    if (event.target.closest?.('[data-card-menu]')) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    onDragStart(event, record);
+  };
+  return <article className={`opportunity-card${isInitiative ? ' initiative-card' : ''}${isDragging ? ' dragging' : ''}`} draggable onDragStart={handleDragStart} onDragEnd={onDragEnd}>
+    <button type="button" className="card-body-button" onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}, ${record.account}`}>
+      <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : record.number && <span className="external-opportunity-number">N.º {record.number}</span>}<span className={`card-stage-dot ${stage.tone}`} title={stage.label} /></div>
+      <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
+      <div className="card-value-row"><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></div>
+      <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'clock' : record.due.includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? record.statusLabel : record.due}</span><span className="card-owner"><Avatar name={record.owner} compact /></span></div>
+    </button>
+    <div className="card-menu-container" ref={menuRef} data-card-menu>
+      <button type="button" className="card-menu-button" ref={triggerRef} draggable={false} aria-label={`Opciones de ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}><Icon name="dots" size={16} /></button>
+      {menuOpen && <div className="card-menu-popup" role="menu"><button type="button" role="menuitem" ref={actionRef} disabled={deleting} onClick={handleDelete}>Eliminar</button></div>}
+    </div>
+  </article>;
 }
 
 function OpportunityRows({ opportunities, view, onEdit }) {

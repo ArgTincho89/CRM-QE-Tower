@@ -487,6 +487,44 @@ describe('CRM API', () => {
     assert.equal(boundary.body.initiative.qaPercent, 100);
   });
 
+  test('DELETE opportunity removes its actions and audit entries and cascades card events', async () => {
+    const created = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    const id = created.body.opportunity.id;
+    const action = await app.json('POST', `/api/opportunities/${id}/actions`, { body: { text: 'Preparar propuesta' }, cookie: session });
+    assert.equal(action.status, 201);
+    assert.ok(app.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get(id));
+    assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id));
+
+    const deleted = await app.json('DELETE', `/api/opportunities/${id}`, { cookie: session });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal(app.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id), undefined);
+    assert.equal(app.db.prepare('SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('opportunity', id), undefined);
+    assert.equal(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id), undefined);
+    assert.equal(app.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get(id), undefined);
+    assert.equal((await app.json('GET', `/api/opportunities/${id}/events`, { cookie: session })).status, 404);
+    assert.equal((await app.json('GET', `/api/opportunities/${id}/actions`, { cookie: session })).status, 404);
+    assert.equal((await app.json('DELETE', `/api/opportunities/${id}`, { cookie: session })).status, 404);
+  });
+
+  test('DELETE initiative removes its actions and audit entries', async () => {
+    const created = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa a eliminar' }, cookie: session });
+    const id = created.body.initiative.id;
+    const action = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Revisar alcance' }, cookie: session });
+    assert.equal(action.status, 201);
+    assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('initiative', id));
+
+    const deleted = await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session });
+    assert.equal(deleted.status, 200);
+    assert.equal(deleted.body.deleted, true);
+    assert.equal(app.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id), undefined);
+    assert.equal(app.db.prepare('SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('initiative', id), undefined);
+    assert.equal(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('initiative', id), undefined);
+    assert.equal((await app.json('GET', `/api/initiatives/${id}/events`, { cookie: session })).status, 404);
+    assert.equal((await app.json('GET', `/api/initiatives/${id}/actions`, { cookie: session })).status, 404);
+    assert.equal((await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session })).status, 404);
+  });
+
   test('initiative QA percentage rejects out-of-range create and update values without persisting them', async () => {
     const created = await app.json('POST', '/api/initiatives', {
       body: { title: 'QA acotado', qaPercent: 0 },

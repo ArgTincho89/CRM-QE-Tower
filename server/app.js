@@ -57,6 +57,21 @@ function notFoundError() {
   return new HttpError(404, 'not_found', 'La oportunidad no existe.');
 }
 
+function deleteRecord(ctx, req, res, type, rawId) {
+  requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const table = type === 'initiative' ? 'initiatives' : 'opportunities';
+  withTransaction(ctx.db, () => {
+    if (!ctx.db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) {
+      throw new HttpError(404, 'not_found', type === 'initiative' ? 'La iniciativa no existe.' : 'La oportunidad no existe.');
+    }
+    ctx.db.prepare('DELETE FROM record_actions WHERE entity_type = ? AND entity_id = ?').run(type, id);
+    ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(type, id);
+    ctx.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+  });
+  sendJson(res, 200, { deleted: true });
+}
+
 function unauthorizedError() {
   return new HttpError(401, 'unauthorized', 'La sesión no es válida o ha expirado.');
 }
@@ -972,7 +987,8 @@ async function handleApi(ctx, req, res, pathname, query) {
   }
   const initiativeItem = INITIATIVE_ITEM_PATTERN.exec(pathname);
   if (initiativeItem) {
-    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
+    if (req.method === 'DELETE') return deleteRecord(ctx, req, res, 'initiative', initiativeItem[1]);
+    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH', 'DELETE');
     return mutateInitiative(ctx, req, res, initiativeItem[1]);
   }
   const actionList = ACTIONS_PATTERN.exec(pathname);
@@ -1007,7 +1023,8 @@ async function handleApi(ctx, req, res, pathname, query) {
 
   const itemMatch = OPPORTUNITY_ITEM_PATTERN.exec(pathname);
   if (itemMatch) {
-    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
+    if (req.method === 'DELETE') return deleteRecord(ctx, req, res, 'opportunity', itemMatch[1]);
+    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH', 'DELETE');
     return patchOpportunity(ctx, req, res, itemMatch[1]);
   }
 

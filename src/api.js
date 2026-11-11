@@ -55,6 +55,7 @@ export const listOpportunities = () => request('/opportunities');
 export const createOpportunity = (body) => request('/opportunities', { method: 'POST', body });
 export const updateOpportunity = (id, body) =>
   request(`/opportunities/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+export const deleteOpportunity = (id) => request(`/opportunities/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listEvents = (id, { limit } = {}) => {
   const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
   return request(`/opportunities/${encodeURIComponent(id)}/events${query}`);
@@ -75,6 +76,7 @@ export const deactivatePerson = (id) => request(`/people/${encodeURIComponent(id
 export const listInitiatives = () => request('/initiatives');
 export const createInitiative = (body) => request('/initiatives', { method: 'POST', body });
 export const updateInitiative = (id, body) => request(`/initiatives/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+export const deleteInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listAgreements = () => request('/agreements');
 export const createAgreement = (body) => request('/agreements', { method: 'POST', body });
 export const listActions = (type, id) => request(`/${type}/${encodeURIComponent(id)}/actions`);
