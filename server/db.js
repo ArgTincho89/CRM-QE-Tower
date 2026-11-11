@@ -84,7 +84,56 @@ const SCHEMA_STATEMENTS = [
       user_name TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
     )`,
   'CREATE INDEX IF NOT EXISTS idx_card_events_card ON card_events(card_id, id)',
+  `CREATE TABLE IF NOT EXISTS services (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS lobs (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS opportunity_towers (
+      opportunity_id TEXT NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+      tower_id TEXT NOT NULL REFERENCES towers(id), PRIMARY KEY(opportunity_id, tower_id)
+    )`,
+  `CREATE TABLE IF NOT EXISTS opportunity_lobs (
+      opportunity_id TEXT NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+      lob_id TEXT NOT NULL REFERENCES lobs(id), PRIMARY KEY(opportunity_id, lob_id)
+    )`,
+  `CREATE TABLE IF NOT EXISTS opportunity_services (
+      opportunity_id TEXT NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+      service_id TEXT NOT NULL REFERENCES services(id), PRIMARY KEY(opportunity_id, service_id)
+    )`,
+  `CREATE TABLE IF NOT EXISTS initiative_services (
+      initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+      service_id TEXT NOT NULL REFERENCES services(id), PRIMARY KEY(initiative_id, service_id)
+    )`,
+  `CREATE TABLE IF NOT EXISTS workspace_links (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative')),
+      entity_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_by_name TEXT NOT NULL DEFAULT ''
+    )`,
+  `CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 ];
+
+export const SERVICE_CATALOG = [
+  'QA Automation',
+  'API Testing',
+  'Performance Testing',
+  'Accessibility Testing',
+  'AI Testing',
+  'QA Consulting',
+  'QA Managed Services',
+  'Quality Engineering Framework',
+  'Otros',
+];
+
+const MIGRATION_MARKER = 'legacy_evolution_v1';
 
 /**
  * Runs `fn` inside an immediate write transaction.
@@ -129,8 +178,107 @@ export function applySchema(db) {
   if (!towerColumns.includes('responsible_id')) {
     db.exec('ALTER TABLE towers ADD COLUMN responsible_id TEXT REFERENCES people(id)');
   }
+  if (!towerColumns.includes('lob_id')) {
+    db.exec('ALTER TABLE towers ADD COLUMN lob_id TEXT REFERENCES lobs(id)');
+  }
+  const opportunityAdditions = [
+    ['origin', "TEXT NOT NULL DEFAULT ''"],
+    ['probability', 'INTEGER'],
+    ['expected_close_date', "TEXT NOT NULL DEFAULT ''"],
+    ['next_milestone', "TEXT NOT NULL DEFAULT ''"],
+    ['next_milestone_date', "TEXT NOT NULL DEFAULT ''"],
+    ['need', "TEXT NOT NULL DEFAULT ''"],
+    ['initiative_id', 'TEXT REFERENCES initiatives(id)'],
+    ['outcome', "TEXT NOT NULL DEFAULT ''"],
+    ['pep', "TEXT NOT NULL DEFAULT ''"],
+    ['archived_at', 'TEXT'],
+    ['archived_by_id', 'TEXT REFERENCES users(id)'],
+    ['archived_by_name', "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [name, declaration] of opportunityAdditions) {
+    if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
+  }
+  const initiativeAdditions = [
+    ['priority', "TEXT NOT NULL DEFAULT 'media'"],
+    ['next_action', "TEXT NOT NULL DEFAULT ''"],
+    ['next_action_date', "TEXT NOT NULL DEFAULT ''"],
+    ['description', "TEXT NOT NULL DEFAULT ''"],
+    ['operational_status', "TEXT NOT NULL DEFAULT 'active'"],
+    ['archived_at', 'TEXT'],
+    ['archived_by_id', 'TEXT REFERENCES users(id)'],
+    ['archived_by_name', "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [name, declaration] of initiativeAdditions) {
+    if (!initiativeColumns.includes(name)) db.exec(`ALTER TABLE initiatives ADD COLUMN ${name} ${declaration}`);
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_action_comments_action ON record_action_comments(action_id, created_at)');
+  for (const statement of [
+    'CREATE INDEX IF NOT EXISTS idx_opportunity_towers_tower ON opportunity_towers(tower_id)',
+    'CREATE INDEX IF NOT EXISTS idx_opportunity_lobs_lob ON opportunity_lobs(lob_id)',
+    'CREATE INDEX IF NOT EXISTS idx_opportunity_services_service ON opportunity_services(service_id)',
+    'CREATE INDEX IF NOT EXISTS idx_initiative_services_service ON initiative_services(service_id)',
+    'CREATE INDEX IF NOT EXISTS idx_workspace_links_entity ON workspace_links(entity_type, entity_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_opportunities_initiative ON opportunities(initiative_id)',
+    'CREATE INDEX IF NOT EXISTS idx_opportunities_archived ON opportunities(archived_at)',
+    'CREATE INDEX IF NOT EXISTS idx_initiatives_archived ON initiatives(archived_at)',
+    'CREATE INDEX IF NOT EXISTS idx_towers_lob ON towers(lob_id)',
+  ]) {
+    db.exec(statement);
+  }
+  runMigrations(db);
+}
+
+/**
+ * One-time data migration. Guarded by `schema_meta` so repeated boots are no-ops.
+ * Preserves IDs and legacy columns; unknown stage values are left untouched.
+ */
+export function runMigrations(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(MIGRATION_MARKER)) return;
+  withTransaction(db, () => {
+    const now = new Date().toISOString();
+    const seedService = db.prepare(
+      'INSERT OR IGNORE INTO services (id, name, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    SERVICE_CATALOG.forEach((name, index) => {
+      seedService.run(`SVC-${String(index + 1).padStart(4, '0')}`, name, '', 'active', now, now);
+    });
+
+    db.exec(`
+      UPDATE opportunities SET
+        outcome = CASE stage WHEN 'won' THEN 'won' WHEN 'lost' THEN 'lost' ELSE outcome END,
+        stage = CASE stage
+          WHEN 'prospecting' THEN 'prospecting'
+          WHEN 'analysis' THEN 'identified'
+          WHEN 'waiting' THEN 'negotiation'
+          WHEN 'proposal' THEN 'proposal'
+          WHEN 'won' THEN 'result'
+          WHEN 'lost' THEN 'result'
+          ELSE stage END
+      WHERE stage IN ('prospecting','analysis','waiting','proposal','won','lost')
+    `);
+
+    db.exec(`
+      UPDATE initiatives SET
+        operational_status = CASE WHEN stage = 'lost' THEN 'discarded' ELSE operational_status END,
+        stage = CASE stage
+          WHEN 'prospecting' THEN 'pending'
+          WHEN 'analysis' THEN 'in_progress'
+          WHEN 'waiting' THEN 'following'
+          WHEN 'proposal' THEN 'following'
+          WHEN 'won' THEN 'completed'
+          WHEN 'lost' THEN 'pending'
+          ELSE stage END
+      WHERE stage IN ('prospecting','analysis','waiting','proposal','won','lost')
+    `);
+
+    db.exec(`
+      INSERT OR IGNORE INTO opportunity_towers (opportunity_id, tower_id)
+      SELECT id, tower_id FROM opportunities WHERE tower_id IS NOT NULL AND tower_id <> ''
+    `);
+
+    db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(MIGRATION_MARKER, now);
+  });
 }
 
 /**

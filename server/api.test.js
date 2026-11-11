@@ -481,6 +481,52 @@ describe('CRM API', () => {
     assert.ok(app.db.prepare('SELECT id FROM initiatives WHERE id = ? AND tower_id = ?').get(initiative.body.initiative.id, initiativeTower.body.record.id));
   });
 
+  test('services and LoB catalogs expose shared CRUD, unique names, and deactivation guards', async () => {
+    const services = await app.json('GET', '/api/services', { cookie: session });
+    assert.equal(services.status, 200);
+    assert.equal(services.body.records.length, 9);
+    assert.ok(services.body.records.some((service) => service.name === 'QA Automation' && service.active));
+
+    const createdService = await app.json('POST', '/api/services', { body: { name: 'Service Discovery', description: 'Exploración inicial' }, cookie: session });
+    assert.equal(createdService.status, 201);
+    assert.equal(createdService.body.record.description, 'Exploración inicial');
+    const duplicateService = await app.json('POST', '/api/services', { body: { name: 'service discovery' }, cookie: session });
+    assert.equal(duplicateService.status, 409);
+    assert.equal(duplicateService.body.error.code, 'duplicate_record');
+    const deactivatedService = await app.json('DELETE', `/api/services/${createdService.body.record.id}`, { cookie: session });
+    assert.equal(deactivatedService.status, 200);
+    assert.equal(deactivatedService.body.record.active, false);
+    const reactivatedService = await app.json('PATCH', `/api/services/${createdService.body.record.id}`, { body: { active: true }, cookie: session });
+    assert.equal(reactivatedService.body.record.active, true);
+
+    const lob = await app.json('POST', '/api/lobs', { body: { name: 'Quality Engineering', description: 'LoB de QE' }, cookie: session });
+    assert.equal(lob.status, 201);
+    assert.equal(lob.body.record.active, true);
+    const duplicateLob = await app.json('POST', '/api/lobs', { body: { name: 'quality engineering' }, cookie: session });
+    assert.equal(duplicateLob.status, 409);
+
+    const person = await app.json('POST', '/api/people', { body: { name: 'LoB Tower Owner' }, cookie: session });
+    const tower = await app.json('POST', '/api/towers', { body: { name: 'Tower con LoB', responsibleId: person.body.record.id, lobId: lob.body.record.id }, cookie: session });
+    assert.equal(tower.status, 201);
+    assert.equal(tower.body.record.lobId, lob.body.record.id);
+    assert.equal(tower.body.record.lobName, 'Quality Engineering');
+
+    const blockedLobDeactivation = await app.json('PATCH', `/api/lobs/${lob.body.record.id}`, { body: { active: false }, cookie: session });
+    assert.equal(blockedLobDeactivation.status, 409);
+    assert.equal(blockedLobDeactivation.body.error.code, 'lob_in_use');
+    const blockedLobDelete = await app.json('DELETE', `/api/lobs/${lob.body.record.id}`, { cookie: session });
+    assert.equal(blockedLobDelete.status, 409);
+
+    const clearedTower = await app.json('PATCH', `/api/towers/${tower.body.record.id}`, { body: { lobId: '' }, cookie: session });
+    assert.equal(clearedTower.status, 200);
+    assert.equal(clearedTower.body.record.lobId, '');
+    const deactivatedLob = await app.json('DELETE', `/api/lobs/${lob.body.record.id}`, { cookie: session });
+    assert.equal(deactivatedLob.status, 200);
+    assert.equal(deactivatedLob.body.record.active, false);
+    const listedLobs = await app.json('GET', '/api/lobs', { cookie: session });
+    assert.equal(listedLobs.body.records.find((item) => item.id === lob.body.record.id).active, false);
+  });
+
   test('opportunity display fields use linked master names and retain legacy fallbacks', async () => {
     const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente vinculado' }, cookie: session });
     const owner = await app.json('POST', '/api/people', { body: { name: 'Responsable vinculado' }, cookie: session });

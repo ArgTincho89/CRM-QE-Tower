@@ -134,10 +134,12 @@ function getOpportunityForDisplay(db, id) {
 }
 
 function mapMaster(row, kind) {
-  const mapped = { id: row.id, name: row.name, sector: row.sector ?? undefined, email: row.email ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at };
+  const mapped = { id: row.id, name: row.name, sector: row.sector ?? undefined, email: row.email ?? undefined, description: row.description ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at };
   if (kind === 'towers') {
     mapped.responsibleId = row.responsible_id || '';
     mapped.responsibleName = row.responsible_name || '';
+    mapped.lobId = row.lob_id || '';
+    mapped.lobName = row.lob_name || '';
     return mapped;
   }
   mapped.active = row.status === 'active';
@@ -651,22 +653,33 @@ const MASTER_CONFIG = {
   clients: { table: 'clients', plural: 'clients', fields: ['name', 'sector'] },
   towers: { table: 'towers', plural: 'towers', fields: ['name'] },
   people: { table: 'people', plural: 'people', fields: ['name', 'email'] },
+  services: { table: 'services', plural: 'services', fields: ['name', 'description'] },
+  lobs: { table: 'lobs', plural: 'lobs', fields: ['name', 'description'] },
 };
 
 function listMaster(ctx, req, res, kind) {
   requireUser(ctx, req);
   const { table } = MASTER_CONFIG[kind];
   const rows = kind === 'towers'
-    ? ctx.db.prepare(`SELECT towers.*, people.name AS responsible_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id ORDER BY towers.name COLLATE NOCASE`).all()
+    ? ctx.db.prepare(`SELECT towers.*, people.name AS responsible_name, lobs.name AS lob_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id LEFT JOIN lobs ON lobs.id = towers.lob_id ORDER BY towers.name COLLATE NOCASE`).all()
     : ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
   sendJson(res, 200, { records: rows.map((row) => mapMaster(row, kind)) });
 }
 
 function getMasterRow(db, kind, id) {
   if (kind === 'towers') {
-    return db.prepare('SELECT towers.*, people.name AS responsible_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id WHERE towers.id = ?').get(id);
+    return db.prepare('SELECT towers.*, people.name AS responsible_name, lobs.name AS lob_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id LEFT JOIN lobs ON lobs.id = towers.lob_id WHERE towers.id = ?').get(id);
   }
   return db.prepare(`SELECT * FROM ${MASTER_CONFIG[kind].table} WHERE id = ?`).get(id);
+}
+
+/** LoB deactivation is blocked while a Tower or Opportunity still references it. */
+function assertLobUnreferenced(db, id) {
+  const tower = db.prepare('SELECT id FROM towers WHERE lob_id = ? LIMIT 1').get(id);
+  const opportunity = db.prepare('SELECT opportunity_id FROM opportunity_lobs WHERE lob_id = ? LIMIT 1').get(id);
+  if (tower || opportunity) {
+    throw new HttpError(409, 'lob_in_use', 'No se puede desactivar esta LoB porque está vinculada a towers u oportunidades.');
+  }
 }
 
 async function mutateMaster(ctx, req, res, kind, rawId = null) {
@@ -675,17 +688,27 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
   const body = req.method === 'DELETE' ? {} : await readJson(req);
   const now = ctx.now().toISOString();
   let row;
+  const nameTaken = (name, ignoreId = null) => {
+    const found = ctx.db.prepare(`SELECT id FROM ${table} WHERE name = ? COLLATE NOCASE`).get(name);
+    return Boolean(found && found.id !== ignoreId);
+  };
   if (req.method === 'POST') {
     const values = fields.map((field) => {
       if (field === 'name') return parseTextField(body[field], field, 120);
-      return typeof body[field] === 'string' ? body[field].trim().slice(0, 160) : '';
+      return typeof body[field] === 'string' ? body[field].trim().slice(0, 240) : '';
     });
-    const responsibleId = kind === 'towers' ? optionalId(ctx.db, 'people', body.responsibleId, 'responsable') : null;
-    if (kind === 'towers' && !responsibleId) throw validationError('Selecciona un responsable para la tower.');
-    if (kind === 'towers' && ctx.db.prepare('SELECT id FROM towers WHERE name = ?').get(values[0])) throw new HttpError(409, 'duplicate_record', 'Ya existe una tower con ese nombre.');
+    if (nameTaken(values[0])) throw new HttpError(409, 'duplicate_record', 'Ya existe un registro con ese nombre.');
+    const extraColumns = [];
+    const extraValues = [];
+    if (kind === 'towers') {
+      const responsibleId = optionalId(ctx.db, 'people', body.responsibleId, 'responsable');
+      if (!responsibleId) throw validationError('Selecciona un responsable para la tower.');
+      extraColumns.push('responsible_id', 'lob_id');
+      extraValues.push(responsibleId, optionalId(ctx.db, 'lobs', body.lobId, 'LoB'));
+    }
     const id = randomUUID();
-    const columns = ['id', ...fields, ...(kind === 'towers' ? ['responsible_id'] : []), 'status', 'created_at', 'updated_at'];
-    ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, ...(kind === 'towers' ? [responsibleId] : []), 'active', now, now);
+    const columns = ['id', ...fields, ...extraColumns, 'status', 'created_at', 'updated_at'];
+    ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, ...extraValues, 'active', now, now);
     appendEntityEvent(ctx.db, { type: kind, id, user, action: 'created', now });
     row = getMasterRow(ctx.db, kind, id);
   } else {
@@ -697,7 +720,8 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
         withTransaction(ctx.db, () => {
           const opportunity = ctx.db.prepare('SELECT id FROM opportunities WHERE tower_id = ? LIMIT 1').get(id);
           const initiative = ctx.db.prepare('SELECT id FROM initiatives WHERE tower_id = ? LIMIT 1').get(id);
-          if (opportunity || initiative) {
+          const relation = ctx.db.prepare('SELECT opportunity_id FROM opportunity_towers WHERE tower_id = ? LIMIT 1').get(id);
+          if (opportunity || initiative || relation) {
             throw new HttpError(409, 'tower_in_use', 'No se puede eliminar esta tower porque está vinculada a oportunidades o iniciativas.');
           }
           appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deleted', now });
@@ -706,10 +730,21 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
         sendJson(res, 200, { deleted: true });
         return;
       }
+      if (kind === 'lobs') assertLobUnreferenced(ctx.db, id);
       ctx.db.prepare(`UPDATE ${table} SET status = 'inactive', updated_at = ? WHERE id = ?`).run(now, id);
       appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deactivated', now });
     } else {
-      const changes = fields.filter((field) => Object.hasOwn(body, field)).map((field) => [field, field === 'name' ? parseTextField(body[field], field, 120) : String(body[field] ?? '').trim().slice(0, 160)]);
+      const changes = [];
+      for (const field of fields) {
+        if (!Object.hasOwn(body, field)) continue;
+        if (field === 'name') {
+          const name = parseTextField(body[field], field, 120);
+          if (nameTaken(name, id)) throw new HttpError(409, 'duplicate_record', 'Ya existe un registro con ese nombre.');
+          changes.push([field, name]);
+        } else {
+          changes.push([field, String(body[field] ?? '').trim().slice(0, 240)]);
+        }
+      }
       if (kind === 'towers') {
         if (Object.hasOwn(body, 'active')) throw validationError('Las towers no tienen estado activo o inactivo.');
         if (Object.hasOwn(body, 'responsibleId')) {
@@ -717,7 +752,11 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
           if (!responsibleId) throw validationError('Selecciona un responsable para la tower.');
           changes.push(['responsible_id', responsibleId]);
         }
-      } else if (Object.hasOwn(body, 'active')) changes.push(['status', body.active ? 'active' : 'inactive']);
+        if (Object.hasOwn(body, 'lobId')) changes.push(['lob_id', optionalId(ctx.db, 'lobs', body.lobId, 'LoB')]);
+      } else if (Object.hasOwn(body, 'active')) {
+        if (kind === 'lobs' && body.active === false) assertLobUnreferenced(ctx.db, id);
+        changes.push(['status', body.active ? 'active' : 'inactive']);
+      }
       if (!changes.length) {
         const mapped = mapMaster(getMasterRow(ctx.db, kind, id), kind);
         sendJson(res, 200, kind === 'towers' ? { record: mapped } : { [plural.slice(0, -1)]: mapped });
@@ -959,7 +998,7 @@ function decodeId(rawId) {
 
 const OPPORTUNITY_ITEM_PATTERN = /^\/api\/opportunities\/([^/]+)$/;
 const OPPORTUNITY_EVENTS_PATTERN = /^\/api\/opportunities\/([^/]+)\/events$/;
-const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people)\/([^/]+)$/;
+const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people|services|lobs)\/([^/]+)$/;
 const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
 const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
 const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;

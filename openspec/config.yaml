@@ -1,0 +1,60 @@
+schema: spec-driven
+
+workflow:
+  pace: automatic
+  artifact_store: openspec
+  delivery_strategy: auto-chain
+  review_budget_changed_lines: 800
+
+context: |
+  Project: CRM QE Tower, a React dashboard for Quality Engineering commercial activity.
+  Stack: JavaScript ES modules, React 19, Vite 6, Node.js built-in HTTP server, and node:sqlite.
+  Architecture: Vite-served frontend with a separate API server; /api is proxied in development.
+  Persistence: SQLite backend plus browser localStorage for demo opportunity state where applicable.
+  Conventions: Spanish user-facing UI; English code, tests, and technical artifacts; Node's built-in test runner.
+  CI: GitHub Actions deploys to Fly.io; no automated test job was detected.
+
+strict_tdd: true
+
+testing:
+  workspace_test_command: npm test
+  projects:
+    - path: .
+      stack: React 19, Vite 6, Node.js ES modules, node:sqlite
+      test_command: npm test
+      test_framework: node:test
+      secondary_test_command: npm run test:server
+      test_layers:
+        unit: "Available: node:test tests for frontend domain helpers and server modules."
+        integration: "Available: node:test API and SQLite-backed server tests."
+        e2e: "Unavailable: no browser E2E framework or configuration detected."
+      coverage:
+        available: false
+        command: null
+      quality:
+        linter: null
+        type_checker: null
+        formatter: null
+      build_command: npm run build
+
+rules:
+  proposal:
+    - Include scope boundaries and a rollback plan for risky changes.
+  specs:
+    - Use Given/When/Then scenarios and RFC 2119 keywords where requirements need normative force.
+  design:
+    - Follow the existing frontend/API separation and document rationale for architectural changes.
+  tasks:
+    - Group tasks by phase and keep each task independently verifiable.
+  apply:
+    guidelines:
+      - Follow existing project conventions and preserve Spanish UI copy unless a change explicitly requires otherwise.
+      - Do not commit, push, deploy, or mutate production without explicit user authorization.
+    tdd: true
+    test_command: npm test
+  verify:
+    test_command: npm test
+    build_command: npm run build
+    coverage_threshold: 0
+  archive:
+    - Preserve archived changes as an audit trail; warn before merging destructive deltas.
