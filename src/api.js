@@ -85,8 +85,11 @@ export const createPerson = (body) => request('/people', { method: 'POST', body 
 export const updatePerson = (id, body) => request(`/people/${encodeURIComponent(id)}`, { method: 'PATCH', body });
 export const deactivatePerson = (id) => request(`/people/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listInitiatives = () => request('/initiatives');
+export const listArchivedInitiatives = () => request('/initiatives?archived=1');
 export const createInitiative = (body) => request('/initiatives', { method: 'POST', body });
 export const updateInitiative = (id, body) => request(`/initiatives/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+export const archiveInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}/archive`, { method: 'POST' });
+export const restoreInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 export const deleteInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listAgreements = () => request('/agreements');
 export const createAgreement = (body) => request('/agreements', { method: 'POST', body });
