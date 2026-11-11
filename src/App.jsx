@@ -3,7 +3,7 @@ import { proposals, stages } from './data.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getMe, login, logout, listOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, createInitiative, updateInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
+import { getMe, login, logout, listOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, createInitiative, updateInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -17,6 +17,8 @@ const navItems = [
   { id: 'agreements', label: 'Acuerdos Marco', icon: 'layers' },
   { id: 'crossSelling', label: 'Cross-Selling', icon: 'share' },
   { id: 'towers', label: 'Towers', icon: 'grid' },
+  { id: 'services', label: 'Servicios', icon: 'layers' },
+  { id: 'lobs', label: 'LoB', icon: 'grid' },
   { id: 'people', label: 'Responsables', icon: 'users' },
   { id: 'analytics', label: 'Informes', icon: 'chart' },
   { id: 'settings', label: 'Configuración', icon: 'settings' },
@@ -32,6 +34,8 @@ const pageTitles = {
   agreements: ['Acuerdos Marco', 'Vigencia, responsables y renovaciones de acuerdos comerciales.'],
   crossSelling: ['Cross-Selling', 'Las iniciativas de cross-selling se mantienen independientes de las oportunidades.'],
   towers: ['Towers', 'Gestiona las towers y sus responsables.'],
+  services: ['Servicios', 'Catálogo de servicios QE asignables a iniciativas y oportunidades.'],
+  lobs: ['LoB', 'Líneas de negocio a las que se asocian las towers y las oportunidades.'],
   people: ['Responsables', 'Personas asignables a clientes, iniciativas y oportunidades.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
   settings: ['Configuración', 'Preferencias de tu cuenta.'],
@@ -77,6 +81,8 @@ function App() {
   const [opportunities, setOpportunities] = useState([]);
   const [clients, setClients] = useState([]);
   const [towers, setTowers] = useState([]);
+  const [services, setServices] = useState([]);
+  const [lobs, setLobs] = useState([]);
   const [people, setPeople] = useState([]);
   const [initiatives, setInitiatives] = useState([]);
   const [agreements, setAgreements] = useState([]);
@@ -127,8 +133,8 @@ function App() {
   // Load the shared board whenever the session becomes authenticated.
   useEffect(() => {
     if (session.status !== 'authenticated') return;
-    Promise.all([listClients(), listTowers(), listPeople(), listInitiatives(), listAgreements()]).then(([c, t, p, i, a]) => {
-      setClients(c.records || []); setTowers(t.records || []); setPeople(p.records || []);
+    Promise.all([listClients(), listTowers(), listServices(), listLobs(), listPeople(), listInitiatives(), listAgreements()]).then(([c, t, s, l, p, i, a]) => {
+      setClients(c.records || []); setTowers(t.records || []); setServices(s.records || []); setLobs(l.records || []); setPeople(p.records || []);
       setInitiatives(i.initiatives || []); setAgreements(a.agreements || []);
     }).catch((err) => {
       if (err?.status === 401) setSession({ status: 'anonymous', user: null });
@@ -164,12 +170,14 @@ function App() {
     if (session.status !== 'authenticated') return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
-      Promise.all([listOpportunities(), listInitiatives(), listClients(), listTowers(), listPeople(), listAgreements()])
-        .then(([{ opportunities: list }, { initiatives: initiativeList }, clientResult, towerResult, peopleResult, agreementResult]) => {
+      Promise.all([listOpportunities(), listInitiatives(), listClients(), listTowers(), listServices(), listLobs(), listPeople(), listAgreements()])
+        .then(([{ opportunities: list }, { initiatives: initiativeList }, clientResult, towerResult, serviceResult, lobResult, peopleResult, agreementResult]) => {
           setOpportunities(Array.isArray(list) ? list : []);
           setInitiatives(Array.isArray(initiativeList) ? initiativeList : []);
           setClients(clientResult.records || []);
           setTowers(towerResult.records || []);
+          setServices(serviceResult.records || []);
+          setLobs(lobResult.records || []);
           setPeople(peopleResult.records || []);
           setAgreements(agreementResult.agreements || []);
         })
@@ -349,11 +357,13 @@ function App() {
     const fn = {
       clients: existing ? updateClient : createClient,
       towers: existing ? updateTower : createTower,
+      services: existing ? updateService : createService,
+      lobs: existing ? updateLob : createLob,
       people: existing ? updatePerson : createPerson,
     }[kind];
     const result = await fn(...(existing ? [record.id, record] : [record]));
     const saved = result.record;
-    const setter = { clients: setClients, towers: setTowers, people: setPeople }[kind];
+    const setter = { clients: setClients, towers: setTowers, services: setServices, lobs: setLobs, people: setPeople }[kind];
     setter((current) => existing ? current.map((item) => item.id === saved.id ? saved : item) : [...current, saved]);
     setMasterEditing(null);
     showNotice('Registro guardado correctamente.');
@@ -361,9 +371,9 @@ function App() {
   };
 
   const deactivateMaster = async (kind, record) => {
-    const fn = { clients: deactivateClient, people: deactivatePerson }[kind];
+    const fn = { clients: deactivateClient, services: deactivateService, lobs: deactivateLob, people: deactivatePerson }[kind];
     const { record: saved } = await fn(record.id);
-    const setter = { clients: setClients, people: setPeople }[kind];
+    const setter = { clients: setClients, services: setServices, lobs: setLobs, people: setPeople }[kind];
     setter((current) => current.map((item) => item.id === saved.id ? saved : item));
     showNotice('Registro desactivado. Sus vínculos se mantienen.');
   };
@@ -459,7 +469,7 @@ function App() {
         <div className="content-wrap">
           <div className="page-heading">
             <div><div className="eyebrow"><span className="eyebrow-dot" /> ESPAÑA <span className="eyebrow-divider">/</span> QUALITY ENGINEERING</div><h1>{title}</h1><p>{subtitle}</p></div>
-            <div className="heading-actions">{['clients', 'towers', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {page === 'clients' ? 'Nuevo cliente' : page === 'towers' ? 'Nueva tower' : 'Nuevo responsable'}</button>}{(['initiatives', 'crossSelling'].includes(page) || page === 'pipeline') && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'cross_selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
+            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{(['initiatives', 'crossSelling'].includes(page) || page === 'pipeline') && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'cross_selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
           </div>
 
           {page === 'pipeline' ? <>
@@ -488,14 +498,14 @@ function App() {
             {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onDelete={deleteBoardCard} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
           </> : page === 'opportunities'
             ? <OpportunityManagementPanel opportunities={opportunities.filter((item) => `${item.id} ${item.number} ${item.title} ${item.account} ${item.tower} ${item.owner} ${item.bidManager} ${item.due} ${item.closureReason}`.toLowerCase().includes(query.trim().toLowerCase()))} onEdit={setEditing} loading={oppState === 'loading'} error={oppState === 'error'} onRetry={reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} />
-            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteTower={removeTower} onEditAgreement={setEditingAgreement} />}
+            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteTower={removeTower} onEditAgreement={setEditingAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
       {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
       {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} towers={towers} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} />}
       {editingAgreement !== null && <AgreementDialog clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
-      {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
+      {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} lobs={lobs} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
       {notice && <div className={`toast${noticeTone === 'error' ? ' toast-error' : ''}`} role="status"><Icon name="check" size={16} />{notice}</div>}
     </div>
   );
@@ -651,13 +661,15 @@ function OpportunityRows({ opportunities, view, onEdit }) {
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
-function SecondaryPage({ page, opportunities, clients, towers, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteTower, onEditAgreement }) {
+function SecondaryPage({ page, opportunities, clients, towers, services, lobs, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteTower, onEditAgreement }) {
   const grouped = towers.map((tower) => ({ tower: tower.name, count: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).length, amount: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
   const displayedInitiatives = page === 'crossSelling' ? initiatives.filter((item) => item.category === 'cross_selling') : initiatives;
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios autenticados, que tienen los mismos permisos para consultar y modificar sus registros. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
   if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
-  if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower', 'Responsable']} onEdit={onEditMaster} onDelete={onDeleteTower} />;
+  if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower', 'Responsable', 'LoB']} onEdit={onEditMaster} onDelete={onDeleteTower} />;
+  if (page === 'services') return <MasterPanel title="Servicios" records={services} kind="services" headers={['Servicio', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
+  if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
   if (page === 'initiatives' || page === 'crossSelling') return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{page === 'crossSelling' ? 'Iniciativas de Cross-Selling' : 'Iniciativas de desarrollo'}</h2><p>{page === 'crossSelling' ? 'Registros de iniciativas de cross-selling, independientes de las oportunidades.' : 'Las iniciativas son registros independientes de las oportunidades.'}</p></div><span className="record-count">{displayedInitiatives.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Tipo</th><th>Cliente</th><th>Tower</th><th>Responsable</th><th>Importe</th><th>Estado</th><th></th></tr></thead><tbody>{displayedInitiatives.map((item) => <tr key={item.id}><td><button className="table-title" onClick={() => onEditInitiative(item)}>{item.title}</button></td><td>{initiativeCategory(item.category)}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{towers.find((x) => x.id === item.towerId)?.name || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td>{formatCurrency(parseAmount(item.amount))}</td><td>{item.status}</td><td><button className="button button-secondary" onClick={() => onEditInitiative(item)}>Editar</button></td></tr>)}</tbody></table>{displayedInitiatives.length === 0 && <p className="empty-state">{page === 'crossSelling' ? 'Todavía no hay iniciativas de cross-selling.' : 'Todavía no hay iniciativas.'}</p>}</div></section>;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
@@ -804,14 +816,25 @@ function initiativeCategory(value) {
 }
 
 function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDelete }) {
-  const columns = kind === 'clients' ? ['name', 'sector'] : kind === 'people' ? ['name', 'email'] : ['name', 'responsibleName'];
+  const columns = { clients: ['name', 'sector'], people: ['name', 'email'], towers: ['name', 'responsibleName', 'lobName'], services: ['name', 'description'], lobs: ['name', 'description'] }[kind];
   const hasLifecycle = kind !== 'towers';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{hasLifecycle ? 'Los registros vinculados se desactivan en lugar de eliminarse.' : 'Cada tower tiene un responsable asignado. Las towers vinculadas no se pueden eliminar.'}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr>{headers.map((label) => <th key={label}>{label}</th>)}{hasLifecycle && <th>Estado</th>}<th>Acciones</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>{columns.map((field) => <td key={field}>{record[field] || '—'}</td>)}{hasLifecycle && <td>{record.active ? 'Activo' : 'Inactivo'}</td>}<td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{kind === 'towers' ? <button className="button button-secondary" onClick={() => onDelete(record)}>Eliminar</button> : record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}</td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
+  const description = kind === 'services'
+    ? 'Los servicios inactivos no se pueden asignar a nuevos registros, pero siguen visibles en los vínculos existentes.'
+    : kind === 'lobs'
+      ? 'Una LoB no se puede desactivar mientras alguna tower u oportunidad la referencie.'
+      : hasLifecycle ? 'Los registros vinculados se desactivan en lugar de eliminarse.' : 'Cada tower tiene un responsable asignado. Las towers vinculadas no se pueden eliminar.';
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr>{headers.map((label) => <th key={label}>{label}</th>)}{hasLifecycle && <th>Estado</th>}<th>Acciones</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>{columns.map((field) => <td key={field}>{record[field] || '—'}</td>)}{hasLifecycle && <td>{record.active ? 'Activo' : 'Inactivo'}</td>}<td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{kind === 'towers' ? <button className="button button-secondary" onClick={() => onDelete(record)}>Eliminar</button> : record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}</td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
 }
 
-function MasterDialog({ kind, record, people, onClose, onSave, onSaved }) {
-  const labels = { clients: ['Nuevo cliente', 'Cliente', ['name', 'Nombre', 'sector', 'Sector']], towers: ['Nueva tower', 'Tower', ['name', 'Nombre']], people: ['Nuevo responsable', 'Responsable', ['name', 'Nombre', 'email', 'Email']] }[kind];
-  const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', responsibleId: record.responsibleId || '', active: record.active ?? true });
+function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) {
+  const labels = {
+    clients: ['Nuevo cliente', 'Cliente', ['name', 'Nombre', 'sector', 'Sector']],
+    towers: ['Nueva tower', 'Tower', ['name', 'Nombre']],
+    services: ['Nuevo servicio', 'Servicio', ['name', 'Nombre', 'description', 'Descripción']],
+    lobs: ['Nueva LoB', 'LoB', ['name', 'Nombre', 'description', 'Descripción']],
+    people: ['Nuevo responsable', 'Responsable', ['name', 'Nombre', 'email', 'Email']],
+  }[kind];
+  const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', description: record.description || '', responsibleId: record.responsibleId || '', lobId: record.lobId || '', active: record.active ?? true });
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
@@ -822,7 +845,7 @@ function MasterDialog({ kind, record, people, onClose, onSave, onSaved }) {
   };
   const fields = [];
   for (let index = 0; index < labels[2].length; index += 2) fields.push([labels[2][index], labels[2][index + 1]]);
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <label className="form-field wide" key={field}>{label}<input required={field === 'name'} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />{field === 'email' && <span className="field-hint">Opcional</span>}</label>)}{kind === 'towers' && <label className="form-field wide">Responsable *<select required value={values.responsibleId} onChange={(event) => setValues((current) => ({ ...current, responsibleId: event.target.value }))}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <label className="form-field wide" key={field}>{label}<input required={field === 'name'} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</label>)}{kind === 'towers' && <label className="form-field wide">Responsable *<select required value={values.responsibleId} onChange={(event) => setValues((current) => ({ ...current, responsibleId: event.target.value }))}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
 }
 
 function InitiativeDialog({ record, clients, towers, people, onQuickCreate, onClose, onSave }) {
