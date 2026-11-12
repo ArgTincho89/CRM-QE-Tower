@@ -127,7 +127,23 @@ const SCHEMA_STATEMENTS = [
     )`,
   `CREATE TABLE IF NOT EXISTS workspace_links (${WORKSPACE_LINK_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // In-app notifications. Title and message are snapshots taken when the notification is created.
+  `CREATE TABLE IF NOT EXISTS notifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      actor_name TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL CHECK(kind IN ('assignment')),
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
+      entity_id TEXT NOT NULL, entity_title TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(user_id, read_at, created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id)',
 ];
+
+/** Nullable "Asignado a" column: a system user account, separate from the people-master owner. */
+const ASSIGNED_USER_COLUMN = ['assigned_user_id', 'TEXT REFERENCES users(id) ON DELETE SET NULL'];
 
 export const SERVICE_CATALOG = [
   'QA Automation',
@@ -212,6 +228,7 @@ export function applySchema(db) {
     ['opportunity_type', 'TEXT'],
     // Optional external reference (client portal, tender or ERP registry number). Not unique.
     ['registry_id', "TEXT NOT NULL DEFAULT ''"],
+    ASSIGNED_USER_COLUMN,
   ];
   for (const [name, declaration] of opportunityAdditions) {
     if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
@@ -225,6 +242,7 @@ export function applySchema(db) {
     ['archived_at', 'TEXT'],
     ['archived_by_id', 'TEXT REFERENCES users(id)'],
     ['archived_by_name', "TEXT NOT NULL DEFAULT ''"],
+    ASSIGNED_USER_COLUMN,
   ];
   for (const [name, declaration] of initiativeAdditions) {
     if (!initiativeColumns.includes(name)) db.exec(`ALTER TABLE initiatives ADD COLUMN ${name} ${declaration}`);
@@ -235,6 +253,7 @@ export function applySchema(db) {
     ['amount', 'REAL NOT NULL DEFAULT 0'],
     ['notes', "TEXT NOT NULL DEFAULT ''"],
     ['registry_id', "TEXT NOT NULL DEFAULT ''"],
+    ASSIGNED_USER_COLUMN,
   ];
   for (const [name, declaration] of agreementAdditions) {
     if (!agreementColumns.includes(name)) db.exec(`ALTER TABLE framework_agreements ADD COLUMN ${name} ${declaration}`);
@@ -418,7 +437,7 @@ const COMMERCIAL_ID_RENAMES = [
     detailKeys: ['agreementId'],
   },
 ];
-const POLYMORPHIC_ID_TABLES = ['record_actions', 'workspace_links', 'entity_events'];
+const POLYMORPHIC_ID_TABLES = ['record_actions', 'workspace_links', 'entity_events', 'notifications'];
 const EVENT_DETAIL_TABLES = ['entity_events', 'card_events'];
 
 /**
@@ -461,6 +480,10 @@ function renameEntityIds(db, { table, entityTypes, references, rename }) {
     ...references.map(([refTable, column]) => db.prepare(`UPDATE ${refTable} SET ${column} = $next WHERE ${column} = $old`)),
     ...POLYMORPHIC_ID_TABLES.flatMap((refTable) =>
       entityTypes.map((type) => db.prepare(`UPDATE ${refTable} SET entity_id = $next WHERE entity_type = '${type}' AND entity_id = $old`))),
+    // Notification messages embed the id ("... la Oportunidad OP-1: Título"); keep the snapshot consistent.
+    ...entityTypes.map((type) => db.prepare(
+      `UPDATE notifications SET message = replace(message, ' ' || $old || ':', ' ' || $next || ':') WHERE entity_type = '${type}' AND entity_id = $next`,
+    )),
   ];
   for (const [old, next] of rename) {
     for (const statement of statements) statement.run({ old, next });

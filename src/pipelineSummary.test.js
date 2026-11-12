@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { computePipelineQe, computeWeightedAmount, computeWeightedPipeline } from './pipelineSummary.js';
+import { computePipelineQe, computeQeAmount, computeWeightedAmount, computeWeightedPipeline } from './pipelineSummary.js';
 
 const opportunities = [
   { id: 'OP-1', amount: '1.000 €', qaPercent: 50, probability: 80 },
@@ -25,15 +25,27 @@ describe('pipeline summary', () => {
     assert.equal(computePipelineQe(opportunities), 1000);
   });
 
+  test('QE amount is estimated amount x QA share', () => {
+    assert.equal(computeQeAmount({ amount: '350.000 €', qaPercent: 75 }), 262500);
+    assert.equal(computeQeAmount({ amount: '1.000 €' }), 0);
+  });
+
+  test('weighted amount applies probability to the QE amount, not to the estimated amount', () => {
+    const opportunity = { amount: '350.000 €', qaPercent: 75, probability: 20 };
+    assert.equal(computePipelineQe([opportunity]), 262500);
+    assert.equal(computeWeightedAmount(opportunity), 52500);
+    assert.equal(computeWeightedPipeline([opportunity]), 52500);
+  });
+
   test('weighted amount exists only when probability exists, and zero counts as present', () => {
-    assert.equal(computeWeightedAmount(opportunities[0]), 800);
+    assert.equal(computeWeightedAmount(opportunities[0]), 400);
     assert.equal(computeWeightedAmount(opportunities[1]), null);
     assert.equal(computeWeightedAmount(opportunities[3]), 0);
     assert.equal(computeWeightedAmount({ amount: '100', probability: '' }), null);
   });
 
   test('weighted pipeline is separate, skips archived and missing probabilities', () => {
-    assert.equal(computeWeightedPipeline(opportunities), 800);
+    assert.equal(computeWeightedPipeline(opportunities), 400);
     assert.equal(computeWeightedPipeline([opportunities[1]]), null);
   });
 });

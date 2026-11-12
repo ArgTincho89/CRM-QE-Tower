@@ -10,19 +10,25 @@ function isActive(opportunity) {
  * by callers: the KPI is global.
  */
 export function computePipelineQe(opportunities) {
-  return (opportunities || []).filter(isActive).reduce((total, item) => {
-    const qaPercent = Number(item.qaPercent) || 0;
-    return total + (parseAmount(item.amount) * qaPercent) / 100;
-  }, 0);
+  return (opportunities || []).filter(isActive).reduce((total, item) => total + computeQeAmount(item), 0);
 }
 
-/** Probability-weighted amount for one Opportunity, or null when no probability exists. */
+/** QE amount for one Opportunity: estimated amount x QA participation / 100. */
+export function computeQeAmount(opportunity) {
+  const qaPercent = Number(opportunity.qaPercent) || 0;
+  return (parseAmount(opportunity.amount) * qaPercent) / 100;
+}
+
+/**
+ * Probability-weighted amount for one Opportunity: QE amount x probability / 100,
+ * or null when no probability exists.
+ */
 export function computeWeightedAmount(opportunity) {
   const { probability } = opportunity;
   if (probability === null || probability === undefined || probability === '') return null;
   const numeric = Number(probability);
   if (Number.isNaN(numeric)) return null;
-  return (parseAmount(opportunity.amount) * numeric) / 100;
+  return (computeQeAmount(opportunity) * numeric) / 100;
 }
 
 /**

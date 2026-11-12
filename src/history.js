@@ -12,6 +12,7 @@ const FIELD_LABELS = {
   due: 'próximo hito',
   tags: 'etiquetas',
   registry_id: 'ID registro',
+  assigned_user_id: 'asignado a',
 };
 
 function pad(value) {

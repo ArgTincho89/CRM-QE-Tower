@@ -392,6 +392,7 @@ test('registry_id is added idempotently to agreements and opportunities with an 
 const SIX_DIGIT_REFERENCE_TABLES = [
   'opportunities', 'initiatives', 'framework_agreements', 'card_events', 'opportunity_towers', 'opportunity_lobs',
   'opportunity_services', 'initiative_services', 'record_actions', 'record_action_comments', 'workspace_links', 'entity_events',
+  'notifications',
 ];
 
 /** Builds a database with pre-six-digit ids by opening it, inserting legacy rows and dropping the marker. */
@@ -430,6 +431,9 @@ function createLegacyIdDatabase(dbPath, extraSql = '') {
       ('agreement','3f2b8c1e-0000-4000-8000-000000000001','Ada','created','{}','2026-01-01'),
       ('services','SVC-0010','Ada','created','{"copiedFrom":"SVC-0001","year":2026}','2026-01-01'),
       ('clients','O-0001','Ada','updated','{"fields":["name"]}','2026-01-01');
+    INSERT INTO notifications (id,user_id,actor_user_id,actor_name,kind,entity_type,entity_id,entity_title,message,created_at) VALUES
+      ('n-1','u-1',NULL,'Bob','assignment','opportunity','O-0001','Legacy O','Bob te ha asignado la Oportunidad O-0001: Legacy O','2026-03-03'),
+      ('n-2','u-1',NULL,'Bob','assignment','agreement','3f2b8c1e-0000-4000-8000-000000000001','Acuerdo','Bob te ha asignado el Acuerdo Marco 3f2b8c1e-0000-4000-8000-000000000001: Acuerdo','2026-03-03');
     DELETE FROM schema_meta WHERE key = 'six_digit_ids_v1';
   `);
   if (extraSql) {
@@ -491,6 +495,10 @@ test('commercial ids migrate to six-digit prefixes with every reference rewritte
       // Other entity types never change, even when their id looks like a legacy opportunity id.
       ['clients', 'O-0001', '{"fields":["name"]}'],
     ]);
+    assert.deepEqual(db.prepare('SELECT id, entity_type, entity_id, message FROM notifications ORDER BY id').all().map((row) => [row.id, row.entity_type, row.entity_id, row.message]), [
+      ['n-1', 'opportunity', 'OP-000002', 'Bob te ha asignado la Oportunidad OP-000002: Legacy O'],
+      ['n-2', 'agreement', 'AM-000001', 'Bob te ha asignado el Acuerdo Marco AM-000001: Acuerdo'],
+    ]);
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
     assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
 
@@ -519,6 +527,50 @@ test('the six-digit id migration rolls back when it would leave a broken foreign
     assert.equal(raw.prepare("SELECT entity_id FROM workspace_links WHERE id = 'w-3'").get().entity_id, '3f2b8c1e-0000-4000-8000-000000000001');
     assert.equal(raw.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'six_digit_ids_v1'").get().count, 0);
     raw.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('assigned_user_id columns and the notifications table are added idempotently', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-assignee-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL);
+    CREATE TABLE framework_agreements (id TEXT PRIMARY KEY, title TEXT NOT NULL, client_id TEXT, owner_id TEXT, end_date TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    INSERT INTO users VALUES ('u-1','ada@example.com','Ada','hash','admin','2026-01-01');
+    INSERT INTO framework_agreements (id, title, created_at, updated_at) VALUES ('AM-000001','Legacy','2026-01-01','2026-01-01');
+  `);
+  original.close();
+  try {
+    const db = openDatabase(dbPath);
+    applySchema(db);
+    for (const table of ['opportunities', 'initiatives', 'framework_agreements']) {
+      const columns = db.prepare(`PRAGMA table_info(${table})`).all().filter((row) => row.name === 'assigned_user_id');
+      assert.equal(columns.length, 1, table);
+      assert.equal(columns[0].notnull, 0, table);
+      const foreignKey = db.prepare(`PRAGMA foreign_key_list(${table})`).all().find((row) => row.from === 'assigned_user_id');
+      assert.equal(foreignKey?.table, 'users', table);
+      assert.equal(foreignKey?.on_delete, 'SET NULL', table);
+    }
+    assert.equal(db.prepare("SELECT assigned_user_id FROM framework_agreements WHERE id = 'AM-000001'").get().assigned_user_id, null);
+    const notificationColumns = db.prepare('PRAGMA table_info(notifications)').all().map((row) => row.name);
+    assert.deepEqual(notificationColumns, ['id', 'user_id', 'actor_user_id', 'actor_name', 'kind', 'entity_type', 'entity_id', 'entity_title', 'message', 'created_at', 'read_at']);
+    const indexColumns = db.prepare('PRAGMA index_info(idx_notifications_recipient)').all().map((row) => row.name);
+    assert.deepEqual(indexColumns, ['user_id', 'read_at', 'created_at']);
+    assert.throws(() => db.prepare("INSERT INTO notifications (id,user_id,kind,entity_type,entity_id,message,created_at) VALUES ('n-x','u-1','assignment','clients','c-1','x','x')").run(), /CHECK constraint failed/);
+
+    // Deleting the assigned user unassigns records instead of failing.
+    db.prepare("UPDATE framework_agreements SET assigned_user_id = 'u-1'").run();
+    db.prepare("DELETE FROM users WHERE id = 'u-1'").run();
+    assert.equal(db.prepare("SELECT assigned_user_id FROM framework_agreements WHERE id = 'AM-000001'").get().assigned_user_id, null);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    for (const table of ['opportunities', 'initiatives', 'framework_agreements']) {
+      assert.equal(reopened.prepare(`PRAGMA table_info(${table})`).all().filter((row) => row.name === 'assigned_user_id').length, 1, table);
+    }
+    closeDatabase(reopened);
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }

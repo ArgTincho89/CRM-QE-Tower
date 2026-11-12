@@ -8,10 +8,11 @@ import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from 
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeCountLabel, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
 import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLinks, safeWorkspaceUrl, toWorkspaceLinkForm } from './workspaceLinks.js';
 import { filterAgreements } from './agreements.js';
-import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
+import { computePipelineQe, computeWeightedAmount, computeWeightedPipeline } from './pipelineSummary.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
-import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
+import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
+import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
+import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -79,6 +80,9 @@ function App() {
   const [initiatives, setInitiatives] = useState([]);
   const [appVersion, setAppVersion] = useState('');
   const [agreements, setAgreements] = useState([]);
+  // User accounts for "Asignado a" ({ id, name } only) and the current user's notifications.
+  const [users, setUsers] = useState([]);
+  const [notifications, setNotifications] = useState({ items: [], unreadCount: 0 });
   const [oppState, setOppState] = useState('loading');
   const [page, setPage] = useState('pipeline');
   const [query, setQuery] = useState('');
@@ -144,7 +148,8 @@ function App() {
   // Load the shared board whenever the session becomes authenticated.
   useEffect(() => {
     if (session.status !== 'authenticated') return;
-    Promise.all([listClients(), listTowers(), listServices(), listLobs(), listPeople(), listInitiatives(), listAgreements(), listServiceYears()]).then(([c, t, s, l, p, i, a, y]) => {
+    Promise.all([listClients(), listTowers(), listServices(), listLobs(), listPeople(), listInitiatives(), listAgreements(), listServiceYears(), listUsers()]).then(([c, t, s, l, p, i, a, y, u]) => {
+      setUsers(u.users || []);
       setClients(c.records || []); setTowers(t.records || []); setServices(s.records || []); setLobs(l.records || []); setPeople(p.records || []);
       setInitiatives(i.initiatives || []); setAgreements(a.agreements || []);
       setServiceYears({ years: y.years || [], currentYear: y.currentYear ?? new Date().getFullYear() });
@@ -177,13 +182,24 @@ function App() {
     };
   }, [session.status]);
 
+  // Notifications ride on the shared-records refresh; a failure keeps the last known list.
+  const refreshNotifications = () => {
+    listNotifications()
+      .then((result) => setNotifications({ items: result.notifications || [], unreadCount: Number(result.unreadCount) || 0 }))
+      .catch((err) => {
+        if (err?.status === 401) setSession({ status: 'anonymous', user: null });
+      });
+  };
+
   // Poll so two users see each other's changes without a manual refresh.
   useEffect(() => {
     if (session.status !== 'authenticated') return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
-      Promise.all([listOpportunities(), listInitiatives(), listClients(), listTowers(), listServices(), listLobs(), listPeople(), listAgreements(), listServiceYears()])
-        .then(([{ opportunities: list }, { initiatives: initiativeList }, clientResult, towerResult, serviceResult, lobResult, peopleResult, agreementResult, yearResult]) => {
+      refreshNotifications();
+      Promise.all([listOpportunities(), listInitiatives(), listClients(), listTowers(), listServices(), listLobs(), listPeople(), listAgreements(), listServiceYears(), listUsers()])
+        .then(([{ opportunities: list }, { initiatives: initiativeList }, clientResult, towerResult, serviceResult, lobResult, peopleResult, agreementResult, yearResult, userResult]) => {
+          setUsers(userResult.users || []);
           setServiceYears({ years: yearResult.years || [], currentYear: yearResult.currentYear ?? new Date().getFullYear() });
           setOpportunities(Array.isArray(list) ? list : []);
           setInitiatives(Array.isArray(initiativeList) ? initiativeList : []);
@@ -198,6 +214,7 @@ function App() {
           if (err?.status === 401) setSession({ status: 'anonymous', user: null });
         });
     };
+    refreshNotifications();
     const interval = window.setInterval(refresh, 20000);
     const onVisibility = () => {
       if (document.visibilityState === 'visible') refresh();
@@ -235,8 +252,8 @@ function App() {
       && (ownerFilter === 'all' || item.owner === ownerFilter);
   }), [pipelineCards, query, stageFilter, towerFilter, ownerFilter]);
   const advancedFilteredPipelineCards = useMemo(
-    () => filterPipelineCards(filteredPipelineCards, advancedFilters),
-    [filteredPipelineCards, advancedFilters],
+    () => filterPipelineCards(filteredPipelineCards, advancedFilters, { currentUserId: session.user?.id || '' }),
+    [filteredPipelineCards, advancedFilters, session.user?.id],
   );
   const filteredPipelineOpportunities = advancedFilteredPipelineCards.filter((item) => item.entityType === 'opportunity');
 
@@ -423,6 +440,7 @@ function App() {
         pep: record.pep || '',
         opportunityType: record.opportunityType || '',
         registryId: record.registryId || '',
+        assignedUserId: record.assignedUserId || '',
         towerIds: record.towerIds || [],
         lobIds: record.lobIds || [],
         serviceIds: record.serviceIds || [],
@@ -583,6 +601,58 @@ function App() {
     showNotice('Acuerdo marco guardado correctamente.');
   };
 
+  const markAllRead = async () => {
+    const previous = notifications;
+    setNotifications((current) => ({ items: markNotificationsRead(current.items, null, new Date().toISOString()), unreadCount: 0 }));
+    try {
+      await markAllNotificationsRead();
+    } catch (err) {
+      setNotifications(previous);
+      showNotice(err?.message || 'No se pudieron marcar las notificaciones como leídas.', 'error');
+    }
+  };
+
+  // Marks the notification read, then opens its record on its page with fresh data.
+  const openNotification = async (notification) => {
+    if (!notification.readAt) {
+      setNotifications((current) => ({
+        items: markNotificationsRead(current.items, [notification.id], new Date().toISOString()),
+        unreadCount: Math.max(0, current.unreadCount - 1),
+      }));
+      markNotificationRead(notification.id).catch(() => refreshNotifications());
+    }
+    const targetPage = notificationTargetPage(notification.entityType);
+    if (!targetPage) return;
+    const missing = () => showNotice('El registro de esta notificación ya no existe o está archivado.', 'error');
+    try {
+      if (notification.entityType === 'opportunity') {
+        const { opportunities: list } = await listOpportunities();
+        setOpportunities(Array.isArray(list) ? list : []);
+        const record = (list || []).find((item) => item.id === notification.entityId);
+        if (!record) { missing(); return; }
+        navigate(targetPage);
+        setEditing(record);
+      } else if (notification.entityType === 'initiative') {
+        const { initiatives: list } = await listInitiatives();
+        setInitiatives(Array.isArray(list) ? list : []);
+        const record = (list || []).find((item) => item.id === notification.entityId);
+        if (!record) { missing(); return; }
+        navigate(targetPage);
+        setEditingInitiative(record);
+      } else {
+        const { agreements: list } = await listAgreements();
+        setAgreements(Array.isArray(list) ? list : []);
+        const record = (list || []).find((item) => item.id === notification.entityId);
+        if (!record) { missing(); return; }
+        navigate(targetPage);
+        setEditingAgreement(record);
+      }
+    } catch (err) {
+      if (err?.status === 401) setSession({ status: 'anonymous', user: null });
+      else showNotice(err?.message || 'No se pudo abrir el registro.', 'error');
+    }
+  };
+
   const handleAuthenticated = (user) => {
     setSession({ status: 'authenticated', user });
   };
@@ -595,6 +665,8 @@ function App() {
     }
     setSession({ status: 'anonymous', user: null });
     setOpportunities([]);
+    setNotifications({ items: [], unreadCount: 0 });
+    setUsers([]);
     setOppState('loading');
     setPage('pipeline');
   };
@@ -640,7 +712,7 @@ function App() {
           <button className="mobile-menu icon-button" aria-label="Abrir navegación" onClick={() => setMobileNav(true)}><Icon name="list" /></button>
           <div className="breadcrumbs"><span>SEIDOR</span><Icon name="chevron" size={14} /><strong>{title}</strong></div>
           <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en CRM QE</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad..." /><kbd>⌘ K</kbd></label>
-          <button className="icon-button notification-button" aria-label="Notificaciones"><Icon name="bell" size={19} /><span className="notification-dot" /></button>
+          <NotificationBell notifications={notifications.items} unreadCount={notifications.unreadCount} onOpen={openNotification} onMarkAllRead={markAllRead} />
           <div className="user-menu">
             <Avatar name={user.name} />
             <span><strong>{user.name}</strong><small>{user.email}</small></span>
@@ -664,7 +736,7 @@ function App() {
               <Kpi icon="file" color="teal" label="Propuestas internas / Estimaciones" value={String(proposals.filter((item) => item.type === 'Interna').length)} detail="Datos de referencia" />
               <Kpi icon="layers" color="blue" label="Acuerdos Marco" value={String(agreements.filter((item) => item.status === 'active').length)} detail="Registros activos" />
               <Kpi icon="chart" color="green" label="Pipeline QE" value={formatCurrency(computePipelineQe(opportunities))} detail="Importe × participación QA" />
-              {weightedPipeline !== null && <Kpi icon="target" color="violet" label="Ponderado por probabilidad" value={formatCurrency(weightedPipeline)} detail="Oportunidades con probabilidad; no suma al Pipeline QE" />}
+              {weightedPipeline !== null && <Kpi icon="target" color="violet" label="Ponderado por probabilidad" value={formatCurrency(weightedPipeline)} detail="Importe QE × probabilidad; no suma al Pipeline QE" />}
             </section>
             <div className="pipeline-toolbar">
               <div className="toolbar-title"><h2>Pipeline comercial</h2><span className="live-pill"><span /> Actualizado ahora</span></div>
@@ -676,7 +748,7 @@ function App() {
                 <div className="view-switch" aria-label="Tipo de vista">{[['kanban', 'grid', 'Kanban'], ['list', 'list', 'Lista'], ['table', 'table', 'Tabla']].map(([id, icon, label]) => <button key={id} title={label} aria-label={`Vista ${label}`} aria-pressed={view === id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon name={icon} size={16} /></button>)}</div>
               </div>
             </div>
-            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
+            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} users={users} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
             <div className="results-line"><span><strong>{page === 'pipeline' ? (view === 'kanban' ? advancedFilteredPipelineCards.length : filteredPipelineOpportunities.length) : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
             {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
@@ -689,9 +761,9 @@ function App() {
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
-      {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
-      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} services={services} currentServiceYear={serviceYears.currentYear} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
-      {editingAgreement !== null && <AgreementDialog agreement={editingAgreement} clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
+      {editing !== null && <OpportunityDialog record={editing} users={users} clients={clients} towers={towers} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
+      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} users={users} clients={clients} services={services} currentServiceYear={serviceYears.currentYear} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
+      {editingAgreement !== null && <AgreementDialog agreement={editingAgreement} users={users} clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
       {creatingServiceYear && <ServiceYearDialog years={serviceYears.years} currentYear={serviceYears.currentYear} onClose={() => setCreatingServiceYear(false)} onSave={saveServiceYear} />}
       {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} lobs={lobs} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
       {notice && <div className={`toast${noticeTone === 'error' ? ' toast-error' : ''}`} role="status"><Icon name="check" size={16} />{notice}</div>}
@@ -699,11 +771,60 @@ function App() {
   );
 }
 
+/** "Asignado a": a system user account, separate from the people-master "Responsable". */
+function AssigneeField({ value, users, onChange, disabled = false }) {
+  return <label className="form-field">Asignado a<select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}><option value="">Sin asignar</option>{users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span className="field-hint">Usuario del sistema. Recibirá una notificación.</span></label>;
+}
+
+function AssigneeBadge({ name }) {
+  if (!name) return null;
+  return <span className="card-assignee" title={`Asignado a ${name}`}><Avatar name={name} compact /><span className="sr-only">Asignado a {name}</span></span>;
+}
+
+/** Top-bar bell with an unread badge and a popover listing the latest notifications. */
+function NotificationBell({ notifications, unreadCount, onOpen, onMarkAllRead }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
+  const panelId = useId();
+  const badge = unreadBadgeLabel(unreadCount);
+  useEffect(() => {
+    if (!open) return undefined;
+    panelRef.current?.focus();
+    const handlePointerDown = (event) => {
+      if (!containerRef.current?.contains(event.target)) setOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+  const now = new Date();
+  return <div className="notification-menu" ref={containerRef}>
+    <button type="button" ref={triggerRef} className="icon-button notification-button" aria-label={badge ? `Notificaciones: ${unreadCount} sin leer` : 'Notificaciones'} aria-haspopup="true" aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen((value) => !value)}><Icon name="bell" size={19} />{badge && <span className="notification-badge" aria-hidden="true">{badge}</span>}</button>
+    {open && <section className="notification-panel" id={panelId} ref={panelRef} tabIndex={-1} aria-label="Notificaciones">
+      <div className="notification-panel-heading"><h2>Notificaciones</h2><button type="button" className="inline-link" onClick={onMarkAllRead} disabled={unreadCount === 0}>Marcar todas como leídas</button></div>
+      {notifications.length === 0
+        ? <p className="notification-empty">No tienes notificaciones.</p>
+        : <ul className="notification-list">{notifications.map((item) => <li key={item.id}><button type="button" className={`notification-item${item.readAt ? '' : ' unread'}`} onClick={() => { setOpen(false); onOpen(item); }}>{!item.readAt && <span className="notification-unread-dot" aria-hidden="true" />}<span className="notification-text"><span>{item.message}</span><small><time dateTime={item.createdAt} title={new Date(item.createdAt).toLocaleString('es-ES')}>{formatNotificationTime(item.createdAt, now)}</time>{!item.readAt && <span className="sr-only"> · sin leer</span>}</small></span></button></li>)}</ul>}
+    </section>}
+  </div>;
+}
+
 function Kpi({ icon, color, label, value, detail, trend }) {
   return <article className="kpi-card"><div className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></div><div className="kpi-content"><span>{label}</span><div className="kpi-value-row"><strong>{value}</strong>{trend && <span className="trend-badge">↗ 20%</span>}</div><small>{detail}</small></div></article>;
 }
 
-function AdvancedFilters({ filters, people, services = [], currentServiceYear, lobs = [], towers = [], hidden, onChange }) {
+function AdvancedFilters({ filters, people, users = [], services = [], currentServiceYear, lobs = [], towers = [], hidden, onChange }) {
   const field = (name, label, type = 'text', options = null) => (
     <label className="advanced-filter-field" key={name}>
       <span>{label}</span>
@@ -719,6 +840,7 @@ function AdvancedFilters({ filters, people, services = [], currentServiceYear, l
     {field('lobId', 'LoB', 'text', [['all', 'Todas'], ...lobs.map((item) => [item.id, item.name])])}
     {field('towerId', 'Tower', 'text', [['all', 'Todas'], ...towers.map((item) => [item.id, item.name])])}
     {field('bidManagerId', 'Bid Manager', 'text', [['all', 'Todos'], ...people.map((person) => [person.id, person.name])])}
+    {field('assignedUserId', 'Asignado a', 'text', [['all', 'Todos'], [ASSIGNED_TO_ME_FILTER, 'Asignadas a mí'], [UNASSIGNED_FILTER, 'Sin asignar'], ...users.map((item) => [item.id, item.name])])}
     {field('minAmount', 'Importe mínimo', 'number')}
     {field('maxAmount', 'Importe máximo', 'number')}
     {field('minQaPercent', 'QA mínimo (%)', 'number')}
@@ -837,7 +959,7 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onArchiv
       <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
       <div className="card-value-row">{isInitiative ? <><strong className={`priority-text ${String(record.priority || 'media').toLowerCase()}`}>{record.priority || 'Media'}</strong><span className="tower-pill">{record.statusLabel}</span></> : <><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></>}</div>
       {!isInitiative && record.weightedAmount !== null && record.weightedAmount !== undefined && <small className="weighted-amount">Ponderado: {formatCurrency(Number(record.weightedAmount))}</small>}
-      <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'calendar' : (record.due || '').includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? (record.nextActionDate || 'Sin próxima acción') : (record.due || 'Por definir')}</span>{!isInitiative && record.outcome && <span className={`status-pill ${opportunityOutcomes.find((item) => item.id === record.outcome)?.tone || 'gray'}`}>{opportunityOutcomes.find((item) => item.id === record.outcome)?.label || record.outcome}</span>}{!isInitiative && record.pep && <span className="pep-pill" title={record.pep}>PEP</span>}{!isInitiative && <span className="card-owner"><Avatar name={record.owner} compact /></span>}</div>
+      <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'calendar' : (record.due || '').includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? (record.nextActionDate || 'Sin próxima acción') : (record.due || 'Por definir')}</span>{!isInitiative && record.outcome && <span className={`status-pill ${opportunityOutcomes.find((item) => item.id === record.outcome)?.tone || 'gray'}`}>{opportunityOutcomes.find((item) => item.id === record.outcome)?.label || record.outcome}</span>}{!isInitiative && record.pep && <span className="pep-pill" title={record.pep}>PEP</span>}<AssigneeBadge name={record.assignedUserName} />{!isInitiative && <span className="card-owner"><Avatar name={record.owner} compact /></span>}</div>
     </button>
     <div className="card-menu-container" ref={menuRef} data-card-menu>
       <button type="button" className="card-menu-button" ref={triggerRef} draggable={false} aria-label={`Opciones de ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}><Icon name="dots" size={16} /></button>
@@ -892,13 +1014,13 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
     {loading && <div className="board-state"><p>{archivedView ? 'Cargando oportunidades archivadas…' : 'Cargando oportunidades…'}</p></div>}
     {error && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={onRetry}>Reintentar</button></div>}
     {!loading && !error && <div className="table-wrap"><table className="data-table opportunity-management-table"><thead><tr>
-      <th>ID interno</th><th>N.º externo</th><th>ID registro</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Resultado</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
+      <th>ID interno</th><th>N.º externo</th><th>ID registro</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Resultado</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Asignado a</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
     </tr></thead><tbody>{opportunities.map((item) => {
       const stage = stages.find((entry) => entry.id === item.stage);
       return <tr key={item.id}>
         <td>{item.id}</td><td>{item.number || '—'}</td><td>{item.registryId || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
         <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OutcomeCell outcome={item.outcome} /></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
-        <td>{item.owner || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
+        <td>{item.owner || '—'}</td><td>{item.assignedUserName || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
         <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
         <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td>
       </tr>;
@@ -982,7 +1104,7 @@ function MultiSelect({ legend, hint, options, selected, onChange, disabled }) {
   </fieldset>;
 }
 
-function OpportunityDialog({ record, clients, towers, services, currentServiceYear, lobs, people, initiatives, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh }) {
+function OpportunityDialog({ record, users = [], clients, towers, services, currentServiceYear, lobs, people, initiatives, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh }) {
   const dialogRef = useRef(null);
   const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
@@ -999,6 +1121,7 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
     need: record.need || '', initiativeId: record.initiativeId || '', outcome: record.outcome || '', pep: record.pep || '',
     opportunityType: record.opportunityType || '',
     registryId: record.registryId || '',
+    assignedUserId: record.assignedUserId || '',
     towerIds: (record.towers || []).map((item) => item.id),
     lobIds: (record.lobs || []).map((item) => item.id),
     serviceIds: (record.services || []).map((item) => item.id),
@@ -1045,7 +1168,7 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
   const linkedInitiative = initiativeChoices.find((item) => item.id === form.initiativeId);
   const isResult = form.stage === 'result';
   const probabilityValue = form.probability === '' ? null : Number(form.probability);
-  const weightedPreview = probabilityValue === null || Number.isNaN(probabilityValue) ? null : (parseAmount(amountText) * probabilityValue) / 100;
+  const weightedPreview = probabilityValue === null || Number.isNaN(probabilityValue) ? null : computeWeightedAmount({ amount: amountText, qaPercent: form.qaPercent, probability: probabilityValue });
   const submit = async (event) => {
     event.preventDefault();
     if (saving) return;
@@ -1088,6 +1211,7 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
         pep: form.pep.trim(),
         opportunityType: form.opportunityType,
         registryId: form.registryId.trim(),
+        assignedUserId: form.assignedUserId,
         towerIds: form.towerIds,
         lobIds: form.lobIds,
         serviceIds: form.serviceIds,
@@ -1111,11 +1235,12 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
         <label className="form-field">Origen<select value={form.origin} onChange={(event) => setForm((current) => applyOriginChange(current, event.target.value))} disabled={saving || isConversion}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
         {requiresOriginInitiative(form.origin) && <label className="form-field">Iniciativa de origen *<select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} aria-required="true" disabled={saving || isConversion}><option value="">Selecciona una iniciativa</option>{initiativeChoices.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.title}{item.archivedAt ? ' (archivada)' : ''}</option>)}</select><span className="field-hint">{linkedInitiative ? `Vinculada a ${linkedInitiative.id} · ${linkedInitiative.title}. ` : ''}{isConversion ? 'Al guardar esta oportunidad, la iniciativa se marcará como Completada.' : 'Los ciclos de vida de la iniciativa y la oportunidad son independientes.'}</span></label>}
-        <label className="form-field">Probabilidad (%)<input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado: ${formatCurrency(weightedPreview)}.`}</span></label>
+        <label className="form-field">Probabilidad (%)<input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado (importe QE × probabilidad): ${formatCurrency(weightedPreview)}.`}</span></label>
         <label className="form-field">Fecha estimada de cierre<input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
         <label className="form-field">Fecha del próximo hito<input type="date" value={form.nextMilestoneDate} onChange={(event) => update('nextMilestoneDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)} disabled={saving}><option value="">Sin responsable</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))}>+ Crear responsable</button></label>
+        <AssigneeField value={form.assignedUserId} users={users} onChange={(value) => update('assignedUserId', value)} disabled={saving} />
         <label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)} disabled={saving}><option value="">Sin asignar</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))}>+ Crear responsable</button></label>
         <label className="form-field">Participación del equipo QA (%)<input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} /><span className="field-hint">Alimenta el KPI Pipeline QE.</span></label>
         {isResult && <label className="form-field">Resultado *<select value={form.outcome} onChange={(event) => update('outcome', event.target.value)} disabled={saving}><option value="">Selecciona un resultado</option>{opportunityOutcomes.map((outcome) => <option key={outcome.id} value={outcome.id}>{outcome.label}</option>)}</select></label>}
@@ -1224,7 +1349,7 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
   return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <label className="form-field wide" key={field}>{label}<input required={field === 'name'} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</label>)}{kind === 'towers' && <label className="form-field wide">Responsable *<select required value={values.responsibleId} onChange={(event) => setValues((current) => ({ ...current, responsibleId: event.target.value }))}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
 }
 
-function InitiativeDialog({ record, clients, services, currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
+function InitiativeDialog({ record, users = [], clients, services, currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
   const dialogRef = useRef(null);
   const [form, setForm] = useState({
     id: record.id || '',
@@ -1236,6 +1361,7 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
     operationalStatus: record.operationalStatus || 'active',
     nextActionDate: record.nextActionDate || '',
     description: record.description || '',
+    assignedUserId: record.assignedUserId || '',
     serviceIds: (record.services || []).map((item) => item.id),
     links: toWorkspaceLinkForm(record.links),
   });
@@ -1282,6 +1408,7 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{initiativeStages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
         <label className="form-field">Estado operativo<select value={form.operationalStatus} onChange={(event) => update('operationalStatus', event.target.value)} disabled={saving}>{initiativeStatuses.map((status) => <option key={status.id} value={status.id}>{status.label}</option>)}</select><span className="field-hint">Pausada y Descartada son estados alternativos, no columnas del tablero.</span></label>
         <label className="form-field">Fecha de la próxima acción<input type="date" value={form.nextActionDate} onChange={(event) => update('nextActionDate', event.target.value)} disabled={saving} /></label>
+        <AssigneeField value={form.assignedUserId} users={users} onChange={(value) => update('assignedUserId', value)} disabled={saving} />
         <label className="form-field wide">Descripción<textarea rows="3" value={form.description} onChange={(event) => update('description', event.target.value)} placeholder="Contexto y objetivo de la iniciativa" maxLength="2000" disabled={saving} /></label>
       </div>
       <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
@@ -1347,18 +1474,18 @@ function WorkspaceLinkList({ links }) {
 function AgreementPanel({ agreements, query = '', clients, people, onEdit, onDelete }) {
   const records = filterAgreements(agreements, query, clients, people);
   const emptyMessage = query.trim() ? 'No hay acuerdos marco que coincidan con la búsqueda.' : 'Todavía no hay acuerdos marco.';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'ID registro', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Enlaces', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{records.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{item.registryId || '—'}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td><WorkspaceLinkList links={item.links} /></td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>;
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'ID registro', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Asignado a', 'Enlaces', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{records.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{item.registryId || '—'}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td>{item.assignedUserName || '—'}</td><td><WorkspaceLinkList links={item.links} /></td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>;
 }
 
-function AgreementDialog({ agreement = {}, clients, people, onQuickCreate, onClose, onSave }) {
+function AgreementDialog({ agreement = {}, users = [], clients, people, onQuickCreate, onClose, onSave }) {
   const isEditing = Boolean(agreement.id);
-  const [form, setForm] = useState({ title: agreement.title || '', registryId: agreement.registryId || '', clientId: agreement.clientId || '', ownerId: agreement.ownerId || '', endDate: agreement.endDate || '', notes: agreement.notes || '', links: toWorkspaceLinkForm(agreement.links) });
+  const [form, setForm] = useState({ title: agreement.title || '', registryId: agreement.registryId || '', clientId: agreement.clientId || '', ownerId: agreement.ownerId || '', endDate: agreement.endDate || '', notes: agreement.notes || '', assignedUserId: agreement.assignedUserId || '', links: toWorkspaceLinkForm(agreement.links) });
   const [amountText, setAmountText] = useState(() => (agreement.amount ? formatAmountInput(String(agreement.amount).replace('.', ',')) : ''));
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
   const submit = async (event) => { event.preventDefault(); try { await onSave({ ...form, ...(isEditing ? { id: agreement.id } : {}), registryId: form.registryId.trim(), links: normalizeWorkspaceLinks(form.links), amount: parseAmount(amountText) }); } catch (err) { setError(err?.message || 'No se pudo guardar el acuerdo.'); } };
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS COMERCIALES</span><h2>{isEditing ? 'Editar acuerdo marco' : 'Nuevo acuerdo marco'}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><label className="form-field wide">Nombre del acuerdo *<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label className="form-field wide">ID registro<input value={form.registryId} onChange={(event) => setForm({ ...form, registryId: event.target.value })} placeholder="Portal del cliente, pliego o ERP" maxLength="120" /><span className="field-hint">Opcional. Referencia externa del registro.</span></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })}><option value="">Sin cliente</option>{clients.filter((x) => x.active || x.id === form.clientId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => setForm((current) => ({ ...current, clientId: id })))}>+ Crear cliente</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => setForm({ ...form, ownerId: event.target.value })}><option value="">Sin responsable</option>{people.filter((x) => x.active || x.id === form.ownerId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => setForm((current) => ({ ...current, ownerId: id })))}>+ Crear responsable</button></label><label className="form-field">Importe<span className="amount-field"><input value={amountText} onChange={(event) => setAmountText(formatAmountInput(event.target.value))} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="0,00" /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span><span className="field-hint">Déjalo vacío o en 0 si no aplica.</span></label><label className="form-field">Fin de vigencia<input type="date" value={form.endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value })} /></label><label className="form-field wide">Notas<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength="2000" /></label></div><WorkspaceLinksEditor links={form.links} onChange={(links) => setForm((current) => ({ ...current, links }))} disabled={false} />{error && <p className="form-error">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary">{isEditing ? 'Guardar cambios' : 'Crear acuerdo'}</button></div></form></dialog>;
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS COMERCIALES</span><h2>{isEditing ? 'Editar acuerdo marco' : 'Nuevo acuerdo marco'}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><label className="form-field wide">Nombre del acuerdo *<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label className="form-field wide">ID registro<input value={form.registryId} onChange={(event) => setForm({ ...form, registryId: event.target.value })} placeholder="Portal del cliente, pliego o ERP" maxLength="120" /><span className="field-hint">Opcional. Referencia externa del registro.</span></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })}><option value="">Sin cliente</option>{clients.filter((x) => x.active || x.id === form.clientId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => setForm((current) => ({ ...current, clientId: id })))}>+ Crear cliente</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => setForm({ ...form, ownerId: event.target.value })}><option value="">Sin responsable</option>{people.filter((x) => x.active || x.id === form.ownerId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => setForm((current) => ({ ...current, ownerId: id })))}>+ Crear responsable</button></label><AssigneeField value={form.assignedUserId} users={users} onChange={(value) => setForm((current) => ({ ...current, assignedUserId: value }))} /><label className="form-field">Importe<span className="amount-field"><input value={amountText} onChange={(event) => setAmountText(formatAmountInput(event.target.value))} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="0,00" /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span><span className="field-hint">Déjalo vacío o en 0 si no aplica.</span></label><label className="form-field">Fin de vigencia<input type="date" value={form.endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value })} /></label><label className="form-field wide">Notas<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength="2000" /></label></div><WorkspaceLinksEditor links={form.links} onChange={(links) => setForm((current) => ({ ...current, links }))} disabled={false} />{error && <p className="form-error">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary">{isEditing ? 'Guardar cambios' : 'Crear acuerdo'}</button></div></form></dialog>;
 }
 
 function RecordActions({ type, id }) {

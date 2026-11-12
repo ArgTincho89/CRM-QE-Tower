@@ -20,6 +20,7 @@ import { withTransaction } from './db.js';
 import { AGREEMENT_ID_PREFIX, IdSpaceExhaustedError, INITIATIVE_ID_PREFIX, nextPrefixedId, OPPORTUNITY_ID_PREFIX } from './ids.js';
 import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
+import { buildAssignmentMessage } from '../src/notifications.js';
 import {
   HttpError,
   assertSameOrigin,
@@ -54,7 +55,7 @@ const EDITABLE_FIELDS = [
   'title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number',
   'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason',
   'origin', 'probability', 'expected_close_date', 'next_milestone', 'next_milestone_date',
-  'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type', 'registry_id',
+  'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type', 'registry_id', 'assigned_user_id',
 ];
 
 /** Optional external registry reference shared by opportunities and framework agreements. */
@@ -111,7 +112,7 @@ function assertNoReferences(db, id, { code, subject, checks }) {
   }
 }
 
-/** Actions, their comments, workspace links and entity events belong only to their record. */
+/** Actions, their comments, workspace links, entity events and notifications belong only to their record. */
 function deleteOwnedRecordRows(db, type, id) {
   db.prepare(
     'DELETE FROM record_action_comments WHERE action_id IN (SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?)',
@@ -119,6 +120,8 @@ function deleteOwnedRecordRows(db, type, id) {
   db.prepare('DELETE FROM record_actions WHERE entity_type = ? AND entity_id = ?').run(type, id);
   db.prepare('DELETE FROM workspace_links WHERE entity_type = ? AND entity_id = ?').run(type, id);
   db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(type, id);
+  // Notifications point at the record; once it is gone they would only lead to a dead end.
+  db.prepare('DELETE FROM notifications WHERE entity_type = ? AND entity_id = ?').run(type, id);
 }
 
 /**
@@ -335,6 +338,8 @@ function mapOpportunity(row, db) {
     outcome: row.outcome || '',
     opportunityType: row.opportunity_type || '',
     registryId: row.registry_id || '',
+    assignedUserId: row.assigned_user_id || '',
+    assignedUserName: row.assigned_user_name || '',
     pep: row.pep || '',
     archivedAt: row.archived_at || '',
     archivedByName: row.archived_by_name || '',
@@ -343,7 +348,8 @@ function mapOpportunity(row, db) {
     services,
     links,
     qaWeightedAmount: (amountValue * qaPercent) / 100,
-    weightedAmount: probability === null ? null : (amountValue * probability) / 100,
+    // Weighted amount applies the closing probability to the QE amount (amount x QA share).
+    weightedAmount: probability === null ? null : (((amountValue * qaPercent) / 100) * probability) / 100,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -354,12 +360,14 @@ const OPPORTUNITY_DISPLAY_SELECT = `
          clients.name AS linked_client_name,
          towers.name AS linked_tower_name,
           people.name AS linked_owner_name,
-          bid_managers.name AS linked_bid_manager_name
+          bid_managers.name AS linked_bid_manager_name,
+          assigned_users.name AS assigned_user_name
     FROM opportunities
     LEFT JOIN clients ON clients.id = opportunities.client_id
     LEFT JOIN towers ON towers.id = opportunities.tower_id
      LEFT JOIN people ON people.id = opportunities.owner_id
-     LEFT JOIN people AS bid_managers ON bid_managers.id = opportunities.bid_manager_id`;
+     LEFT JOIN people AS bid_managers ON bid_managers.id = opportunities.bid_manager_id
+     LEFT JOIN users AS assigned_users ON assigned_users.id = opportunities.assigned_user_id`;
 
 function getOpportunityForDisplay(db, id) {
   return db.prepare(`${OPPORTUNITY_DISPLAY_SELECT} WHERE opportunities.id = ?`).get(id);
@@ -412,6 +420,8 @@ function mapInitiative(row, db) {
     nextActionDate: row.next_action_date || '',
     description: row.description || '',
     operationalStatus: row.operational_status || 'active',
+    assignedUserId: row.assigned_user_id || '',
+    assignedUserName: row.assigned_user_name || '',
     stage: row.stage,
     services,
     links,
@@ -437,7 +447,7 @@ const AGREEMENT_ENTITY_TYPE = 'agreement';
 
 function mapAgreement(row, db) {
   const links = db ? loadWorkspaceLinks(db, AGREEMENT_ENTITY_TYPE, row.id) : [];
-  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, amount: Number(row.amount) || 0, notes: row.notes || '', registryId: row.registry_id || '', links, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, amount: Number(row.amount) || 0, notes: row.notes || '', registryId: row.registry_id || '', assignedUserId: row.assigned_user_id || '', assignedUserName: row.assigned_user_name || '', links, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapEvent(row) {
@@ -701,6 +711,31 @@ function appendEntityEvent(db, { type, id, user, action, detail = {}, now }) {
     .run(type, id, user?.id ?? null, user?.name ?? 'Sistema', action, JSON.stringify(detail), now);
 }
 
+/** "Asignado a": an existing user account id, or null when empty (unassigned). */
+function parseAssignedUserId(db, value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !db.prepare('SELECT id FROM users WHERE id = ?').get(value)) {
+    throw validationError('El usuario seleccionado en "Asignado a" no existe.');
+  }
+  return value;
+}
+
+/**
+ * Notifies a user that `actor` assigned them a record. Callers run it inside the write
+ * transaction of the assignment. Self-assignment and unassignment never notify.
+ */
+function notifyAssignment(db, { recipientId, actor, entityType, entityId, entityTitle, now }) {
+  if (!recipientId || recipientId === actor?.id) return;
+  const actorName = actor?.name || 'Sistema';
+  db.prepare(
+    `INSERT INTO notifications (id, user_id, actor_user_id, actor_name, kind, entity_type, entity_id, entity_title, message, created_at, read_at)
+     VALUES (?, ?, ?, ?, 'assignment', ?, ?, ?, ?, ?, NULL)`,
+  ).run(
+    randomUUID(), recipientId, actor?.id ?? null, actorName, entityType, entityId, entityTitle,
+    buildAssignmentMessage({ actorName, entityType, entityId, entityTitle }), now,
+  );
+}
+
 function parseTags(value) {
   if (!Array.isArray(value)) {
     throw validationError('Las etiquetas deben ser una lista de textos.');
@@ -740,6 +775,7 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'expected_close_date' || field === 'next_milestone_date') return parseOptionalDate(value, field);
   if (field === 'next_milestone' || field === 'need' || field === 'pep') return parseShortText(value);
   if (field === 'initiative_id') return optionalInitiativeId(db, value);
+  if (field === 'assigned_user_id') return parseAssignedUserId(db, value);
   if (field === 'number' || field === 'closure_reason') return typeof value === 'string' ? value.trim().slice(0, 160) : '';
   return parseTextField(value, field, FIELD_LIMITS[field]);
 }
@@ -1074,6 +1110,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
     pep: parseShortText(body.pep),
     opportunity_type: opportunityType,
     registry_id: parseRegistryId(body.registryId),
+    assigned_user_id: parseAssignedUserId(ctx.db, body.assignedUserId),
   };
 
   const nowIso = ctx.now().toISOString();
@@ -1082,8 +1119,8 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
        (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at,
         number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason,
         origin, probability, expected_close_date, next_milestone, next_milestone_date, need,
-        initiative_id, outcome, pep, opportunity_type, registry_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        initiative_id, outcome, pep, opportunity_type, registry_id, assigned_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -1121,6 +1158,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
           values.pep,
           values.opportunity_type,
           values.registry_id,
+          values.assigned_user_id,
         );
         replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
         replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
@@ -1142,6 +1180,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
           now: nowIso,
         });
         if (sourceInitiativeId !== null) completeConvertedInitiative(ctx.db, sourceInitiativeId, id, user, nowIso);
+        notifyAssignment(ctx.db, { recipientId: values.assigned_user_id, actor: user, entityType: 'opportunity', entityId: id, entityTitle: values.title, now: nowIso });
         return id;
       });
       break;
@@ -1192,6 +1231,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
     expectedCloseDate: 'expected_close_date', nextMilestone: 'next_milestone',
     nextMilestoneDate: 'next_milestone_date', need: 'need', initiativeId: 'initiative_id',
     outcome: 'outcome', pep: 'pep', opportunityType: 'opportunity_type', registryId: 'registry_id',
+    assignedUserId: 'assigned_user_id',
   };
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
@@ -1303,6 +1343,11 @@ async function patchOpportunity(ctx, req, res, rawId) {
       detail: { fields: [...changedFields, ...relationFields] },
       now: nowIso,
     });
+    if (changedFields.includes('assigned_user_id')) {
+      notifyAssignment(ctx.db, {
+        recipientId: changes.assigned_user_id, actor: user, entityType: 'opportunity', entityId: id, entityTitle: changes.title ?? existing.title, now: nowIso,
+      });
+    }
   });
 
   const updated = getOpportunityForDisplay(ctx.db, id);
@@ -1591,8 +1636,9 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
   sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row, kind) });
 }
 
-const INITIATIVE_DISPLAY_SELECT = `SELECT initiatives.*, clients.name AS client_name
-    FROM initiatives LEFT JOIN clients ON clients.id = initiatives.client_id`;
+const INITIATIVE_DISPLAY_SELECT = `SELECT initiatives.*, clients.name AS client_name, assigned_users.name AS assigned_user_name
+    FROM initiatives LEFT JOIN clients ON clients.id = initiatives.client_id
+    LEFT JOIN users AS assigned_users ON assigned_users.id = initiatives.assigned_user_id`;
 
 function getInitiativeForDisplay(db, id) {
   return db.prepare(`${INITIATIVE_DISPLAY_SELECT} WHERE initiatives.id = ?`).get(id);
@@ -1637,6 +1683,7 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
       description: parseShortText(body.description, 2000),
       operational_status: parseInitiativeStatus(body.operationalStatus),
       stage: parseInitiativeStage(body.stage),
+      assigned_user_id: parseAssignedUserId(ctx.db, body.assignedUserId),
     };
     const columns = ['id', ...Object.keys(fields), 'created_at', 'updated_at'];
     const insert = ctx.db.prepare(`INSERT INTO initiatives (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`);
@@ -1649,6 +1696,7 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
           replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', nextId, 'service_id', serviceIds);
           replaceWorkspaceLinks(ctx.db, 'initiative', nextId, links, user, now);
           appendEntityEvent(ctx.db, { type: 'initiative', id: nextId, user, action: 'created', now });
+          notifyAssignment(ctx.db, { recipientId: fields.assigned_user_id, actor: user, entityType: 'initiative', entityId: nextId, entityTitle: fields.title, now });
           return nextId;
         });
         break;
@@ -1674,11 +1722,12 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
       description: (value) => parseShortText(value, 2000),
       operationalStatus: parseInitiativeStatus,
       stage: parseInitiativeStage,
+      assignedUserId: (value) => parseAssignedUserId(ctx.db, value),
     };
     const columns = {
       title: 'title', category: 'category', clientId: 'client_id', priority: 'priority',
       nextAction: 'next_action', nextActionDate: 'next_action_date', description: 'description',
-      operationalStatus: 'operational_status', stage: 'stage',
+      operationalStatus: 'operational_status', stage: 'stage', assignedUserId: 'assigned_user_id',
     };
     const fields = {};
     for (const [apiField, column] of Object.entries(columns)) {
@@ -1687,22 +1736,28 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
       if (value !== existing[column]) fields[column] = value;
     }
     const changedFields = Object.keys(fields);
-    if (changedFields.length > 0) {
-      const assignments = changedFields.map((field) => `${field} = ?`).join(', ');
-      ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
-    }
-    if (hasServiceIds) replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', id, 'service_id', serviceIds);
-    if (hasLinks) replaceWorkspaceLinks(ctx.db, 'initiative', id, links, user, now);
-    if (changedFields.length > 0 || hasServiceIds || hasLinks) {
-      appendEntityEvent(ctx.db, {
-        type: 'initiative',
-        id,
-        user,
-        action: 'updated',
-        detail: { fields: [...changedFields, ...(hasServiceIds ? ['services'] : []), ...(hasLinks ? ['links'] : [])] },
-        now,
-      });
-    }
+    // The row update, its relations, its history entry and any assignment notification are one unit.
+    withTransaction(ctx.db, () => {
+      if (changedFields.length > 0) {
+        const assignments = changedFields.map((field) => `${field} = ?`).join(', ');
+        ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
+      }
+      if (hasServiceIds) replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', id, 'service_id', serviceIds);
+      if (hasLinks) replaceWorkspaceLinks(ctx.db, 'initiative', id, links, user, now);
+      if (changedFields.length > 0 || hasServiceIds || hasLinks) {
+        appendEntityEvent(ctx.db, {
+          type: 'initiative',
+          id,
+          user,
+          action: 'updated',
+          detail: { fields: [...changedFields, ...(hasServiceIds ? ['services'] : []), ...(hasLinks ? ['links'] : [])] },
+          now,
+        });
+      }
+      if (Object.hasOwn(fields, 'assigned_user_id')) {
+        notifyAssignment(ctx.db, { recipientId: fields.assigned_user_id, actor: user, entityType: 'initiative', entityId: id, entityTitle: fields.title ?? existing.title, now });
+      }
+    });
   }
   sendJson(res, req.method === 'POST' ? 201 : 200, { initiative: mapInitiative(getInitiativeForDisplay(ctx.db, id), ctx.db) });
 }
@@ -1721,14 +1776,17 @@ function setInitiativeArchive(ctx, req, res, rawId, archived) {
   sendJson(res, 200, { initiative: mapInitiative(getInitiativeForDisplay(ctx.db, id), ctx.db) });
 }
 
+const AGREEMENT_DISPLAY_SELECT = `SELECT framework_agreements.*, assigned_users.name AS assigned_user_name
+    FROM framework_agreements LEFT JOIN users AS assigned_users ON assigned_users.id = framework_agreements.assigned_user_id`;
+
 function listAgreements(ctx, req, res) {
   requireUser(ctx, req);
-  const rows = ctx.db.prepare('SELECT * FROM framework_agreements ORDER BY created_at DESC').all();
+  const rows = ctx.db.prepare(`${AGREEMENT_DISPLAY_SELECT} ORDER BY framework_agreements.created_at DESC`).all();
   sendJson(res, 200, { agreements: rows.map((row) => mapAgreement(row, ctx.db)) });
 }
 
 function getAgreementForDisplay(db, id) {
-  return mapAgreement(db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id), db);
+  return mapAgreement(db.prepare(`${AGREEMENT_DISPLAY_SELECT} WHERE framework_agreements.id = ?`).get(id), db);
 }
 
 async function createAgreement(ctx, req, res) {
@@ -1743,15 +1801,17 @@ async function createAgreement(ctx, req, res) {
   const notes = parseShortText(body.notes, AGREEMENT_NOTES_LIMIT);
   const registryId = parseRegistryId(body.registryId);
   const links = parseWorkspaceLinks(body.links);
-  const insert = ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,registry_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+  const assignedUserId = parseAssignedUserId(ctx.db, body.assignedUserId);
+  const insert = ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,registry_id,assigned_user_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
   let id;
   for (let attempt = 0; ; attempt += 1) {
     try {
       id = withTransaction(ctx.db, () => {
         const nextId = nextAgreementId(ctx.db);
-        insert.run(nextId, title, clientId, ownerId, endDate, amount, notes, registryId, 'active', now, now);
+        insert.run(nextId, title, clientId, ownerId, endDate, amount, notes, registryId, assignedUserId, 'active', now, now);
         replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, nextId, links, user, now);
         appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id: nextId, user, action: 'created', now });
+        notifyAssignment(ctx.db, { recipientId: assignedUserId, actor: user, entityType: AGREEMENT_ENTITY_TYPE, entityId: nextId, entityTitle: title, now });
         return nextId;
       });
       break;
@@ -1788,6 +1848,7 @@ async function updateAgreement(ctx, req, res, rawId) {
     amount: ['amount', parseAgreementAmount],
     notes: ['notes', (value) => parseShortText(value, AGREEMENT_NOTES_LIMIT)],
     registryId: ['registry_id', parseRegistryId],
+    assignedUserId: ['assigned_user_id', (value) => parseAssignedUserId(ctx.db, value)],
   };
   const changes = {};
   for (const [apiField, [column, parse]] of Object.entries(parsers)) {
@@ -1811,6 +1872,9 @@ async function updateAgreement(ctx, req, res, rawId) {
       }
       if (hasLinks) replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, id, links, user, now);
       appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id, user, action: 'updated', detail: { fields: [...columns, ...(hasLinks ? ['links'] : [])] }, now });
+      if (Object.hasOwn(changes, 'assigned_user_id')) {
+        notifyAssignment(ctx.db, { recipientId: changes.assigned_user_id, actor: user, entityType: AGREEMENT_ENTITY_TYPE, entityId: id, entityTitle: changes.title ?? existing.title, now });
+      }
     });
   }
   sendJson(res, 200, { agreement: getAgreementForDisplay(ctx.db, id) });
@@ -1935,6 +1999,59 @@ function decodeId(rawId) {
   }
 }
 
+/** Minimal user directory for the "Asignado a" selector: never emails, roles or secrets. */
+function listUsers(ctx, req, res) {
+  requireUser(ctx, req);
+  const users = ctx.db.prepare('SELECT id, name FROM users ORDER BY name COLLATE NOCASE, id').all();
+  sendJson(res, 200, { users: users.map((row) => ({ id: row.id, name: row.name })) });
+}
+
+const NOTIFICATION_LIST_LIMIT = 50;
+
+function mapNotification(row) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    entityTitle: row.entity_title,
+    message: row.message,
+    actorName: row.actor_name,
+    createdAt: row.created_at,
+    readAt: row.read_at || null,
+  };
+}
+
+/** The current user's newest notifications plus their total unread count. */
+function listNotifications(ctx, req, res) {
+  const user = requireUser(ctx, req);
+  const rows = ctx.db
+    .prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?')
+    .all(user.id, NOTIFICATION_LIST_LIMIT);
+  const unread = ctx.db.prepare('SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND read_at IS NULL').get(user.id);
+  sendJson(res, 200, { notifications: rows.map(mapNotification), unreadCount: Number(unread.count) });
+}
+
+/** Another user's notification answers 404 like a missing one, so ids never leak. */
+function markNotificationRead(ctx, req, res, rawId) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const existing = ctx.db.prepare('SELECT * FROM notifications WHERE id = ? AND user_id = ?').get(id, user.id);
+  if (!existing) throw new HttpError(404, 'not_found', 'La notificación no existe.');
+  if (!existing.read_at) {
+    ctx.db.prepare('UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?').run(ctx.now().toISOString(), id, user.id);
+  }
+  sendJson(res, 200, { notification: mapNotification(ctx.db.prepare('SELECT * FROM notifications WHERE id = ?').get(id)) });
+}
+
+function markAllNotificationsRead(ctx, req, res) {
+  const user = requireUser(ctx, req);
+  const result = ctx.db
+    .prepare('UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL')
+    .run(ctx.now().toISOString(), user.id);
+  sendJson(res, 200, { updated: Number(result.changes), unreadCount: 0 });
+}
+
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -1953,6 +2070,7 @@ const INITIATIVE_ARCHIVE_PATTERN = /^\/api\/initiatives\/([^/]+)\/(archive|resto
 const INITIATIVE_CONVERT_PATTERN = /^\/api\/initiatives\/([^/]+)\/convert$/;
 const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
 const AGREEMENT_ITEM_PATTERN = /^\/api\/agreements\/([^/]+)$/;
+const NOTIFICATION_READ_PATTERN = /^\/api\/notifications\/([^/]+)\/read$/;
 
 async function handleApi(ctx, req, res, pathname, query) {
   // CSRF guard runs before any handler, including the auth routes.
@@ -1986,6 +2104,25 @@ async function handleApi(ctx, req, res, pathname, query) {
   if (pathname === '/api/me') {
     if (req.method !== 'GET') return rejectMethod(res, 'GET');
     return me(ctx, req, res);
+  }
+
+  if (pathname === '/api/users') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return listUsers(ctx, req, res);
+  }
+
+  if (pathname === '/api/notifications') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return listNotifications(ctx, req, res);
+  }
+  if (pathname === '/api/notifications/read-all') {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return markAllNotificationsRead(ctx, req, res);
+  }
+  const notificationRead = NOTIFICATION_READ_PATTERN.exec(pathname);
+  if (notificationRead) {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return markNotificationRead(ctx, req, res, notificationRead[1]);
   }
 
   if (pathname === '/api/service-years') {

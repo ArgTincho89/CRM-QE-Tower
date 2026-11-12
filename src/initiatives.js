@@ -86,6 +86,8 @@ export function buildOpportunityPrefill(initiative, clients = [], services = [],
     origin: DEFAULT_INITIATIVE_ORIGIN,
     serviceIds: inherited.map((item) => item.id),
     services: inherited,
+    // The initiative's assignee keeps ownership of the opportunity it becomes.
+    assignedUserId: initiative.assignedUserId || '',
   };
 }
 

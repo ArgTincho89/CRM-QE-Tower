@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
+import {
+  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, matchesAssignee,
+} from './pipelineFilters.js';
 
 const records = [
   {
@@ -60,5 +62,22 @@ describe('pipeline advanced filters', () => {
     assert.deepEqual(ids({ opportunityType: 'staffing' }), ['OP-0002']);
     assert.deepEqual(ids({ opportunityType: 'offer' }), []);
     assert.deepEqual(ids({ opportunityType: MISSING_OPPORTUNITY_TYPE_FILTER }), ['OP-0003']);
+  });
+
+  test('assignee filter matches all, unassigned, a concrete user, or the current user', () => {
+    const cards = [
+      { id: 'OP-A', assignedUserId: 'user-1' },
+      { id: 'OP-B', assignedUserId: 'user-2' },
+      { id: 'OP-C', assignedUserId: '' },
+      { id: 'OP-D' },
+    ];
+    const pick = (assignedUserId, currentUserId) => filterPipelineCards(cards, { ...createDefaultAdvancedFilters(), assignedUserId }, { currentUserId }).map((item) => item.id);
+    assert.equal(createDefaultAdvancedFilters().assignedUserId, 'all');
+    assert.deepEqual(pick('all'), ['OP-A', 'OP-B', 'OP-C', 'OP-D']);
+    assert.deepEqual(pick(UNASSIGNED_FILTER), ['OP-C', 'OP-D']);
+    assert.deepEqual(pick('user-2'), ['OP-B']);
+    assert.deepEqual(pick(ASSIGNED_TO_ME_FILTER, 'user-1'), ['OP-A']);
+    assert.deepEqual(pick(ASSIGNED_TO_ME_FILTER, ''), []);
+    assert.equal(matchesAssignee(cards[0], undefined), true);
   });
 });

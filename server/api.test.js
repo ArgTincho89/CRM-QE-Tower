@@ -642,7 +642,7 @@ describe('CRM API', () => {
     assert.deepEqual(opportunity.lobs.map((item) => item.id).sort(), [lobA.body.record.id, lobB.body.record.id].sort());
     assert.equal(opportunity.services.length, 2);
     assert.equal(opportunity.links.length, 2);
-    assert.equal(opportunity.weightedAmount, 4000);
+    assert.equal(opportunity.weightedAmount, 2000);
     assert.equal(opportunity.qaWeightedAmount, 5000);
     assert.equal(opportunity.expectedCloseDate, '2026-12-31');
     assert.equal(opportunity.nextMilestone, 'Enviar propuesta');
@@ -1988,5 +1988,141 @@ describe('service fiscal years', () => {
     assert.equal(unchanged.status, 200);
     assert.deepEqual(unchanged.body.opportunity.services.map((item) => item.id), [qa2026.id]);
     await travelTo(2026);
+  });
+});
+
+describe('assignees and notifications', () => {
+  /** @type {Awaited<ReturnType<typeof startTestServer>>} */
+  let app;
+  let ada;
+  let bob;
+  let eve;
+
+  before(async () => {
+    app = await startTestServer();
+    ada = await app.register({ email: 'assign-ada@example.com', name: 'Ada Lovelace' });
+    bob = await app.register({ email: 'assign-bob@example.com', name: 'Bob Builder' });
+    eve = await app.register({ email: 'assign-eve@example.com', name: 'Eve Tester' });
+  });
+
+  after(async () => {
+    await app.cleanup();
+  });
+
+  const notificationsOf = async (user) => (await app.json('GET', '/api/notifications', { cookie: user.cookie })).body;
+
+  test('GET /api/users requires a session and exposes only id and name', async () => {
+    const anonymous = await app.json('GET', '/api/users');
+    assert.equal(anonymous.status, 401);
+    const response = await app.json('GET', '/api/users', { cookie: bob.cookie });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.users.map((user) => user.name), ['Ada Lovelace', 'Bob Builder', 'Eve Tester']);
+    for (const user of response.body.users) assert.deepEqual(Object.keys(user).sort(), ['id', 'name']);
+    assert.doesNotMatch(JSON.stringify(response.body), /example\.com|password|hash|admin|member/);
+  });
+
+  test('assignee must be an existing user; empty values unassign', async () => {
+    const invalid = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, assignedUserId: 'missing-user' }, cookie: ada.cookie });
+    assert.equal(invalid.status, 400);
+    const invalidInitiative = await app.json('POST', '/api/initiatives', { body: { title: 'X', assignedUserId: 42 }, cookie: ada.cookie });
+    assert.equal(invalidInitiative.status, 400);
+    const invalidAgreement = await app.json('POST', '/api/agreements', { body: { title: 'X', assignedUserId: 'nope' }, cookie: ada.cookie });
+    assert.equal(invalidAgreement.status, 400);
+
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, assignedUserId: '' }, cookie: ada.cookie });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.opportunity.assignedUserId, '');
+    assert.equal(created.body.opportunity.assignedUserName, '');
+    const id = created.body.opportunity.id;
+
+    const badPatch = await app.json('PATCH', `/api/opportunities/${id}`, { body: { assignedUserId: 'ghost' }, cookie: ada.cookie });
+    assert.equal(badPatch.status, 400);
+    const assigned = await app.json('PATCH', `/api/opportunities/${id}`, { body: { assignedUserId: eve.body.user.id }, cookie: ada.cookie });
+    assert.equal(assigned.status, 200);
+    assert.equal(assigned.body.opportunity.assignedUserId, eve.body.user.id);
+    assert.equal(assigned.body.opportunity.assignedUserName, 'Eve Tester');
+    const history = await app.json('GET', `/api/opportunities/${id}/events`, { cookie: ada.cookie });
+    assert.ok(history.body.events.some((event) => event.action === 'updated' && event.detail.fields.includes('assigned_user_id')));
+    const listed = await app.json('GET', '/api/opportunities', { cookie: bob.cookie });
+    assert.equal(listed.body.opportunities.find((item) => item.id === id).assignedUserName, 'Eve Tester');
+
+    const unassigned = await app.json('PATCH', `/api/opportunities/${id}`, { body: { assignedUserId: null }, cookie: ada.cookie });
+    assert.equal(unassigned.body.opportunity.assignedUserId, '');
+  });
+
+  test('assigning another user notifies them with the entity wording; self-assignment and unassignment do not', async () => {
+    const before = (await notificationsOf(bob)).notifications.length;
+    const opportunity = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Oportunidad asignada', assignedUserId: bob.body.user.id }, cookie: ada.cookie });
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa asignada' }, cookie: ada.cookie });
+    await app.json('PATCH', `/api/initiatives/${initiative.body.initiative.id}`, { body: { assignedUserId: bob.body.user.id }, cookie: ada.cookie });
+    const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo asignado' }, cookie: ada.cookie });
+    const agreementPatch = await app.json('PATCH', `/api/agreements/${agreement.body.agreement.id}`, { body: { assignedUserId: bob.body.user.id }, cookie: ada.cookie });
+    assert.equal(agreementPatch.body.agreement.assignedUserName, 'Bob Builder');
+    assert.equal((await app.json('GET', '/api/agreements', { cookie: ada.cookie })).body.agreements.find((item) => item.id === agreement.body.agreement.id).assignedUserId, bob.body.user.id);
+    assert.equal((await app.json('GET', '/api/initiatives', { cookie: ada.cookie })).body.initiatives.find((item) => item.id === initiative.body.initiative.id).assignedUserName, 'Bob Builder');
+
+    const inbox = await notificationsOf(bob);
+    assert.equal(inbox.notifications.length, before + 3);
+    assert.equal(inbox.unreadCount, before + 3);
+    const [newest, middle, oldest] = inbox.notifications;
+    assert.equal(oldest.message, `Ada Lovelace te ha asignado la Oportunidad ${opportunity.body.opportunity.id}: Oportunidad asignada`);
+    assert.equal(middle.message, `Ada Lovelace te ha asignado la Iniciativa ${initiative.body.initiative.id}: Iniciativa asignada`);
+    assert.equal(newest.message, `Ada Lovelace te ha asignado el Acuerdo Marco ${agreement.body.agreement.id}: Acuerdo asignado`);
+    assert.deepEqual([newest.entityType, newest.entityId, newest.kind, newest.actorName, newest.readAt], ['agreement', agreement.body.agreement.id, 'assignment', 'Ada Lovelace', null]);
+
+    // Re-sending the same assignee, self-assigning and unassigning never notify.
+    await app.json('PATCH', `/api/agreements/${agreement.body.agreement.id}`, { body: { assignedUserId: bob.body.user.id }, cookie: ada.cookie });
+    await app.json('PATCH', `/api/agreements/${agreement.body.agreement.id}`, { body: { assignedUserId: '' }, cookie: ada.cookie });
+    const adaBefore = (await notificationsOf(ada)).notifications.length;
+    await app.json('POST', '/api/initiatives', { body: { title: 'Propia', assignedUserId: ada.body.user.id }, cookie: ada.cookie });
+    await app.json('PATCH', `/api/opportunities/${opportunity.body.opportunity.id}`, { body: { assignedUserId: ada.body.user.id }, cookie: ada.cookie });
+    assert.equal((await notificationsOf(ada)).notifications.length, adaBefore);
+    assert.equal((await notificationsOf(bob)).notifications.length, before + 3);
+  });
+
+  test('converting an initiative notifies the assignee of the new opportunity', async () => {
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Para convertir' }, cookie: ada.cookie });
+    const converted = await app.json('POST', `/api/initiatives/${initiative.body.initiative.id}/convert`, {
+      body: { ...OPPORTUNITY_PAYLOAD, title: 'Convertida', assignedUserId: eve.body.user.id }, cookie: ada.cookie,
+    });
+    assert.equal(converted.status, 201);
+    const inbox = await notificationsOf(eve);
+    assert.equal(inbox.notifications[0].message, `Ada Lovelace te ha asignado la Oportunidad ${converted.body.opportunity.id}: Convertida`);
+  });
+
+  test('users can only read and mark their own notifications', async () => {
+    const anonymous = await app.json('GET', '/api/notifications');
+    assert.equal(anonymous.status, 401);
+    const bobInbox = await notificationsOf(bob);
+    const target = bobInbox.notifications.find((item) => !item.readAt);
+    assert.ok(target);
+    assert.ok(bobInbox.notifications.length <= 50);
+
+    const foreign = await app.json('POST', `/api/notifications/${target.id}/read`, { cookie: eve.cookie });
+    assert.equal(foreign.status, 404);
+    await app.json('POST', '/api/notifications/read-all', { cookie: eve.cookie });
+    assert.equal((await notificationsOf(bob)).notifications.find((item) => item.id === target.id).readAt, null);
+    assert.equal((await notificationsOf(eve)).unreadCount, 0);
+    assert.equal((await app.json('POST', '/api/notifications/missing/read', { cookie: bob.cookie })).status, 404);
+
+    const read = await app.json('POST', `/api/notifications/${target.id}/read`, { cookie: bob.cookie });
+    assert.equal(read.status, 200);
+    assert.ok(read.body.notification.readAt);
+    assert.equal((await notificationsOf(bob)).unreadCount, bobInbox.unreadCount - 1);
+
+    const all = await app.json('POST', '/api/notifications/read-all', { cookie: bob.cookie });
+    assert.equal(all.status, 200);
+    const after = await notificationsOf(bob);
+    assert.equal(after.unreadCount, 0);
+    assert.ok(after.notifications.every((item) => item.readAt));
+    assert.equal((await app.json('GET', '/api/notifications/read-all', { cookie: bob.cookie })).status, 405);
+  });
+
+  test('deleting a record deletes its notifications', async () => {
+    const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Temporal', assignedUserId: eve.body.user.id }, cookie: ada.cookie });
+    const id = agreement.body.agreement.id;
+    assert.ok((await notificationsOf(eve)).notifications.some((item) => item.entityId === id));
+    assert.equal((await app.json('DELETE', `/api/agreements/${id}`, { cookie: ada.cookie })).status, 200);
+    assert.equal((await notificationsOf(eve)).notifications.some((item) => item.entityId === id), false);
   });
 });

@@ -115,3 +115,8 @@ export const listActions = (type, id) => request(`/${type}/${encodeURIComponent(
 export const createAction = (type, id, body) => request(`/${type}/${encodeURIComponent(id)}/actions`, { method: 'POST', body });
 export const updateAction = (id, body) => request(`/actions/${encodeURIComponent(id)}`, { method: 'PATCH', body });
 export const createActionComment = (id, body) => request(`/actions/${encodeURIComponent(id)}/comments`, { method: 'POST', body });
+// Minimal user directory ({ id, name }) for the "Asignado a" selector.
+export const listUsers = () => request('/users');
+export const listNotifications = () => request('/notifications');
+export const markNotificationRead = (id) => request(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' });
+export const markAllNotificationsRead = () => request('/notifications/read-all', { method: 'POST' });
