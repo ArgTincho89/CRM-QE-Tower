@@ -7,6 +7,16 @@ const SERVICES_COLUMNS = `id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE
       year INTEGER NOT NULL REFERENCES service_years(year),
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL`;
 
+// Entity types that may own Workspace links. Widening this list needs a rebuild migration:
+// SQLite cannot alter a CHECK constraint in place.
+const WORKSPACE_LINK_COLUMNS = `id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
+      entity_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_by_name TEXT NOT NULL DEFAULT ''`;
+const WORKSPACE_LINKS_INDEX = 'CREATE INDEX IF NOT EXISTS idx_workspace_links_entity ON workspace_links(entity_type, entity_id, created_at)';
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
      id TEXT PRIMARY KEY,
@@ -114,14 +124,7 @@ const SCHEMA_STATEMENTS = [
       initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
       service_id TEXT NOT NULL REFERENCES services(id), PRIMARY KEY(initiative_id, service_id)
     )`,
-  `CREATE TABLE IF NOT EXISTS workspace_links (
-      id TEXT PRIMARY KEY,
-      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative')),
-      entity_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      created_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-      created_by_name TEXT NOT NULL DEFAULT ''
-    )`,
+  `CREATE TABLE IF NOT EXISTS workspace_links (${WORKSPACE_LINK_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 ];
 
@@ -139,6 +142,7 @@ export const SERVICE_CATALOG = [
 
 const MIGRATION_MARKER = 'legacy_evolution_v1';
 const SERVICE_YEARS_MARKER = 'service_years_v1';
+const WORKSPACE_LINKS_AGREEMENTS_MARKER = 'workspace_links_agreements_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -204,6 +208,8 @@ export function applySchema(db) {
     ['archived_by_name', "TEXT NOT NULL DEFAULT ''"],
     // Nullable on purpose: legacy rows keep NULL until someone edits them and picks a type.
     ['opportunity_type', 'TEXT'],
+    // Optional external reference (client portal, tender or ERP registry number). Not unique.
+    ['registry_id', "TEXT NOT NULL DEFAULT ''"],
   ];
   for (const [name, declaration] of opportunityAdditions) {
     if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
@@ -226,6 +232,7 @@ export function applySchema(db) {
     // 0 is a valid amount for agreements without a committed value.
     ['amount', 'REAL NOT NULL DEFAULT 0'],
     ['notes', "TEXT NOT NULL DEFAULT ''"],
+    ['registry_id', "TEXT NOT NULL DEFAULT ''"],
   ];
   for (const [name, declaration] of agreementAdditions) {
     if (!agreementColumns.includes(name)) db.exec(`ALTER TABLE framework_agreements ADD COLUMN ${name} ${declaration}`);
@@ -237,7 +244,7 @@ export function applySchema(db) {
     'CREATE INDEX IF NOT EXISTS idx_opportunity_lobs_lob ON opportunity_lobs(lob_id)',
     'CREATE INDEX IF NOT EXISTS idx_opportunity_services_service ON opportunity_services(service_id)',
     'CREATE INDEX IF NOT EXISTS idx_initiative_services_service ON initiative_services(service_id)',
-    'CREATE INDEX IF NOT EXISTS idx_workspace_links_entity ON workspace_links(entity_type, entity_id, created_at)',
+    WORKSPACE_LINKS_INDEX,
     'CREATE INDEX IF NOT EXISTS idx_opportunities_initiative ON opportunities(initiative_id)',
     'CREATE INDEX IF NOT EXISTS idx_opportunities_archived ON opportunities(archived_at)',
     'CREATE INDEX IF NOT EXISTS idx_initiatives_archived ON initiatives(archived_at)',
@@ -255,6 +262,7 @@ export function applySchema(db) {
 export function runMigrations(db) {
   // Runs first: the legacy migration below seeds services, which needs the per-year shape.
   migrateServiceYears(db);
+  migrateWorkspaceLinkAgreements(db);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_year_name ON services(year, name COLLATE NOCASE)');
   if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(MIGRATION_MARKER)) return;
   withTransaction(db, () => {
@@ -338,6 +346,39 @@ export function migrateServiceYears(db) {
     });
   } finally {
     if (!hasYear && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+/**
+ * Lets framework agreements own Workspace links. Guarded by `schema_meta`, so it runs once per
+ * database. When `workspace_links` still has the CHECK that only allows opportunities and
+ * initiatives, the table is rebuilt inside one transaction with the widened CHECK: same ids and
+ * column values, and its index is recreated. A fresh database already has the new CHECK, so
+ * only the marker is written.
+ */
+export function migrateWorkspaceLinkAgreements(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(WORKSPACE_LINKS_AGREEMENTS_MARKER)) return;
+  const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workspace_links'").get()?.sql ?? '';
+  const needsRebuild = !tableSql.includes("'agreement'");
+  // SQLite ignores this pragma inside a transaction, so it is switched around the rebuild.
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  if (needsRebuild) db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    withTransaction(db, () => {
+      if (needsRebuild) {
+        db.exec(`CREATE TABLE workspace_links_next (${WORKSPACE_LINK_COLUMNS})`);
+        db.exec(`INSERT INTO workspace_links_next (rowid, id, entity_type, entity_id, title, url, created_at, created_by_id, created_by_name)
+           SELECT rowid, id, entity_type, entity_id, title, url, created_at, created_by_id, created_by_name FROM workspace_links`);
+        db.exec('DROP TABLE workspace_links');
+        db.exec('ALTER TABLE workspace_links_next RENAME TO workspace_links');
+        db.exec(WORKSPACE_LINKS_INDEX);
+        const broken = db.prepare('PRAGMA foreign_key_check(workspace_links)').all();
+        if (broken.length > 0) throw new Error(`Workspace link migration left ${broken.length} broken foreign key reference(s).`);
+      }
+      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(WORKSPACE_LINKS_AGREEMENTS_MARKER, new Date().toISOString());
+    });
+  } finally {
+    if (needsRebuild && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
   }
 }
 

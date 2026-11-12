@@ -11,6 +11,7 @@ const FIELD_LABELS = {
   owner: 'responsable',
   due: 'próximo hito',
   tags: 'etiquetas',
+  registry_id: 'ID registro',
 };
 
 function pad(value) {

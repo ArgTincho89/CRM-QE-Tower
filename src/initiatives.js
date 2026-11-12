@@ -29,14 +29,31 @@ export function isInitiativeCompleted(item) {
   return mapInitiativeStage(item?.stage) === COMPLETED_INITIATIVE_STAGE;
 }
 
-/** Records shown on the active board: completed initiatives are excluded. */
-export function activeBoardInitiatives(list) {
-  return list.filter((item) => !isInitiativeCompleted(item));
+/**
+ * Single predicate for every counter or metric of ACTIVE initiatives: archived and completed
+ * (including legacy `won`) initiatives never count. Paused and discarded keep counting: they are
+ * operational statuses on the working columns, not lifecycle ends.
+ */
+export function isActiveInitiative(item) {
+  return Boolean(item) && !item.archivedAt && !isInitiativeCompleted(item);
 }
 
-/** Completed, non-archived initiatives for the "Ver completadas" table. */
-export function completedInitiatives(list) {
-  return list.filter((item) => isInitiativeCompleted(item) && !item.archivedAt);
+/** Active and completed counts for a list of initiatives; archived ones count in neither. */
+export function summarizeInitiatives(list) {
+  return (list || []).reduce(
+    (summary, item) => {
+      if (isActiveInitiative(item)) summary.active += 1;
+      else if (item && !item.archivedAt) summary.completed += 1;
+      return summary;
+    },
+    { active: 0, completed: 0 },
+  );
+}
+
+/** Board heading label, e.g. "3 activas · 1 completada". */
+export function initiativeCountLabel(list) {
+  const { active, completed } = summarizeInitiatives(list);
+  return `${active} ${active === 1 ? 'activa' : 'activas'} · ${completed} ${completed === 1 ? 'completada' : 'completadas'}`;
 }
 
 export function initiativeStatusLabel(status) {

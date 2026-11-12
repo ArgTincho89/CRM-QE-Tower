@@ -290,3 +290,101 @@ test('services migrate to the 2026 fiscal year with ids, links and per-year uniq
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test('workspace links are rebuilt to accept agreements, preserving rows, order and index, idempotently', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-workspace-links-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL);
+    INSERT INTO users VALUES ('u-1','ada@example.com','Ada','hash','admin','2026-01-01');
+    CREATE TABLE workspace_links (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative')),
+      entity_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_by_name TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX idx_workspace_links_entity ON workspace_links(entity_type, entity_id, created_at);
+    INSERT INTO workspace_links VALUES ('z-link','opportunity','OP-0001','Primero','https://a.example','2026-01-01','u-1','Ada');
+    INSERT INTO workspace_links VALUES ('a-link','opportunity','OP-0001','Segundo','https://b.example','2026-01-01',NULL,'');
+    INSERT INTO workspace_links VALUES ('m-link','initiative','IN-0001','Carpeta','https://c.example','2026-02-01','u-1','Ada');
+  `);
+  assert.throws(() => original.prepare("INSERT INTO workspace_links VALUES ('x','agreement','A-1','t','https://x.example','2026-01-01',NULL,'')").run(), /CHECK/);
+  original.close();
+  const snapshot = (db) => db.prepare('SELECT rowid, * FROM workspace_links ORDER BY rowid').all().map((row) => ({ ...row }));
+  try {
+    const db = openDatabase(dbPath);
+    const migrated = snapshot(db);
+    assert.deepEqual(migrated.map((row) => [row.rowid, row.id, row.entity_type, row.entity_id, row.title, row.url, row.created_at, row.created_by_id, row.created_by_name]), [
+      [1, 'z-link', 'opportunity', 'OP-0001', 'Primero', 'https://a.example', '2026-01-01', 'u-1', 'Ada'],
+      [2, 'a-link', 'opportunity', 'OP-0001', 'Segundo', 'https://b.example', '2026-01-01', null, ''],
+      [3, 'm-link', 'initiative', 'IN-0001', 'Carpeta', 'https://c.example', '2026-02-01', 'u-1', 'Ada'],
+    ]);
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_workspace_links_entity'").get());
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'workspace_links_next'").get(), undefined);
+    assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check(workspace_links)').all(), []);
+    assert.ok(db.prepare('PRAGMA foreign_key_list(workspace_links)').all().some((row) => row.from === 'created_by_id' && row.table === 'users'));
+
+    db.prepare("INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at) VALUES ('ag-link','agreement','A-1','Contrato','https://d.example','2026-03-01')").run();
+    assert.throws(() => db.prepare("INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at) VALUES ('bad','proposal','P-1','t','https://x.example','2026-03-01')").run(), /CHECK/);
+
+    // Idempotent: a second boot keeps every row and writes the marker once.
+    const before = snapshot(db);
+    applySchema(db);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    assert.deepEqual(snapshot(reopened), before);
+    assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'workspace_links_agreements_v1'").get().count, 1);
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('a fresh database accepts agreement workspace links and rejects unknown entity types', () => {
+  const temp = createTempDatabase();
+  try {
+    assert.equal(temp.db.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'workspace_links_agreements_v1'").get().count, 1);
+    for (const type of ['opportunity', 'initiative', 'agreement']) {
+      temp.db.prepare("INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at) VALUES (?, ?, 'X-1', 't', 'https://x.example', '2026-01-01')").run(`link-${type}`, type);
+    }
+    assert.equal(count(temp.db, 'workspace_links'), 3);
+    assert.throws(() => temp.db.prepare("INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at) VALUES ('bad', 'client', 'X-1', 't', 'https://x.example', '2026-01-01')").run(), /CHECK/);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('registry_id is added idempotently to agreements and opportunities with an empty default', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-registry-id-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE framework_agreements (id TEXT PRIMARY KEY, title TEXT NOT NULL, client_id TEXT, owner_id TEXT, end_date TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE opportunities (id TEXT PRIMARY KEY, title TEXT NOT NULL, account TEXT NOT NULL, amount TEXT NOT NULL, stage TEXT NOT NULL, tower TEXT NOT NULL, owner TEXT NOT NULL, due TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    INSERT INTO framework_agreements (id, title, created_at, updated_at) VALUES ('A-1','Legacy','2026-01-01','2026-01-01');
+    INSERT INTO opportunities VALUES ('O-1','A','','100','prospecting','','','','[]','2026-01-01','2026-01-01');
+  `);
+  original.close();
+  try {
+    const db = openDatabase(dbPath);
+    applySchema(db);
+    for (const table of ['framework_agreements', 'opportunities']) {
+      const columns = db.prepare(`PRAGMA table_info(${table})`).all().filter((row) => row.name === 'registry_id');
+      assert.equal(columns.length, 1, table);
+      assert.equal(columns[0].notnull, 1, table);
+    }
+    assert.equal(db.prepare("SELECT registry_id FROM framework_agreements WHERE id = 'A-1'").get().registry_id, '');
+    assert.equal(db.prepare("SELECT registry_id FROM opportunities WHERE id = 'O-1'").get().registry_id, '');
+    // No uniqueness: the same reference may repeat.
+    db.prepare("UPDATE framework_agreements SET registry_id = 'R-1'").run();
+    db.prepare("INSERT INTO framework_agreements (id, title, registry_id, created_at, updated_at) VALUES ('A-2','Otro','R-1','x','x')").run();
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM framework_agreements WHERE registry_id = 'R-1'").get().count, 2);
+    closeDatabase(db);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});

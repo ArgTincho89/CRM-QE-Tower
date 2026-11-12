@@ -53,8 +53,21 @@ const EDITABLE_FIELDS = [
   'title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number',
   'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason',
   'origin', 'probability', 'expected_close_date', 'next_milestone', 'next_milestone_date',
-  'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type',
+  'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type', 'registry_id',
 ];
+
+/** Optional external registry reference shared by opportunities and framework agreements. */
+const REGISTRY_ID_LIMIT = 120;
+
+function parseRegistryId(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') throw validationError('El campo "ID registro" debe ser texto.');
+  const trimmed = value.trim();
+  if (trimmed.length > REGISTRY_ID_LIMIT) {
+    throw validationError(`El campo "ID registro" no puede superar los ${REGISTRY_ID_LIMIT} caracteres.`);
+  }
+  return trimmed;
+}
 
 const MAX_TAGS = 20;
 const MAX_TAG_LENGTH = 40;
@@ -209,7 +222,7 @@ function deleteMaster(ctx, res, kind, id) {
   sendJson(res, 200, { deleted: true });
 }
 
-/** Nothing references framework agreements, so they are always deletable with their history. */
+/** Nothing references framework agreements, so they are always deletable with their history and links. */
 function deleteAgreement(ctx, req, res, rawId) {
   requireUser(ctx, req);
   const id = decodeId(rawId);
@@ -217,7 +230,7 @@ function deleteAgreement(ctx, req, res, rawId) {
     if (!ctx.db.prepare('SELECT id FROM framework_agreements WHERE id = ?').get(id)) {
       throw new HttpError(404, 'not_found', 'El acuerdo marco no existe.');
     }
-    ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run('agreement', id);
+    deleteOwnedRecordRows(ctx.db, AGREEMENT_ENTITY_TYPE, id);
     ctx.db.prepare('DELETE FROM framework_agreements WHERE id = ?').run(id);
   });
   sendJson(res, 200, { deleted: true });
@@ -265,7 +278,7 @@ function replaceJoinRows(db, table, ownerColumn, ownerId, valueColumn, ids) {
 
 function loadWorkspaceLinks(db, entityType, entityId) {
   return db
-    .prepare('SELECT id, title, url FROM workspace_links WHERE entity_type = ? AND entity_id = ? ORDER BY created_at, id')
+    .prepare('SELECT id, title, url FROM workspace_links WHERE entity_type = ? AND entity_id = ? ORDER BY created_at, rowid')
     .all(entityType, entityId);
 }
 
@@ -320,6 +333,7 @@ function mapOpportunity(row, db) {
     initiativeTitle: initiative?.title || '',
     outcome: row.outcome || '',
     opportunityType: row.opportunity_type || '',
+    registryId: row.registry_id || '',
     pep: row.pep || '',
     archivedAt: row.archived_at || '',
     archivedByName: row.archived_by_name || '',
@@ -417,8 +431,12 @@ function mapInitiative(row, db) {
   };
 }
 
-function mapAgreement(row) {
-  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, amount: Number(row.amount) || 0, notes: row.notes || '', status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
+/** Entity type used by framework agreements in entity_events and workspace_links. */
+const AGREEMENT_ENTITY_TYPE = 'agreement';
+
+function mapAgreement(row, db) {
+  const links = db ? loadWorkspaceLinks(db, AGREEMENT_ENTITY_TYPE, row.id) : [];
+  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, amount: Number(row.amount) || 0, notes: row.notes || '', registryId: row.registry_id || '', links, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapEvent(row) {
@@ -716,6 +734,7 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'origin') return parseOrigin(value);
   if (field === 'outcome') return parseOutcome(value);
   if (field === 'opportunity_type') return parseOpportunityType(value);
+  if (field === 'registry_id') return parseRegistryId(value);
   if (field === 'probability') return parseProbability(value);
   if (field === 'expected_close_date' || field === 'next_milestone_date') return parseOptionalDate(value, field);
   if (field === 'next_milestone' || field === 'need' || field === 'pep') return parseShortText(value);
@@ -1060,6 +1079,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
     outcome,
     pep: parseShortText(body.pep),
     opportunity_type: opportunityType,
+    registry_id: parseRegistryId(body.registryId),
   };
 
   const nowIso = ctx.now().toISOString();
@@ -1068,8 +1088,8 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
        (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at,
         number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason,
         origin, probability, expected_close_date, next_milestone, next_milestone_date, need,
-        initiative_id, outcome, pep, opportunity_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        initiative_id, outcome, pep, opportunity_type, registry_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -1106,6 +1126,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
           values.outcome,
           values.pep,
           values.opportunity_type,
+          values.registry_id,
         );
         replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
         replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
@@ -1176,7 +1197,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
     qaPercent: 'qa_percent', closureReason: 'closure_reason', origin: 'origin', probability: 'probability',
     expectedCloseDate: 'expected_close_date', nextMilestone: 'next_milestone',
     nextMilestoneDate: 'next_milestone_date', need: 'need', initiativeId: 'initiative_id',
-    outcome: 'outcome', pep: 'pep', opportunityType: 'opportunity_type',
+    outcome: 'outcome', pep: 'pep', opportunityType: 'opportunity_type', registryId: 'registry_id',
   };
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
@@ -1708,7 +1729,12 @@ function setInitiativeArchive(ctx, req, res, rawId, archived) {
 
 function listAgreements(ctx, req, res) {
   requireUser(ctx, req);
-  sendJson(res, 200, { agreements: ctx.db.prepare('SELECT * FROM framework_agreements ORDER BY created_at DESC').all().map(mapAgreement) });
+  const rows = ctx.db.prepare('SELECT * FROM framework_agreements ORDER BY created_at DESC').all();
+  sendJson(res, 200, { agreements: rows.map((row) => mapAgreement(row, ctx.db)) });
+}
+
+function getAgreementForDisplay(db, id) {
+  return mapAgreement(db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id), db);
 }
 
 async function createAgreement(ctx, req, res) {
@@ -1722,9 +1748,16 @@ async function createAgreement(ctx, req, res) {
   const endDate = parseAgreementEndDate(body.endDate);
   const amount = parseAgreementAmount(body.amount);
   const notes = parseShortText(body.notes, AGREEMENT_NOTES_LIMIT);
-  ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, title, clientId, ownerId, endDate, amount, notes, 'active', now, now);
-  appendEntityEvent(ctx.db, { type: 'agreement', id, user, action: 'created', now });
-  sendJson(res, 201, { agreement: mapAgreement(ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id)) });
+  const registryId = parseRegistryId(body.registryId);
+  const links = parseWorkspaceLinks(body.links);
+  withTransaction(ctx.db, () => {
+    ctx.db
+      .prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,registry_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, title, clientId, ownerId, endDate, amount, notes, registryId, 'active', now, now);
+    replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, id, links, user, now);
+    appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id, user, action: 'created', now });
+  });
+  sendJson(res, 201, { agreement: getAgreementForDisplay(ctx.db, id) });
 }
 
 const AGREEMENT_NOTES_LIMIT = 2000;
@@ -1752,6 +1785,7 @@ async function updateAgreement(ctx, req, res, rawId) {
     endDate: ['end_date', parseAgreementEndDate],
     amount: ['amount', parseAgreementAmount],
     notes: ['notes', (value) => parseShortText(value, AGREEMENT_NOTES_LIMIT)],
+    registryId: ['registry_id', parseRegistryId],
   };
   const changes = {};
   for (const [apiField, [column, parse]] of Object.entries(parsers)) {
@@ -1759,17 +1793,25 @@ async function updateAgreement(ctx, req, res, rawId) {
     const next = parse(body[apiField]);
     if (next !== existing[column]) changes[column] = next;
   }
+  // Sending `links` replaces the whole set, like initiatives and opportunities.
+  const hasLinks = Object.hasOwn(body, 'links');
+  const links = hasLinks ? parseWorkspaceLinks(body.links) : null;
   const columns = Object.keys(changes);
-  if (columns.length > 0) {
+  if (columns.length > 0 || hasLinks) {
     const now = ctx.now().toISOString();
     withTransaction(ctx.db, () => {
-      ctx.db
-        .prepare(`UPDATE framework_agreements SET ${columns.map((column) => `${column} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
-        .run(...columns.map((column) => changes[column]), now, id);
-      appendEntityEvent(ctx.db, { type: 'agreement', id, user, action: 'updated', detail: { fields: columns }, now });
+      if (columns.length > 0) {
+        ctx.db
+          .prepare(`UPDATE framework_agreements SET ${columns.map((column) => `${column} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+          .run(...columns.map((column) => changes[column]), now, id);
+      } else {
+        ctx.db.prepare('UPDATE framework_agreements SET updated_at = ? WHERE id = ?').run(now, id);
+      }
+      if (hasLinks) replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, id, links, user, now);
+      appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id, user, action: 'updated', detail: { fields: [...columns, ...(hasLinks ? ['links'] : [])] }, now });
     });
   }
-  sendJson(res, 200, { agreement: mapAgreement(ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id)) });
+  sendJson(res, 200, { agreement: getAgreementForDisplay(ctx.db, id) });
 }
 
 function listActions(ctx, req, res, type, rawId) {

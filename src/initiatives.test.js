@@ -1,42 +1,48 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { COMPLETED_INITIATIVE_STAGE, initiativeBoardStages, initiativeStages } from './data.js';
+import { initiativeStages } from './data.js';
 import { moveOpportunityToStage } from './kanban.js';
 import {
   INITIATIVE_STATUS_FILTERS,
-  activeBoardInitiatives,
   addInitiative,
   buildOpportunityPrefill,
-  completedInitiatives,
   filterInitiativesByStatus,
   isInitiativeCompleted,
+  initiativeCountLabel,
   initiativeStatusLabel,
+  isActiveInitiative,
   mapInitiativeStage,
   removeInitiative,
   scopeInitiativesToPage,
+  summarizeInitiatives,
 } from './initiatives.js';
 
-test('initiative stages keep Completada while the board shows only three working columns', () => {
+test('the initiative board shows the four stages, Completada included', () => {
   assert.deepEqual(initiativeStages.map(({ label }) => label), ['Pendiente', 'En curso', 'En seguimiento', 'Completada']);
-  assert.deepEqual(initiativeBoardStages.map(({ label }) => label), ['Pendiente', 'En curso', 'En seguimiento']);
-  assert.equal(initiativeBoardStages.some(({ id }) => id === COMPLETED_INITIATIVE_STAGE), false);
+  assert.equal(initiativeStages.length, 4);
   assert.deepEqual(INITIATIVE_STATUS_FILTERS.map(({ id }) => id), ['all', 'active', 'paused', 'discarded']);
 });
 
-test('completed initiatives leave the active board and appear only in the completed list', () => {
+test('completed and archived initiatives never count as active', () => {
   const list = [
     { id: 'IN-0001', stage: 'pending' },
     { id: 'IN-0002', stage: 'completed' },
     { id: 'IN-0003', stage: 'won' },
-    { id: 'IN-0004', stage: 'following' },
+    { id: 'IN-0004', stage: 'following', operationalStatus: 'paused' },
     { id: 'IN-0005', stage: 'completed', archivedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'IN-0006', stage: 'in_progress', archivedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'IN-0007', stage: 'prospecting', operationalStatus: 'discarded' },
   ];
   assert.equal(isInitiativeCompleted(list[1]), true);
   assert.equal(isInitiativeCompleted(list[2]), true, 'legacy won maps to completed');
   assert.equal(isInitiativeCompleted(list[0]), false);
   assert.equal(isInitiativeCompleted(undefined), false);
-  assert.deepEqual(activeBoardInitiatives(list).map((item) => item.id), ['IN-0001', 'IN-0004']);
-  assert.deepEqual(completedInitiatives(list).map((item) => item.id), ['IN-0002', 'IN-0003']);
+  assert.deepEqual(list.filter(isActiveInitiative).map((item) => item.id), ['IN-0001', 'IN-0004', 'IN-0007']);
+  assert.equal(isActiveInitiative(undefined), false);
+  assert.deepEqual(summarizeInitiatives(list), { active: 3, completed: 2 });
+  assert.deepEqual(summarizeInitiatives([]), { active: 0, completed: 0 });
+  assert.equal(initiativeCountLabel(list), '3 activas · 2 completadas');
+  assert.equal(initiativeCountLabel([{ stage: 'pending' }, { stage: 'completed' }]), '1 activa · 1 completada');
 });
 
 test('legacy commercial stages map onto the four initiative stages', () => {

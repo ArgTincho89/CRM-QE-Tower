@@ -37,6 +37,13 @@ describe('opportunity archive filtering', () => {
     assert.equal(filterOpportunityRecords([{ ...active[0], archivedByName: 'Lucía' }], [], 'lucía', false).length, 0);
     assert.equal(filterOpportunityRecords(active, archived, 'nada', true).length, 0);
   });
+
+  test('query matches the external registry id in both views', () => {
+    const withRegistry = [{ ...active[0], registryId: 'LIC-2026/15' }];
+    assert.deepEqual(filterOpportunityRecords(withRegistry, [], 'lic-2026', false).map((i) => i.id), ['OP-1']);
+    assert.equal(filterOpportunityRecords([], [{ ...archived[0], registryId: 'ERP-9' }], 'erp-9', true).length, 1);
+    assert.equal(filterOpportunityRecords(active, [], 'lic-2026', false).length, 0);
+  });
 });
 
 describe('opportunity type', () => {

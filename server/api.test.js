@@ -871,6 +871,94 @@ describe('CRM API', () => {
     assert.equal((await app.json('PATCH', `/api/agreements/${id}`, { body: { notes: 'x' } })).status, 401);
   });
 
+  test('framework agreements own Workspace links: create, replace, validate and delete with the agreement', async () => {
+    const created = await app.json('POST', '/api/agreements', {
+      body: { title: 'Acuerdo con enlaces', links: [{ title: ' Carpeta ', url: ' https://workspaces.example/a ' }, { title: 'Contrato', url: 'http://intranet.example/c' }] },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    const id = created.body.agreement.id;
+    assert.deepEqual(created.body.agreement.links.map(({ title, url }) => ({ title, url })), [
+      { title: 'Carpeta', url: 'https://workspaces.example/a' },
+      { title: 'Contrato', url: 'http://intranet.example/c' },
+    ]);
+    const listed = await app.json('GET', '/api/agreements', { cookie: session });
+    assert.equal(listed.body.agreements.find((item) => item.id === id).links.length, 2);
+    const linkRows = () => app.db.prepare("SELECT title, url FROM workspace_links WHERE entity_type = 'agreement' AND entity_id = ? ORDER BY title").all(id).map((row) => ({ ...row }));
+    assert.equal(linkRows().length, 2);
+
+    // Unsafe or malformed links are rejected and leave the stored links untouched.
+    for (const links of [[{ title: 'Script', url: 'javascript:alert(1)' }], [{ title: '', url: 'https://x.example' }], 'no-list']) {
+      const rejected = await app.json('PATCH', `/api/agreements/${id}`, { body: { links }, cookie: session });
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.body.error.code, 'validation_error');
+    }
+    const invalidCreate = await app.json('POST', '/api/agreements', { body: { title: 'Mal enlace', links: [{ title: 'X', url: 'ftp://x.example' }] }, cookie: session });
+    assert.equal(invalidCreate.status, 400);
+    assert.equal(app.db.prepare("SELECT COUNT(*) AS count FROM framework_agreements WHERE title = 'Mal enlace'").get().count, 0);
+    assert.equal(linkRows().length, 2);
+
+    // A PATCH without `links` keeps them; sending `links` replaces the whole set and is audited.
+    const untouched = await app.json('PATCH', `/api/agreements/${id}`, { body: { notes: 'Sin cambios en enlaces' }, cookie: session });
+    assert.equal(untouched.body.agreement.links.length, 2);
+    const replaced = await app.json('PATCH', `/api/agreements/${id}`, { body: { links: [{ title: 'Nuevo', url: 'https://workspaces.example/n' }] }, cookie: session });
+    assert.equal(replaced.status, 200);
+    assert.deepEqual(replaced.body.agreement.links.map((link) => link.title), ['Nuevo']);
+    assert.deepEqual(linkRows(), [{ title: 'Nuevo', url: 'https://workspaces.example/n' }]);
+    const lastEvent = app.db.prepare("SELECT detail FROM entity_events WHERE entity_type = 'agreement' AND entity_id = ? ORDER BY id DESC LIMIT 1").get(id);
+    assert.deepEqual(JSON.parse(lastEvent.detail).fields, ['links']);
+    const cleared = await app.json('PATCH', `/api/agreements/${id}`, { body: { links: [] }, cookie: session });
+    assert.deepEqual(cleared.body.agreement.links, []);
+    await app.json('PATCH', `/api/agreements/${id}`, { body: { links: [{ title: 'Final', url: 'https://workspaces.example/f' }] }, cookie: session });
+
+    // Deleting the agreement removes its links; another record's links survive.
+    const other = await app.json('POST', '/api/agreements', { body: { title: 'Otro acuerdo', links: [{ title: 'Otro', url: 'https://workspaces.example/o' }] }, cookie: session });
+    const deleted = await app.json('DELETE', `/api/agreements/${id}`, { cookie: session });
+    assert.equal(deleted.status, 200);
+    assert.equal(linkRows().length, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM workspace_links WHERE entity_id = ?').get(other.body.agreement.id).count, 1);
+  });
+
+  test('registry id is optional, trimmed, persisted and audited on agreements and opportunities', async () => {
+    const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo con registro', registryId: '  ERP-2026/001  ' }, cookie: session });
+    assert.equal(agreement.status, 201);
+    assert.equal(agreement.body.agreement.registryId, 'ERP-2026/001');
+    const plain = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo sin registro' }, cookie: session });
+    assert.equal(plain.body.agreement.registryId, '');
+    const agreementId = agreement.body.agreement.id;
+    const updatedAgreement = await app.json('PATCH', `/api/agreements/${agreementId}`, { body: { registryId: 'PORTAL-77' }, cookie: session });
+    assert.equal(updatedAgreement.body.agreement.registryId, 'PORTAL-77');
+    const agreementEvent = app.db.prepare("SELECT detail FROM entity_events WHERE entity_type = 'agreement' AND entity_id = ? ORDER BY id DESC LIMIT 1").get(agreementId);
+    assert.deepEqual(JSON.parse(agreementEvent.detail).fields, ['registry_id']);
+    const listed = await app.json('GET', '/api/agreements', { cookie: session });
+    assert.equal(listed.body.agreements.find((item) => item.id === agreementId).registryId, 'PORTAL-77');
+    // Not unique: two records may share the same external reference.
+    const duplicate = await app.json('POST', '/api/agreements', { body: { title: 'Mismo registro', registryId: 'PORTAL-77' }, cookie: session });
+    assert.equal(duplicate.status, 201);
+
+    const tooLong = 'R'.repeat(121);
+    assert.equal((await app.json('POST', '/api/agreements', { body: { title: 'Largo', registryId: tooLong }, cookie: session })).status, 400);
+    assert.equal((await app.json('PATCH', `/api/agreements/${agreementId}`, { body: { registryId: tooLong }, cookie: session })).status, 400);
+    assert.equal((await app.json('PATCH', `/api/agreements/${agreementId}`, { body: { registryId: 42 }, cookie: session })).status, 400);
+    assert.equal((await app.json('GET', '/api/agreements', { cookie: session })).body.agreements.find((item) => item.id === agreementId).registryId, 'PORTAL-77');
+
+    const opportunity = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, registryId: ' LIC-2026-15 ' }, cookie: session });
+    assert.equal(opportunity.status, 201);
+    assert.equal(opportunity.body.opportunity.registryId, 'LIC-2026-15');
+    const opportunityId = opportunity.body.opportunity.id;
+    const withoutRegistry = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    assert.equal(withoutRegistry.body.opportunity.registryId, '');
+    const patched = await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { registryId: 'LIC-2026-16' }, cookie: session });
+    assert.equal(patched.status, 200);
+    assert.equal(patched.body.opportunity.registryId, 'LIC-2026-16');
+    const events = await app.json('GET', `/api/opportunities/${opportunityId}/events`, { cookie: session });
+    assert.ok(events.body.events.some((event) => event.action === 'updated' && event.detail.fields?.includes('registry_id')));
+    const cleared = await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { registryId: '' }, cookie: session });
+    assert.equal(cleared.body.opportunity.registryId, '');
+    assert.equal((await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, registryId: tooLong }, cookie: session })).status, 400);
+    assert.equal((await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { registryId: tooLong }, cookie: session })).status, 400);
+  });
+
   test('inactive services cannot be newly assigned but stay on historical links', async () => {
     const services = await app.json('GET', '/api/services', { cookie: session });
     const service = services.body.records.find((item) => item.name === 'Accessibility Testing');

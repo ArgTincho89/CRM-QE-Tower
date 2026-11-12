@@ -466,8 +466,11 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .relation-option.selected { border-color: #bcd4f4; background: #eef5fd; color: #176ccf; }
 .relation-option input { margin: 0; }
 .link-editor { display: grid; gap: 6px; }
-.link-row { display: grid; grid-template-columns: 1fr 2fr auto; gap: 6px; align-items: center; }
+.link-row { display: grid; grid-template-columns: 1fr 2fr auto auto; gap: 6px; align-items: center; }
 .link-row input { height: 34px; padding: 0 10px; border: 1px solid #e2e7ee; border-radius: 5px; }
+.link-open { min-width: 44px; color: #176ccf; font-size: 12px; font-weight: 600; text-align: center; }
+.workspace-link-list { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; }
+.workspace-link-list a { color: #176ccf; font-size: 12px; font-weight: 600; }
 .weighted-amount { display: block; color: #6b7a90; font-size: 11px; }
 .pep-pill { padding: 2px 6px; border-radius: 999px; background: #eaf8f0; color: #3e9870; font-size: 11px; font-weight: 600; }
 @media (max-width: 720px) { .link-row { grid-template-columns: 1fr; } }

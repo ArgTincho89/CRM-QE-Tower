@@ -1,11 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
-import { initiativeBoardStages, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
+import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
 import { applyOriginChange, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 import { NAV_GROUPS } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
-import { INITIATIVE_STATUS_FILTERS, activeBoardInitiatives, addInitiative, buildOpportunityPrefill, completedInitiatives, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
+import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeCountLabel, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
+import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLinks, safeWorkspaceUrl, toWorkspaceLinkForm } from './workspaceLinks.js';
+import { filterAgreements } from './agreements.js';
 import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
 import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
@@ -219,14 +221,14 @@ function App() {
     return [...new Set(records.map((item) => item.owner).filter(Boolean))].sort();
   }, [page, pipelineCards, opportunities]);
   const filtered = useMemo(() => opportunities.filter((item) => {
-    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id}`.toLowerCase();
+    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.registryId || ''}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase())
       && (stageFilter === 'all' || item.stage === stageFilter)
       && (towerFilter === 'all' || item.tower === towerFilter)
       && (ownerFilter === 'all' || item.owner === ownerFilter);
   }), [opportunities, query, stageFilter, towerFilter, ownerFilter]);
   const filteredPipelineCards = useMemo(() => pipelineCards.filter((item) => {
-    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.number || ''} ${item.due || ''} ${(item.tags || []).join?.(' ') || ''} ${item.category || ''} ${item.status || ''} ${item.closureReason || ''}`.toLowerCase();
+    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.number || ''} ${item.registryId || ''} ${item.due || ''} ${(item.tags || []).join?.(' ') || ''} ${item.category || ''} ${item.status || ''} ${item.closureReason || ''}`.toLowerCase();
     return haystack.includes(query.trim().toLowerCase())
       && (stageFilter === 'all' || item.stage === stageFilter)
       && (towerFilter === 'all' || item.tower === towerFilter)
@@ -420,6 +422,7 @@ function App() {
         outcome: record.outcome || '',
         pep: record.pep || '',
         opportunityType: record.opportunityType || '',
+        registryId: record.registryId || '',
         towerIds: record.towerIds || [],
         lobIds: record.lobIds || [],
         serviceIds: record.serviceIds || [],
@@ -682,7 +685,7 @@ function App() {
             ? <OpportunityManagementPanel opportunities={filterOpportunityRecords(opportunities, archivedOpportunities, query, archivedView)} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} onArchive={archiveRecord} onDelete={deleteRecord} />
             : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
-            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
+            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
@@ -849,11 +852,11 @@ function OpportunityTypePill({ type }) {
 }
 
 function OpportunityRows({ opportunities, view, onEdit }) {
-  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>ID registro</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.registryId || '—'}</td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
-function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
+function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
   const grouped = towers.map((tower) => ({ tower: tower.name, count: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).length, amount: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios autenticados, que tienen los mismos permisos para consultar y modificar sus registros. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
@@ -863,7 +866,7 @@ function SecondaryPage({ page, opportunities, clients, towers, services, service
   if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
-  if (page === 'agreements') return <AgreementPanel agreements={agreements} clients={clients} people={people} onEdit={onEditAgreement} onDelete={onDeleteAgreement} />;
+  if (page === 'agreements') return <AgreementPanel agreements={agreements} query={query} clients={clients} people={people} onEdit={onEditAgreement} onDelete={onDeleteAgreement} />;
   return <Analytics opportunities={opportunities} grouped={grouped} />;
 }
 
@@ -884,11 +887,11 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
     {loading && <div className="board-state"><p>{archivedView ? 'Cargando oportunidades archivadas…' : 'Cargando oportunidades…'}</p></div>}
     {error && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={onRetry}>Reintentar</button></div>}
     {!loading && !error && <div className="table-wrap"><table className="data-table opportunity-management-table"><thead><tr>
-      <th>ID interno</th><th>N.º externo</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
+      <th>ID interno</th><th>N.º externo</th><th>ID registro</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
     </tr></thead><tbody>{opportunities.map((item) => {
       const stage = stages.find((entry) => entry.id === item.stage);
       return <tr key={item.id}>
-        <td>{item.id}</td><td>{item.number || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
+        <td>{item.id}</td><td>{item.number || '—'}</td><td>{item.registryId || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
         <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
         <td>{item.owner || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
         <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
@@ -902,10 +905,8 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
 
 function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView, archivedLoading, onToggleArchived, onRestore, query, expandedColumns, onToggleColumn, onEdit, onMove, onArchive, onDelete }) {
   const [statusFilter, setStatusFilter] = useState('all');
-  const [completedToggle, setCompletedToggle] = useState(false);
-  // Archived and completed are mutually exclusive views; the board shows neither.
-  const completedView = completedToggle && !archivedView;
-  const records = archivedView ? archivedInitiatives : completedView ? completedInitiatives(initiatives) : activeBoardInitiatives(initiatives);
+  // The board shows the four stages; completed initiatives live in the Completada column.
+  const records = archivedView ? archivedInitiatives : initiatives;
   const scoped = filterInitiativesByStatus(scopeInitiativesToPage(records, page), statusFilter);
   const normalizedQuery = query.trim().toLowerCase();
   const matched = normalizedQuery
@@ -922,33 +923,23 @@ function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView,
     cardKey: `initiative:${item.id}`,
     sourceRecord: item,
   }));
-  const toggleCompleted = () => {
-    if (archivedView) onToggleArchived();
-    setCompletedToggle(!completedView);
-  };
-  const toggleArchived = () => {
-    setCompletedToggle(false);
-    onToggleArchived();
-  };
   const heading = page === 'crossSelling' ? 'Iniciativas de Cross-Selling' : 'Iniciativas de desarrollo';
-  const title = archivedView ? `${heading} · archivadas` : completedView ? `${heading} · completadas` : heading;
+  const title = archivedView ? `${heading} · archivadas` : heading;
   const description = archivedView
     ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.'
-    : completedView
-      ? 'Iniciativas completadas: salen del tablero, pero no están archivadas ni eliminadas.'
-      : 'Registro independiente de las oportunidades, con su propio ciclo de vida.';
+    : 'Registro independiente de las oportunidades, con su propio ciclo de vida. Las completadas no cuentan como activas.';
   const emptyMessage = (label) => (normalizedQuery ? `No hay iniciativas ${label} que coincidan con la búsqueda.` : `Todavía no hay iniciativas ${label}.`);
+  // Archived records are never active; the board count separates active from completed.
+  const countLabel = archivedView ? `${cards.length} registros` : initiativeCountLabel(cards);
   return <section className="secondary-panel initiative-board-panel">
     <div className="secondary-panel-heading">
       <div><h2>{title}</h2><p>{description}</p></div>
-      <div className="heading-actions"><span className="record-count">{cards.length} registros</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por estado operativo">{INITIATIVE_STATUS_FILTERS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button button-secondary" onClick={toggleCompleted} aria-pressed={completedView}>{completedView ? 'Ver activas' : 'Ver completadas'}</button><button className="button button-secondary" onClick={toggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver activas' : 'Ver archivadas'}</button></div>
+      <div className="heading-actions"><span className="record-count">{countLabel}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por estado operativo">{INITIATIVE_STATUS_FILTERS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button button-secondary" onClick={onToggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver tablero' : 'Ver archivadas'}</button></div>
     </div>
     {archivedLoading && <div className="board-state"><p>Cargando iniciativas archivadas…</p></div>}
     {archivedView
       ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Categoría</th><th>Cliente</th><th>Prioridad</th><th>Estado</th><th>Archivada por</th><th>Acciones</th></tr></thead><tbody>{cards.map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.categoryLabel}</td><td>{item.account}</td><td>{item.priority || 'Media'}</td><td>{item.statusLabel}</td><td>{item.archivedByName || '—'}</td><td className="master-actions"><button className="button button-secondary" onClick={() => onRestore(item.sourceRecord)}>Restaurar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{cards.length === 0 && <p className="empty-state">{emptyMessage('archivadas')}</p>}</div>
-      : completedView
-        ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Categoría</th><th>Cliente</th><th>Prioridad</th><th>Estado</th><th>Oportunidades generadas</th><th>Acciones</th></tr></thead><tbody>{cards.map((item) => <tr key={item.id}><td><button className="table-title" onClick={() => onEdit(item.sourceRecord)}>{item.title}</button></td><td>{item.categoryLabel}</td><td>{item.account}</td><td>{item.priority || 'Media'}</td><td>{item.statusLabel}</td><td>{item.linkedOpportunityCount ?? 0}</td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item.sourceRecord)}>Abrir</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{cards.length === 0 && <p className="empty-state">{emptyMessage('completadas')}</p>}</div>
-        : <Kanban cards={cards} allCards={cards} stageList={initiativeBoardStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={(record) => onEdit(record.sourceRecord)} onMove={onMove} onArchive={onArchive} onDelete={onDelete} />}
+      : <Kanban cards={cards} allCards={cards} stageList={initiativeStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={(record) => onEdit(record.sourceRecord)} onMove={onMove} onArchive={onArchive} onDelete={onDelete} />}
   </section>;
 }
 
@@ -1002,10 +993,11 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
     expectedCloseDate: record.expectedCloseDate || '', nextMilestone: record.nextMilestone || '', nextMilestoneDate: record.nextMilestoneDate || '',
     need: record.need || '', initiativeId: record.initiativeId || '', outcome: record.outcome || '', pep: record.pep || '',
     opportunityType: record.opportunityType || '',
+    registryId: record.registryId || '',
     towerIds: (record.towers || []).map((item) => item.id),
     lobIds: (record.lobs || []).map((item) => item.id),
     serviceIds: (record.services || []).map((item) => item.id),
-    links: (record.links || []).map((link) => ({ title: link.title || 'Enlace Workspace', url: link.url || '' })),
+    links: toWorkspaceLinkForm(record.links),
   });
   const [amountText, setAmountText] = useState(() => formatAmountInput(record.amount || ''));
   const [error, setError] = useState('');
@@ -1040,9 +1032,6 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
     });
   };
   const handleAmountBlur = () => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')));
-  const updateLink = (index, field, value) => setForm((current) => ({ ...current, links: current.links.map((link, position) => (position === index ? { ...link, [field]: value } : link)) }));
-  const addLink = () => setForm((current) => (current.links.length >= 20 ? current : { ...current, links: [...current.links, { title: 'Enlace Workspace', url: '' }] }));
-  const removeLink = (index) => setForm((current) => ({ ...current, links: current.links.filter((_, position) => position !== index) }));
   const initiativeChoices = originInitiativeOptions(initiatives, form.initiativeId);
   // The list may only hold active initiatives; keep an archived current link selectable.
   if (record.initiativeId && form.initiativeId === record.initiativeId && !initiativeChoices.some((item) => item.id === record.initiativeId)) {
@@ -1093,10 +1082,11 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
         outcome: isResult ? form.outcome : '',
         pep: form.pep.trim(),
         opportunityType: form.opportunityType,
+        registryId: form.registryId.trim(),
         towerIds: form.towerIds,
         lobIds: form.lobIds,
         serviceIds: form.serviceIds,
-        links: form.links.map((link) => ({ title: link.title.trim(), url: link.url.trim() })).filter((link) => link.title && link.url),
+        links: normalizeWorkspaceLinks(form.links),
       });
     } catch {
       // The parent surfaces the API message through saveError.
@@ -1110,6 +1100,7 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
         <label className="form-field wide">Nombre de la oportunidad *<input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required disabled={saving} /></label>
         <label className="form-field">Tipo de oportunidad *<select value={form.opportunityType} onChange={(event) => update('opportunityType', event.target.value)} aria-required="true" disabled={saving}><option value="">Selecciona un tipo</option>{opportunityTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select>{isEditing && !record.opportunityType && <span className="field-hint">Registro sin tipo: elige uno para guardar los cambios.</span>}</label>
         <label className="form-field">Número de oportunidad<input value={form.number} onChange={(event) => update('number', event.target.value)} placeholder="Identificador externo" disabled={saving} /></label>
+        <label className="form-field">ID registro<input value={form.registryId} onChange={(event) => update('registryId', event.target.value)} placeholder="Portal del cliente, pliego o ERP" maxLength="120" disabled={saving} /><span className="field-hint">Opcional. Referencia externa del registro.</span></label>
         <label className="form-field">Cliente / cuenta<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></label>
         <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
@@ -1130,15 +1121,7 @@ function OpportunityDialog({ record, clients, towers, services, currentServiceYe
       <MultiSelect legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
       <MultiSelect legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
       <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
-      <fieldset className="relation-field">
-        <legend>Enlaces Workspace</legend>
-        <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>
-        <div className="link-editor">
-          {form.links.length === 0 && <span className="field-hint">Todavía no hay enlaces.</span>}
-          {form.links.map((link, index) => <div className="link-row" key={index}><input aria-label={`Título del enlace ${index + 1}`} value={link.title} onChange={(event) => updateLink(index, 'title', event.target.value)} placeholder="Enlace Workspace" maxLength="120" disabled={saving} /><input aria-label={`URL del enlace ${index + 1}`} value={link.url} onChange={(event) => updateLink(index, 'url', event.target.value)} placeholder="https://workspaces.example/..." maxLength="500" disabled={saving} /><button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={saving}><Icon name="close" size={16} /></button></div>)}
-        </div>
-        <button type="button" className="inline-link" onClick={addLink} disabled={saving || form.links.length >= 20}>+ Añadir enlace</button>
-      </fieldset>
+      <WorkspaceLinksEditor links={form.links} onChange={(links) => update('links', links)} disabled={saving} />
       {isEditing && <CardHistory opportunityId={form.id} refreshKey={historyRefresh} />}
       {isEditing && <RecordActions type="opportunities" id={form.id} />}
       <div className="dialog-hint"><span className="info-mark">i</span> Las propuestas y estimaciones se gestionan como registros independientes vinculados.</div>
@@ -1250,15 +1233,12 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
     nextActionDate: record.nextActionDate || '',
     description: record.description || '',
     serviceIds: (record.services || []).map((item) => item.id),
-    links: (record.links || []).map((link) => ({ title: link.title || 'Enlace Workspace', url: link.url || '' })),
+    links: toWorkspaceLinkForm(record.links),
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
-  const updateLink = (index, field, value) => setForm((current) => ({ ...current, links: current.links.map((link, position) => (position === index ? { ...link, [field]: value } : link)) }));
-  const addLink = () => setForm((current) => (current.links.length >= 20 ? current : { ...current, links: [...current.links, { title: 'Enlace Workspace', url: '' }] }));
-  const removeLink = (index) => setForm((current) => ({ ...current, links: current.links.filter((_, position) => position !== index) }));
   const generatedOpportunities = record.opportunities || [];
   // Same validation and payload for "Guardar" and for "Crear oportunidad" (which saves first).
   const persist = async (handler, fallbackMessage) => {
@@ -1272,7 +1252,7 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
         id: record.id || '',
         title: form.title.trim(),
         nextAction: form.nextAction.trim(),
-        links: form.links.map((link) => ({ title: link.title.trim(), url: link.url.trim() })).filter((link) => link.title && link.url),
+        links: normalizeWorkspaceLinks(form.links),
       });
     } catch (err) {
       setError(err?.message || fallbackMessage);
@@ -1303,15 +1283,7 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
         <label className="form-field wide">Descripción<textarea rows="3" value={form.description} onChange={(event) => update('description', event.target.value)} placeholder="Contexto y objetivo de la iniciativa" maxLength="2000" disabled={saving} /></label>
       </div>
       <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
-      <fieldset className="relation-field">
-        <legend>Enlaces Workspace</legend>
-        <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>
-        <div className="link-editor">
-          {form.links.length === 0 && <span className="field-hint">Todavía no hay enlaces.</span>}
-          {form.links.map((link, index) => <div className="link-row" key={index}><input aria-label={`Título del enlace ${index + 1}`} value={link.title} onChange={(event) => updateLink(index, 'title', event.target.value)} placeholder="Enlace Workspace" maxLength="120" disabled={saving} /><input aria-label={`URL del enlace ${index + 1}`} value={link.url} onChange={(event) => updateLink(index, 'url', event.target.value)} placeholder="https://workspaces.example/..." maxLength="500" disabled={saving} /><button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={saving}><Icon name="close" size={16} /></button></div>)}
-        </div>
-        <button type="button" className="inline-link" onClick={addLink} disabled={saving || form.links.length >= 20}>+ Añadir enlace</button>
-      </fieldset>
+      <WorkspaceLinksEditor links={form.links} onChange={(links) => update('links', links)} disabled={saving} />
       {record.id && <section className="generated-opportunities">
         <div className="generated-opportunities-heading"><h3>Oportunidades generadas ({generatedOpportunities.length})</h3>{onCreateOpportunity && <button type="button" className="button button-secondary" onClick={createOpportunity} disabled={saving}>Crear oportunidad</button>}</div>
         {onCreateOpportunity && <p className="field-hint">«Crear oportunidad» guarda antes los cambios de la iniciativa. La iniciativa pasará a Completada cuando se guarde la oportunidad; si cancelas, seguirá en su etapa actual.</p>}
@@ -1326,19 +1298,47 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
   </dialog>;
 }
 
-function AgreementPanel({ agreements, clients, people, onEdit, onDelete }) {
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{agreements.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{agreements.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{agreements.length === 0 && <p className="empty-state">Todavía no hay acuerdos marco.</p>}</div></section>;
+/** Shared Workspace links editor for opportunities, initiatives and framework agreements. */
+function WorkspaceLinksEditor({ links, onChange, disabled }) {
+  const updateLink = (index, field, value) => onChange(links.map((link, position) => (position === index ? { ...link, [field]: value } : link)));
+  const addLink = () => { if (links.length < MAX_WORKSPACE_LINKS) onChange([...links, { title: DEFAULT_WORKSPACE_LINK_TITLE, url: '' }]); };
+  const removeLink = (index) => onChange(links.filter((_, position) => position !== index));
+  return <fieldset className="relation-field">
+    <legend>Enlaces Workspace</legend>
+    <span className="field-hint">Cada enlace necesita título y URL. Hasta {MAX_WORKSPACE_LINKS} enlaces.</span>
+    <div className="link-editor">
+      {links.length === 0 && <span className="field-hint">Todavía no hay enlaces.</span>}
+      {links.map((link, index) => {
+        const href = safeWorkspaceUrl(link.url);
+        return <div className="link-row" key={index}><input aria-label={`Título del enlace ${index + 1}`} value={link.title} onChange={(event) => updateLink(index, 'title', event.target.value)} placeholder={DEFAULT_WORKSPACE_LINK_TITLE} maxLength="120" disabled={disabled} /><input aria-label={`URL del enlace ${index + 1}`} value={link.url} onChange={(event) => updateLink(index, 'url', event.target.value)} placeholder="https://workspaces.example/..." maxLength="500" disabled={disabled} />{href ? <a className="link-open" href={href} target="_blank" rel="noopener noreferrer" aria-label={`Abrir ${link.title || DEFAULT_WORKSPACE_LINK_TITLE} en una pestaña nueva`}>Abrir</a> : <span className="link-open" aria-hidden="true" />}<button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={disabled}><Icon name="close" size={16} /></button></div>;
+      })}
+    </div>
+    <button type="button" className="inline-link" onClick={addLink} disabled={disabled || links.length >= MAX_WORKSPACE_LINKS}>+ Añadir enlace</button>
+  </fieldset>;
+}
+
+/** Read-only link list for tables: only safe URLs become anchors, opened in a new tab. */
+function WorkspaceLinkList({ links }) {
+  const safe = (links || []).map((link) => ({ ...link, href: safeWorkspaceUrl(link.url) })).filter((link) => link.href);
+  if (safe.length === 0) return '—';
+  return <span className="workspace-link-list">{safe.map((link) => <a key={link.id || link.href} href={link.href} target="_blank" rel="noopener noreferrer" title={link.url}>{link.title}</a>)}</span>;
+}
+
+function AgreementPanel({ agreements, query = '', clients, people, onEdit, onDelete }) {
+  const records = filterAgreements(agreements, query, clients, people);
+  const emptyMessage = query.trim() ? 'No hay acuerdos marco que coincidan con la búsqueda.' : 'Todavía no hay acuerdos marco.';
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'ID registro', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Enlaces', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{records.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{item.registryId || '—'}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td><WorkspaceLinkList links={item.links} /></td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>;
 }
 
 function AgreementDialog({ agreement = {}, clients, people, onQuickCreate, onClose, onSave }) {
   const isEditing = Boolean(agreement.id);
-  const [form, setForm] = useState({ title: agreement.title || '', clientId: agreement.clientId || '', ownerId: agreement.ownerId || '', endDate: agreement.endDate || '', notes: agreement.notes || '' });
+  const [form, setForm] = useState({ title: agreement.title || '', registryId: agreement.registryId || '', clientId: agreement.clientId || '', ownerId: agreement.ownerId || '', endDate: agreement.endDate || '', notes: agreement.notes || '', links: toWorkspaceLinkForm(agreement.links) });
   const [amountText, setAmountText] = useState(() => (agreement.amount ? formatAmountInput(String(agreement.amount).replace('.', ',')) : ''));
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
-  const submit = async (event) => { event.preventDefault(); try { await onSave({ ...form, ...(isEditing ? { id: agreement.id } : {}), amount: parseAmount(amountText) }); } catch (err) { setError(err?.message || 'No se pudo guardar el acuerdo.'); } };
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS COMERCIALES</span><h2>{isEditing ? 'Editar acuerdo marco' : 'Nuevo acuerdo marco'}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><label className="form-field wide">Nombre del acuerdo *<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })}><option value="">Sin cliente</option>{clients.filter((x) => x.active || x.id === form.clientId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => setForm((current) => ({ ...current, clientId: id })))}>+ Crear cliente</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => setForm({ ...form, ownerId: event.target.value })}><option value="">Sin responsable</option>{people.filter((x) => x.active || x.id === form.ownerId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => setForm((current) => ({ ...current, ownerId: id })))}>+ Crear responsable</button></label><label className="form-field">Importe<span className="amount-field"><input value={amountText} onChange={(event) => setAmountText(formatAmountInput(event.target.value))} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="0,00" /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span><span className="field-hint">Déjalo vacío o en 0 si no aplica.</span></label><label className="form-field">Fin de vigencia<input type="date" value={form.endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value })} /></label><label className="form-field wide">Notas<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength="2000" /></label></div>{error && <p className="form-error">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary">{isEditing ? 'Guardar cambios' : 'Crear acuerdo'}</button></div></form></dialog>;
+  const submit = async (event) => { event.preventDefault(); try { await onSave({ ...form, ...(isEditing ? { id: agreement.id } : {}), registryId: form.registryId.trim(), links: normalizeWorkspaceLinks(form.links), amount: parseAmount(amountText) }); } catch (err) { setError(err?.message || 'No se pudo guardar el acuerdo.'); } };
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS COMERCIALES</span><h2>{isEditing ? 'Editar acuerdo marco' : 'Nuevo acuerdo marco'}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><label className="form-field wide">Nombre del acuerdo *<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label className="form-field wide">ID registro<input value={form.registryId} onChange={(event) => setForm({ ...form, registryId: event.target.value })} placeholder="Portal del cliente, pliego o ERP" maxLength="120" /><span className="field-hint">Opcional. Referencia externa del registro.</span></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })}><option value="">Sin cliente</option>{clients.filter((x) => x.active || x.id === form.clientId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => setForm((current) => ({ ...current, clientId: id })))}>+ Crear cliente</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => setForm({ ...form, ownerId: event.target.value })}><option value="">Sin responsable</option>{people.filter((x) => x.active || x.id === form.ownerId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => setForm((current) => ({ ...current, ownerId: id })))}>+ Crear responsable</button></label><label className="form-field">Importe<span className="amount-field"><input value={amountText} onChange={(event) => setAmountText(formatAmountInput(event.target.value))} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="0,00" /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span><span className="field-hint">Déjalo vacío o en 0 si no aplica.</span></label><label className="form-field">Fin de vigencia<input type="date" value={form.endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value })} /></label><label className="form-field wide">Notas<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength="2000" /></label></div><WorkspaceLinksEditor links={form.links} onChange={(links) => setForm((current) => ({ ...current, links }))} disabled={false} />{error && <p className="form-error">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary">{isEditing ? 'Guardar cambios' : 'Crear acuerdo'}</button></div></form></dialog>;
 }
 
 function RecordActions({ type, id }) {

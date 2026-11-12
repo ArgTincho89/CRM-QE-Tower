@@ -2,7 +2,7 @@ import { opportunityTypes } from './data.js';
 
 /** Searchable text for the opportunity management table; archived view also searches the archiver. */
 export function matchesOpportunityQuery(item, query, archivedView = false) {
-  const parts = [item.id, item.number, item.title, item.account, item.tower, item.owner, item.bidManager, item.due, item.closureReason];
+  const parts = [item.id, item.number, item.registryId, item.title, item.account, item.tower, item.owner, item.bidManager, item.due, item.closureReason];
   if (archivedView) parts.push(item.archivedByName);
   return parts.join(' ').toLowerCase().includes(String(query || '').trim().toLowerCase());
 }
