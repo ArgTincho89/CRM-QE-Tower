@@ -7,8 +7,9 @@ import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, togg
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, activeBoardInitiatives, addInitiative, buildOpportunityPrefill, completedInitiatives, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
 import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
+import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
 import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
+import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -96,6 +97,10 @@ function App() {
   const [editingInitiative, setEditingInitiative] = useState(null);
   const [editingAgreement, setEditingAgreement] = useState(null);
   const [masterEditing, setMasterEditing] = useState(null);
+  // Fiscal years of the service catalog; `currentYear` comes from the server clock.
+  const [serviceYears, setServiceYears] = useState({ years: [], currentYear: new Date().getFullYear() });
+  const [selectedServiceYear, setSelectedServiceYear] = useState(null);
+  const [creatingServiceYear, setCreatingServiceYear] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [historyRefresh, setHistoryRefresh] = useState(0);
@@ -137,9 +142,10 @@ function App() {
   // Load the shared board whenever the session becomes authenticated.
   useEffect(() => {
     if (session.status !== 'authenticated') return;
-    Promise.all([listClients(), listTowers(), listServices(), listLobs(), listPeople(), listInitiatives(), listAgreements()]).then(([c, t, s, l, p, i, a]) => {
+    Promise.all([listClients(), listTowers(), listServices(), listLobs(), listPeople(), listInitiatives(), listAgreements(), listServiceYears()]).then(([c, t, s, l, p, i, a, y]) => {
       setClients(c.records || []); setTowers(t.records || []); setServices(s.records || []); setLobs(l.records || []); setPeople(p.records || []);
       setInitiatives(i.initiatives || []); setAgreements(a.agreements || []);
+      setServiceYears({ years: y.years || [], currentYear: y.currentYear ?? new Date().getFullYear() });
     }).catch((err) => {
       if (err?.status === 401) setSession({ status: 'anonymous', user: null });
       else showNotice(err?.message || 'No se pudieron cargar los datos maestros.', 'error');
@@ -174,8 +180,9 @@ function App() {
     if (session.status !== 'authenticated') return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
-      Promise.all([listOpportunities(), listInitiatives(), listClients(), listTowers(), listServices(), listLobs(), listPeople(), listAgreements()])
-        .then(([{ opportunities: list }, { initiatives: initiativeList }, clientResult, towerResult, serviceResult, lobResult, peopleResult, agreementResult]) => {
+      Promise.all([listOpportunities(), listInitiatives(), listClients(), listTowers(), listServices(), listLobs(), listPeople(), listAgreements(), listServiceYears()])
+        .then(([{ opportunities: list }, { initiatives: initiativeList }, clientResult, towerResult, serviceResult, lobResult, peopleResult, agreementResult, yearResult]) => {
+          setServiceYears({ years: yearResult.years || [], currentYear: yearResult.currentYear ?? new Date().getFullYear() });
           setOpportunities(Array.isArray(list) ? list : []);
           setInitiatives(Array.isArray(initiativeList) ? initiativeList : []);
           setClients(clientResult.records || []);
@@ -504,6 +511,40 @@ function App() {
     }
   };
 
+  // The selected year falls back to the default when it no longer exists (e.g. just deleted).
+  const activeServiceYear = yearNumbers(serviceYears.years).includes(selectedServiceYear)
+    ? selectedServiceYear
+    : defaultServiceYear(serviceYears.years, serviceYears.currentYear);
+
+  const reloadServiceCatalog = async () => {
+    const [yearResult, serviceResult] = await Promise.all([listServiceYears(), listServices()]);
+    setServiceYears({ years: yearResult.years || [], currentYear: yearResult.currentYear ?? new Date().getFullYear() });
+    setServices(serviceResult.records || []);
+  };
+
+  const saveServiceYear = async ({ year, copyFromYear }) => {
+    const result = await createServiceYear({ year, ...(copyFromYear ? { copyFromYear } : {}) });
+    await reloadServiceCatalog();
+    setSelectedServiceYear(year);
+    setCreatingServiceYear(false);
+    showNotice(copyFromYear
+      ? `Ejercicio ${year} creado con ${result.created} ${result.created === 1 ? 'servicio copiado' : 'servicios copiados'} de ${copyFromYear}.`
+      : `Ejercicio ${year} creado.`);
+  };
+
+  // Only an empty year can be deleted; the server's 409 message explains why otherwise.
+  const removeServiceYear = async (year) => {
+    if (!window.confirm(`¿Eliminar el ejercicio ${year}? Solo es posible si no tiene servicios.`)) return;
+    try {
+      await deleteServiceYear(year);
+      await reloadServiceCatalog();
+      setSelectedServiceYear(null);
+      showNotice(`Ejercicio ${year} eliminado.`);
+    } catch (err) {
+      showNotice(err?.message || 'No se pudo eliminar el ejercicio.', 'error');
+    }
+  };
+
   const removeAgreement = async (record) => {
     if (!window.confirm(`¿Eliminar definitivamente el acuerdo marco «${record.title}»? Esta acción no se puede deshacer.`)) return;
     try {
@@ -529,7 +570,7 @@ function App() {
     const { initiative } = await updateInitiative(record.id, record);
     setInitiatives((current) => current.map((item) => (item.id === initiative.id ? initiative : item)));
     setEditingInitiative(null);
-    setEditing({ ...buildOpportunityPrefill(initiative, clients, services), convertFromInitiativeId: initiative.id });
+    setEditing({ ...buildOpportunityPrefill(initiative, clients, services, serviceYears.currentYear), convertFromInitiativeId: initiative.id });
   };
 
   const saveAgreement = async (record) => {
@@ -609,7 +650,7 @@ function App() {
         <div className="content-wrap">
           <div className="page-heading">
             <div><div className="eyebrow"><span className="eyebrow-dot" /> ESPAÑA <span className="eyebrow-divider">/</span> QUALITY ENGINEERING</div><h1>{title}</h1><p>{subtitle}</p></div>
-            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing({ kind: page })}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
+            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing(page === 'services' ? { kind: page, year: activeServiceYear } : { kind: page })} disabled={page === 'services' && activeServiceYear === null}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
           </div>
 
           {page === 'pipeline' ? <>
@@ -632,7 +673,7 @@ function App() {
                 <div className="view-switch" aria-label="Tipo de vista">{[['kanban', 'grid', 'Kanban'], ['list', 'list', 'Lista'], ['table', 'table', 'Tabla']].map(([id, icon, label]) => <button key={id} title={label} aria-label={`Vista ${label}`} aria-pressed={view === id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon name={icon} size={16} /></button>)}</div>
               </div>
             </div>
-            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} services={services} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
+            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
             <div className="results-line"><span><strong>{page === 'pipeline' ? (view === 'kanban' ? advancedFilteredPipelineCards.length : filteredPipelineOpportunities.length) : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
             {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
@@ -641,13 +682,14 @@ function App() {
             ? <OpportunityManagementPanel opportunities={filterOpportunityRecords(opportunities, archivedOpportunities, query, archivedView)} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} onArchive={archiveRecord} onDelete={deleteRecord} />
             : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
-            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
+            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
-      {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
-      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} services={services} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
+      {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
+      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} services={services} currentServiceYear={serviceYears.currentYear} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
       {editingAgreement !== null && <AgreementDialog agreement={editingAgreement} clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
+      {creatingServiceYear && <ServiceYearDialog years={serviceYears.years} currentYear={serviceYears.currentYear} onClose={() => setCreatingServiceYear(false)} onSave={saveServiceYear} />}
       {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} lobs={lobs} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
       {notice && <div className={`toast${noticeTone === 'error' ? ' toast-error' : ''}`} role="status"><Icon name="check" size={16} />{notice}</div>}
     </div>
@@ -658,7 +700,7 @@ function Kpi({ icon, color, label, value, detail, trend }) {
   return <article className="kpi-card"><div className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></div><div className="kpi-content"><span>{label}</span><div className="kpi-value-row"><strong>{value}</strong>{trend && <span className="trend-badge">↗ 20%</span>}</div><small>{detail}</small></div></article>;
 }
 
-function AdvancedFilters({ filters, people, services = [], lobs = [], towers = [], hidden, onChange }) {
+function AdvancedFilters({ filters, people, services = [], currentServiceYear, lobs = [], towers = [], hidden, onChange }) {
   const field = (name, label, type = 'text', options = null) => (
     <label className="advanced-filter-field" key={name}>
       <span>{label}</span>
@@ -670,7 +712,7 @@ function AdvancedFilters({ filters, people, services = [], lobs = [], towers = [
   return <section className="advanced-filters-panel" id="advanced-filters-panel" aria-label="Filtros avanzados del pipeline" hidden={hidden}>
     {field('account', 'Cliente / cuenta')}
     {field('opportunityType', 'Tipo', 'text', [['all', 'Todos'], ...opportunityTypes.map((item) => [item.id, item.label]), [MISSING_OPPORTUNITY_TYPE_FILTER, 'Sin tipo']])}
-    {field('serviceId', 'Servicio', 'text', [['all', 'Todos'], ...services.map((item) => [item.id, item.active === false ? `${item.name} (inactivo)` : item.name])])}
+    {field('serviceId', 'Servicio', 'text', [['all', 'Todos'], ...services.map((item) => [item.id, `${serviceLabel(item, currentServiceYear)}${item.active === false ? ' (inactivo)' : ''}`])])}
     {field('lobId', 'LoB', 'text', [['all', 'Todas'], ...lobs.map((item) => [item.id, item.name])])}
     {field('towerId', 'Tower', 'text', [['all', 'Todas'], ...towers.map((item) => [item.id, item.name])])}
     {field('bidManagerId', 'Bid Manager', 'text', [['all', 'Todos'], ...people.map((person) => [person.id, person.name])])}
@@ -811,13 +853,13 @@ function OpportunityRows({ opportunities, view, onEdit }) {
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
-function SecondaryPage({ page, opportunities, clients, towers, services, lobs, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
+function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
   const grouped = towers.map((tower) => ({ tower: tower.name, count: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).length, amount: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios autenticados, que tienen los mismos permisos para consultar y modificar sus registros. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
   if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower', 'Responsable', 'LoB']} onEdit={onEditMaster} onDelete={onDeleteMaster} />;
-  if (page === 'services') return <MasterPanel title="Servicios" records={services} kind="services" headers={['Servicio', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
+  if (page === 'services') return <ServicesPanel services={services} serviceYears={serviceYears} activeYear={activeServiceYear} onSelectYear={onSelectServiceYear} onNewYear={onNewServiceYear} onDeleteYear={onDeleteServiceYear} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
@@ -944,7 +986,7 @@ function MultiSelect({ legend, hint, options, selected, onChange, disabled }) {
   </fieldset>;
 }
 
-function OpportunityDialog({ record, clients, towers, services, lobs, people, initiatives, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh }) {
+function OpportunityDialog({ record, clients, towers, services, currentServiceYear, lobs, people, initiatives, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh }) {
   const dialogRef = useRef(null);
   const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
@@ -1087,7 +1129,7 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
       </div>
       <MultiSelect legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
       <MultiSelect legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
-      <MultiSelect legend="Servicios" hint="Los servicios inactivos se muestran pero no pueden asignarse; los vínculos históricos se conservan." options={services} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
+      <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
       <fieldset className="relation-field">
         <legend>Enlaces Workspace</legend>
         <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>
@@ -1122,6 +1164,56 @@ function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDe
   return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr>{headers.map((label) => <th key={label}>{label}</th>)}{hasLifecycle && <th>Estado</th>}<th>Acciones</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>{columns.map((field) => <td key={field}>{record[field] || '—'}</td>)}{hasLifecycle && <td>{record.active ? 'Activo' : 'Inactivo'}</td>}<td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
 }
 
+/** Services of one fiscal year, with year tabs and the year create/delete actions. */
+function ServicesPanel({ services, serviceYears, activeYear, onSelectYear, onNewYear, onDeleteYear, onEdit, onDeactivate, onDelete }) {
+  const years = yearNumbers(serviceYears.years);
+  return <div className="service-years">
+    <div className="service-year-bar">
+      <div className="service-year-tabs" role="tablist" aria-label="Ejercicios">
+        {years.map((year) => <button key={year} type="button" role="tab" aria-selected={year === activeYear} className={`button ${year === activeYear ? 'button-primary' : 'button-secondary'}`} onClick={() => onSelectYear(year)}>{year}{year === serviceYears.currentYear ? ' (actual)' : ''}</button>)}
+        {years.length === 0 && <span className="field-hint">Todavía no hay ejercicios.</span>}
+      </div>
+      <div className="service-year-actions">
+        <button type="button" className="button button-secondary" onClick={onNewYear}><Icon name="plus" size={16} /> Nuevo ejercicio</button>
+        {activeYear !== null && <button type="button" className="button button-secondary button-danger" onClick={() => onDeleteYear(activeYear)}>Eliminar ejercicio</button>}
+      </div>
+    </div>
+    {activeYear !== null && !years.includes(serviceYears.currentYear) && <p className="form-error" role="status">No existe el ejercicio {serviceYears.currentYear}: crea el ejercicio (o cópialo del anterior) para poder asignar servicios a iniciativas y oportunidades.</p>}
+    <MasterPanel title={activeYear === null ? 'Servicios' : `Servicios ${activeYear}`} records={activeYear === null ? [] : servicesOfYear(services, activeYear)} kind="services" headers={['Servicio', 'Descripción']} onEdit={onEdit} onDeactivate={onDeactivate} onDelete={onDelete} />
+  </div>;
+}
+
+/** "Nuevo ejercicio": year input plus the option to copy the active services of the previous year. */
+function ServiceYearDialog({ years, currentYear, onClose, onSave }) {
+  const [year, setYear] = useState(String(suggestNewServiceYear(years, currentYear)));
+  const [copyPrevious, setCopyPrevious] = useState(true);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const dialogRef = useRef(null);
+  useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
+  const parsedYear = Number(year);
+  const previous = Number.isInteger(parsedYear) ? previousServiceYear(years, parsedYear) : null;
+  const submit = async (event) => {
+    event.preventDefault(); setError('');
+    if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > 2100) { setError('El ejercicio debe ser un año entre 2000 y 2100.'); return; }
+    setSaving(true);
+    try { await onSave({ year: parsedYear, copyFromYear: copyPrevious && previous !== null ? previous : null }); }
+    catch (err) { setError(err?.message || 'No se pudo crear el ejercicio.'); }
+    finally { setSaving(false); }
+  };
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}>
+    <div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>Nuevo ejercicio</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div>
+    <div className="form-grid">
+      <label className="form-field wide">Año<input type="number" required min="2000" max="2100" step="1" value={year} onChange={(event) => setYear(event.target.value)} /></label>
+      {previous !== null
+        ? <label className="form-field wide checkbox-field"><span><input type="checkbox" checked={copyPrevious} onChange={(event) => setCopyPrevious(event.target.checked)} /> Copiar servicios del ejercicio anterior ({previous})</span><span className="field-hint">Se copian los servicios activos como registros nuevos del ejercicio.</span></label>
+        : <span className="field-hint wide">No hay un ejercicio anterior del que copiar servicios.</span>}
+    </div>
+    {error && <p className="form-error" role="alert">{error}</p>}
+    <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit" disabled={saving}>Crear ejercicio</button></div>
+  </form></dialog>;
+}
+
 function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) {
   const labels = {
     clients: ['Nuevo cliente', 'Cliente', ['name', 'Nombre', 'sector', 'Sector']],
@@ -1130,7 +1222,7 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
     lobs: ['Nueva LoB', 'LoB', ['name', 'Nombre', 'description', 'Descripción']],
     people: ['Nuevo responsable', 'Responsable', ['name', 'Nombre', 'email', 'Email']],
   }[kind];
-  const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', description: record.description || '', responsibleId: record.responsibleId || '', lobId: record.lobId || '', active: record.active ?? true });
+  const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', description: record.description || '', responsibleId: record.responsibleId || '', lobId: record.lobId || '', active: record.active ?? true, ...(kind === 'services' && record.year ? { year: record.year } : {}) });
   const [error, setError] = useState('');
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
@@ -1141,10 +1233,10 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
   };
   const fields = [];
   for (let index = 0; index < labels[2].length; index += 2) fields.push([labels[2][index], labels[2][index + 1]]);
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <label className="form-field wide" key={field}>{label}<input required={field === 'name'} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</label>)}{kind === 'towers' && <label className="form-field wide">Responsable *<select required value={values.responsibleId} onChange={(event) => setValues((current) => ({ ...current, responsibleId: event.target.value }))}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog"><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <label className="form-field wide" key={field}>{label}<input required={field === 'name'} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</label>)}{kind === 'towers' && <label className="form-field wide">Responsable *<select required value={values.responsibleId} onChange={(event) => setValues((current) => ({ ...current, responsibleId: event.target.value }))}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
 }
 
-function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
+function InitiativeDialog({ record, clients, services, currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
   const dialogRef = useRef(null);
   const [form, setForm] = useState({
     id: record.id || '',
@@ -1210,7 +1302,7 @@ function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, o
         <label className="form-field">Fecha de la próxima acción<input type="date" value={form.nextActionDate} onChange={(event) => update('nextActionDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field wide">Descripción<textarea rows="3" value={form.description} onChange={(event) => update('description', event.target.value)} placeholder="Contexto y objetivo de la iniciativa" maxLength="2000" disabled={saving} /></label>
       </div>
-      <MultiSelect legend="Servicios" hint="Los servicios inactivos se muestran pero no pueden asignarse; los vínculos históricos se conservan." options={services} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
+      <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
       <fieldset className="relation-field">
         <legend>Enlaces Workspace</legend>
         <span className="field-hint">Cada enlace necesita título y URL. Hasta 20 enlaces.</span>

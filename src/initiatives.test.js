@@ -81,11 +81,11 @@ test('cross-selling page scopes initiatives by category', () => {
 test('create-opportunity prefill inherits client and active services, defaults origin, and links the initiative', () => {
   const clients = [{ id: 'c1', name: 'Acme' }];
   const services = [
-    { id: 's1', name: 'Testing', active: true },
-    { id: 's2', name: 'Legacy', active: false },
-    { id: 's3', name: 'Other', active: true },
+    { id: 's1', name: 'Testing', active: true, year: 2026 },
+    { id: 's2', name: 'Legacy', active: false, year: 2026 },
+    { id: 's3', name: 'Other', active: true, year: 2026 },
   ];
-  const prefill = buildOpportunityPrefill({ id: 'IN-0007', clientId: 'c1', serviceIds: ['s1', 's2'] }, clients, services);
+  const prefill = buildOpportunityPrefill({ id: 'IN-0007', clientId: 'c1', serviceIds: ['s1', 's2'] }, clients, services, 2026);
   assert.equal(prefill.clientId, 'c1');
   assert.equal(prefill.account, 'Acme');
   assert.equal(prefill.initiativeId, 'IN-0007');
@@ -97,10 +97,22 @@ test('create-opportunity prefill inherits client and active services, defaults o
 });
 
 test('prefill works without client and falls back to initiative services', () => {
-  const prefill = buildOpportunityPrefill({ id: 'IN-0008', services: [{ id: 's3' }] }, [], [{ id: 's3', active: true }]);
+  const prefill = buildOpportunityPrefill({ id: 'IN-0008', services: [{ id: 's3' }] }, [], [{ id: 's3', active: true, year: 2026 }], 2026);
   assert.equal(prefill.clientId, '');
   assert.equal(prefill.account, '');
   assert.deepEqual(prefill.serviceIds, ['s3']);
+});
+
+test('prefill carries over only active services of the current fiscal year', () => {
+  const services = [
+    { id: 'old', name: 'QA Automation', active: true, year: 2025 },
+    { id: 'now', name: 'QA Automation', active: true, year: 2026 },
+    { id: 'off', name: 'API Testing', active: false, year: 2026 },
+    { id: 'next', name: 'AI Testing', active: true, year: 2027 },
+  ];
+  const prefill = buildOpportunityPrefill({ id: 'IN-0009', serviceIds: ['old', 'now', 'off', 'next'] }, [], services, 2026);
+  assert.deepEqual(prefill.serviceIds, ['now']);
+  assert.deepEqual(buildOpportunityPrefill({ id: 'IN-0009', serviceIds: ['old'] }, [], services, 2026).serviceIds, []);
 });
 
 test('archive and restore move records between lists without duplicating them', () => {

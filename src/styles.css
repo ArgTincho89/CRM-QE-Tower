@@ -473,6 +473,10 @@ h1, h2, h3, h4, p { margin-top: 0; }
 @media (max-width: 720px) { .link-row { grid-template-columns: 1fr; } }
 .master-actions { display: flex; gap: 6px; align-items: center; }
 .master-actions .button { min-height: 30px; padding: 0 9px; }
+.service-years { display: grid; gap: 12px; }
+.service-year-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.service-year-tabs, .service-year-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.checkbox-field span:first-child { display: inline-flex; align-items: center; gap: 8px; }
 .compact-dialog { width: min(calc(100% - 36px), 470px); }
 .record-actions { margin-top: 16px; padding: 12px; border: 1px solid #e8edf2; border-radius: 8px; background: #fbfcfe; }
 .record-actions h3 { margin: 0 0 9px; color: #334157; font-size: 15px; }

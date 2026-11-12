@@ -81,6 +81,11 @@ export const updateService = (id, body) => request(`/services/${encodeURICompone
 // Deactivation keeps the record and its links; DELETE removes it only when nothing references it.
 export const deactivateService = (id) => request(`/services/${encodeURIComponent(id)}`, { method: 'PATCH', body: { active: false } });
 export const deleteService = (id) => request(`/services/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Fiscal years ("ejercicios") group the service catalog; `copyFromYear` copies that year's active services.
+export const listServiceYears = () => request('/service-years');
+export const createServiceYear = (body) => request('/service-years', { method: 'POST', body });
+// Removes the year only while it has no services; otherwise the server answers 409.
+export const deleteServiceYear = (year) => request(`/service-years/${encodeURIComponent(year)}`, { method: 'DELETE' });
 export const listLobs = () => request('/lobs');
 export const createLob = (body) => request('/lobs', { method: 'POST', body });
 export const updateLob = (id, body) => request(`/lobs/${encodeURIComponent(id)}`, { method: 'PATCH', body });

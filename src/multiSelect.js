@@ -9,17 +9,22 @@ export function filterOptions(options, query) {
   return options.filter((option) => normalize(option.name).includes(needle));
 }
 
+/** Inactive options, or options flagged `assignable: false`, cannot be newly assigned. */
+function canAssignNew(option) {
+  return option.active !== false && option.assignable !== false;
+}
+
 /**
- * Inactive options keep existing links but cannot be newly assigned.
- * An option is selectable when it is active or already selected (so it can be removed).
+ * Inactive or non-assignable options keep existing links but cannot be newly assigned.
+ * An option is selectable when it can be assigned or is already selected (so it can be removed).
  */
 export function isAssignable(option, selected) {
-  return option.active !== false || selected.includes(option.id);
+  return canAssignNew(option) || selected.includes(option.id);
 }
 
 export function toggleSelection(selected, option) {
   if (selected.includes(option.id)) return selected.filter((id) => id !== option.id);
-  if (option.active === false) return selected;
+  if (!canAssignNew(option)) return selected;
   return [...selected, option.id];
 }
 

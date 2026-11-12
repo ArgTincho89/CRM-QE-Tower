@@ -245,9 +245,11 @@ function safeParseJson(raw, fallback) {
 }
 
 function loadJoinRows(db, table, valueTable, ownerColumn, valueColumn, ownerId) {
+  // Linked services carry their fiscal year so the UI can label services from other years.
+  const extraColumns = valueTable === 'services' ? ', v.year' : '';
   return db
     .prepare(
-      `SELECT v.id, v.name, v.status FROM ${table} j
+      `SELECT v.id, v.name, v.status${extraColumns} FROM ${table} j
          JOIN ${valueTable} v ON v.id = j.${valueColumn}
         WHERE j.${ownerColumn} = ?
         ORDER BY v.name COLLATE NOCASE`,
@@ -358,6 +360,7 @@ function mapMaster(row, kind) {
     return mapped;
   }
   mapped.active = row.status === 'active';
+  if (kind === 'services') mapped.year = row.year;
   return mapped;
 }
 
@@ -578,10 +581,35 @@ function parseIdList(value, field) {
   return ids;
 }
 
-function assertActiveRecords(db, table, ids, field) {
-  const find = db.prepare(`SELECT id FROM ${table} WHERE id = ? AND status = 'active'`);
+/** Fiscal year ("ejercicio") used for new service assignments, from the injectable clock. */
+function currentServiceYear(ctx) {
+  return ctx.now().getFullYear();
+}
+
+function linkedServiceIds(db, table, ownerColumn, ownerId) {
+  return db.prepare(`SELECT service_id FROM ${table} WHERE ${ownerColumn} = ?`).all(ownerId).map((row) => row.service_id);
+}
+
+/**
+ * Only active services of the current fiscal year can be newly assigned. Services already
+ * linked (from earlier years, or deactivated later) are kept when they are sent again.
+ */
+function assertAssignableServices(ctx, ids, linkedIds = []) {
+  const year = currentServiceYear(ctx);
+  const find = ctx.db.prepare('SELECT id, name, status, year FROM services WHERE id = ?');
   for (const id of ids) {
-    if (!find.get(id)) throw validationError(`El registro seleccionado en "${field}" no existe o está inactivo.`);
+    if (linkedIds.includes(id)) continue;
+    const service = find.get(id);
+    if (!service || service.status !== 'active') {
+      throw validationError('El registro seleccionado en "servicios" no existe o está inactivo.');
+    }
+    if (service.year !== year) {
+      const hasCurrentServices = ctx.db.prepare("SELECT 1 FROM services WHERE year = ? AND status = 'active' LIMIT 1").get(year);
+      const hint = hasCurrentServices ? '' : ` Crea o copia los servicios del ejercicio ${year} en Datos maestros > Servicios.`;
+      throw validationError(
+        `El servicio «${service.name}» pertenece al ejercicio ${service.year}: solo se pueden asignar servicios activos del ejercicio ${year}.${hint}`,
+      );
+    }
   }
 }
 
@@ -1004,7 +1032,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
   const links = parseWorkspaceLinks(body.links);
   assertRecordsExist(ctx.db, 'towers', towerIds, 'towers');
   assertRecordsExist(ctx.db, 'lobs', lobIds, 'LoBs');
-  assertActiveRecords(ctx.db, 'services', serviceIds, 'servicios');
+  assertAssignableServices(ctx, serviceIds);
 
   const values = {
     title: parseTextField(body.title, 'title', FIELD_LIMITS.title),
@@ -1194,7 +1222,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
   const links = hasLinks ? parseWorkspaceLinks(body.links) : null;
   if (towerIds) assertRecordsExist(ctx.db, 'towers', towerIds, 'towers');
   if (lobIds) assertRecordsExist(ctx.db, 'lobs', lobIds, 'LoBs');
-  if (serviceIds) assertActiveRecords(ctx.db, 'services', serviceIds, 'servicios');
+  if (serviceIds) assertAssignableServices(ctx, serviceIds, linkedServiceIds(ctx.db, 'opportunity_services', 'opportunity_id', id));
 
   const relationFields = [
     ...(hasTowerIds ? ['towers'] : []),
@@ -1289,13 +1317,152 @@ const MASTER_CONFIG = {
   lobs: { table: 'lobs', plural: 'lobs', fields: ['name', 'description'] },
 };
 
-function listMaster(ctx, req, res, kind) {
+function listMaster(ctx, req, res, kind, query) {
   requireUser(ctx, req);
   const { table } = MASTER_CONFIG[kind];
-  const rows = kind === 'towers'
-    ? ctx.db.prepare(`SELECT towers.*, people.name AS responsible_name, lobs.name AS lob_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id LEFT JOIN lobs ON lobs.id = towers.lob_id ORDER BY towers.name COLLATE NOCASE`).all()
-    : ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
+  let rows;
+  if (kind === 'towers') {
+    rows = ctx.db.prepare(`SELECT towers.*, people.name AS responsible_name, lobs.name AS lob_name FROM towers LEFT JOIN people ON people.id = towers.responsible_id LEFT JOIN lobs ON lobs.id = towers.lob_id ORDER BY towers.name COLLATE NOCASE`).all();
+  } else if (kind === 'services') {
+    // `?year=` narrows the catalog to one fiscal year; without it every year is listed, newest first.
+    const rawYear = query?.get('year');
+    rows = rawYear
+      ? ctx.db.prepare('SELECT * FROM services WHERE year = ? ORDER BY status ASC, name COLLATE NOCASE').all(parseServiceYear(rawYear))
+      : ctx.db.prepare('SELECT * FROM services ORDER BY year DESC, status ASC, name COLLATE NOCASE').all();
+  } else {
+    rows = ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
+  }
   sendJson(res, 200, { records: rows.map((row) => mapMaster(row, kind)) });
+}
+
+// ---------------------------------------------------------------------------
+// Service fiscal years ("ejercicios")
+// ---------------------------------------------------------------------------
+
+const MIN_SERVICE_YEAR = 2000;
+const MAX_SERVICE_YEAR = 2100;
+
+/** Accepts an integer or a numeric string; years outside 2000–2100 are rejected. */
+function parseServiceYear(value) {
+  const year = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+  if (!Number.isInteger(year) || year < MIN_SERVICE_YEAR || year > MAX_SERVICE_YEAR) {
+    throw validationError(`El ejercicio debe ser un año entre ${MIN_SERVICE_YEAR} y ${MAX_SERVICE_YEAR}.`);
+  }
+  return year;
+}
+
+function serviceYearExists(db, year) {
+  return Boolean(db.prepare('SELECT year FROM service_years WHERE year = ?').get(year));
+}
+
+/** A service always belongs to an existing year; omitted on create, it defaults to the current year. */
+function resolveServiceYear(ctx, value, { required = false } = {}) {
+  const missing = value === undefined || value === null || value === '';
+  if (missing && required) throw validationError('Selecciona el ejercicio del servicio.');
+  const year = missing ? currentServiceYear(ctx) : parseServiceYear(value);
+  if (!serviceYearExists(ctx.db, year)) {
+    throw validationError(`El ejercicio ${year} no existe. Créalo en Datos maestros > Servicios.`);
+  }
+  return year;
+}
+
+const SERVICE_YEAR_SELECT = `SELECT y.year, y.created_at, COUNT(s.id) AS service_count,
+    COALESCE(SUM(CASE WHEN s.status = 'active' THEN 1 ELSE 0 END), 0) AS active_count
+    FROM service_years y LEFT JOIN services s ON s.year = y.year`;
+
+function getServiceYear(db, year) {
+  return db.prepare(`${SERVICE_YEAR_SELECT} WHERE y.year = ? GROUP BY y.year`).get(year);
+}
+
+function mapServiceYear(row) {
+  return {
+    year: row.year,
+    createdAt: row.created_at,
+    serviceCount: Number(row.service_count),
+    activeServiceCount: Number(row.active_count),
+  };
+}
+
+function notFoundServiceYearError(year) {
+  return new HttpError(404, 'not_found', `El ejercicio ${year} no existe.`);
+}
+
+function listServiceYears(ctx, req, res) {
+  requireUser(ctx, req);
+  const rows = ctx.db.prepare(`${SERVICE_YEAR_SELECT} GROUP BY y.year ORDER BY y.year`).all();
+  sendJson(res, 200, { currentYear: currentServiceYear(ctx), years: rows.map(mapServiceYear) });
+}
+
+/**
+ * Copies every ACTIVE service of `sourceYear` into `targetYear` as new records (new ids, same
+ * name and description, active). Names already present in the target year are skipped.
+ */
+function copyServicesBetweenYears(db, { sourceYear, targetYear, user, now }) {
+  if (sourceYear === targetYear) throw validationError('El ejercicio de origen debe ser distinto del de destino.');
+  if (!serviceYearExists(db, sourceYear)) throw notFoundServiceYearError(sourceYear);
+  const sources = db
+    .prepare("SELECT id, name, description FROM services WHERE year = ? AND status = 'active' ORDER BY name COLLATE NOCASE")
+    .all(sourceYear);
+  const taken = db.prepare('SELECT id FROM services WHERE year = ? AND name = ? COLLATE NOCASE');
+  const insert = db.prepare(
+    'INSERT INTO services (id, name, description, status, year, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  let created = 0;
+  for (const source of sources) {
+    if (taken.get(targetYear, source.name)) continue;
+    const id = randomUUID();
+    insert.run(id, source.name, source.description, 'active', targetYear, now, now);
+    appendEntityEvent(db, { type: 'services', id, user, action: 'created', detail: { copiedFrom: source.id, year: sourceYear }, now });
+    created += 1;
+  }
+  return { created, skipped: sources.length - created };
+}
+
+/** Creates a year; with `copyFromYear` it also copies that year's active services atomically. */
+async function createServiceYear(ctx, req, res) {
+  const user = requireUser(ctx, req);
+  const body = await readJson(req);
+  const year = parseServiceYear(body.year);
+  const hasSource = body.copyFromYear !== undefined && body.copyFromYear !== null && body.copyFromYear !== '';
+  const sourceYear = hasSource ? parseServiceYear(body.copyFromYear) : null;
+  const now = ctx.now().toISOString();
+  const copy = withTransaction(ctx.db, () => {
+    if (serviceYearExists(ctx.db, year)) throw new HttpError(409, 'duplicate_record', `El ejercicio ${year} ya existe.`);
+    ctx.db.prepare('INSERT INTO service_years (year, created_at) VALUES (?, ?)').run(year, now);
+    return hasSource ? copyServicesBetweenYears(ctx.db, { sourceYear, targetYear: year, user, now }) : { created: 0, skipped: 0 };
+  });
+  sendJson(res, 201, { year: mapServiceYear(getServiceYear(ctx.db, year)), ...copy });
+}
+
+async function copyServiceYear(ctx, req, res, rawYear, rawSourceYear) {
+  const user = requireUser(ctx, req);
+  const targetYear = parseServiceYear(decodeId(rawYear));
+  const sourceYear = parseServiceYear(decodeId(rawSourceYear));
+  const now = ctx.now().toISOString();
+  const copy = withTransaction(ctx.db, () => {
+    if (!serviceYearExists(ctx.db, targetYear)) throw notFoundServiceYearError(targetYear);
+    return copyServicesBetweenYears(ctx.db, { sourceYear, targetYear, user, now });
+  });
+  sendJson(res, 200, { year: mapServiceYear(getServiceYear(ctx.db, targetYear)), ...copy });
+}
+
+/** A year is physically deleted only while it has no services (active or not). */
+function deleteServiceYear(ctx, req, res, rawYear) {
+  requireUser(ctx, req);
+  const year = parseServiceYear(decodeId(rawYear));
+  withTransaction(ctx.db, () => {
+    if (!serviceYearExists(ctx.db, year)) throw notFoundServiceYearError(year);
+    const count = Number(ctx.db.prepare('SELECT COUNT(*) AS count FROM services WHERE year = ?').get(year).count);
+    if (count > 0) {
+      throw new HttpError(
+        409,
+        'service_year_in_use',
+        `No se puede eliminar el ejercicio ${year}: tiene ${count} ${count === 1 ? 'servicio' : 'servicios'}. Elimínalos antes.`,
+      );
+    }
+    ctx.db.prepare('DELETE FROM service_years WHERE year = ?').run(year);
+  });
+  sendJson(res, 200, { deleted: true });
 }
 
 function getMasterRow(db, kind, id) {
@@ -1320,18 +1487,31 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
   const body = req.method === 'DELETE' ? {} : await readJson(req);
   const now = ctx.now().toISOString();
   let row;
-  const nameTaken = (name, ignoreId = null) => {
-    const found = ctx.db.prepare(`SELECT id FROM ${table} WHERE name = ? COLLATE NOCASE`).get(name);
+  // Service names are unique per fiscal year; every other catalog is unique globally.
+  const nameTaken = (name, ignoreId = null, year = null) => {
+    const found = year === null
+      ? ctx.db.prepare(`SELECT id FROM ${table} WHERE name = ? COLLATE NOCASE`).get(name)
+      : ctx.db.prepare(`SELECT id FROM ${table} WHERE name = ? COLLATE NOCASE AND year = ?`).get(name, year);
     return Boolean(found && found.id !== ignoreId);
   };
+  const duplicateError = (year) => new HttpError(
+    409,
+    'duplicate_record',
+    year === null ? 'Ya existe un registro con ese nombre.' : `Ya existe un servicio con ese nombre en el ejercicio ${year}.`,
+  );
   if (req.method === 'POST') {
     const values = fields.map((field) => {
       if (field === 'name') return parseTextField(body[field], field, 120);
       return typeof body[field] === 'string' ? body[field].trim().slice(0, 240) : '';
     });
-    if (nameTaken(values[0])) throw new HttpError(409, 'duplicate_record', 'Ya existe un registro con ese nombre.');
+    const year = kind === 'services' ? resolveServiceYear(ctx, body.year) : null;
+    if (nameTaken(values[0], null, year)) throw duplicateError(year);
     const extraColumns = [];
     const extraValues = [];
+    if (kind === 'services') {
+      extraColumns.push('year');
+      extraValues.push(year);
+    }
     if (kind === 'towers') {
       const responsibleId = optionalId(ctx.db, 'people', body.responsibleId, 'responsable');
       if (!responsibleId) throw validationError('Selecciona un responsable para la tower.');
@@ -1353,11 +1533,19 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
       return;
     } else {
       const changes = [];
+      const hasYear = kind === 'services' && Object.hasOwn(body, 'year');
+      const year = kind !== 'services' ? null : (hasYear ? resolveServiceYear(ctx, body.year, { required: true }) : current.year);
+      if (hasYear && year !== current.year) {
+        // Moving a service to another year re-checks its (possibly unchanged) name there.
+        const finalName = Object.hasOwn(body, 'name') ? parseTextField(body.name, 'name', 120) : current.name;
+        if (nameTaken(finalName, id, year)) throw duplicateError(year);
+        changes.push(['year', year]);
+      }
       for (const field of fields) {
         if (!Object.hasOwn(body, field)) continue;
         if (field === 'name') {
           const name = parseTextField(body[field], field, 120);
-          if (nameTaken(name, id)) throw new HttpError(409, 'duplicate_record', 'Ya existe un registro con ese nombre.');
+          if (nameTaken(name, id, year)) throw duplicateError(year);
           changes.push([field, name]);
         } else {
           changes.push([field, String(body[field] ?? '').trim().slice(0, 240)]);
@@ -1420,7 +1608,8 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
   const links = parseWorkspaceLinks(body.links);
   const hasServiceIds = Object.hasOwn(body, 'serviceIds') || Object.hasOwn(body, 'service_ids');
   const hasLinks = Object.hasOwn(body, 'links');
-  assertActiveRecords(ctx.db, 'services', serviceIds, 'servicios');
+  const currentServiceIds = rawId === null ? [] : linkedServiceIds(ctx.db, 'initiative_services', 'initiative_id', decodeId(rawId));
+  assertAssignableServices(ctx, serviceIds, currentServiceIds);
   let id;
   if (req.method === 'POST') {
     const fields = {
@@ -1710,7 +1899,9 @@ const OPPORTUNITY_ITEM_PATTERN = /^\/api\/opportunities\/([^/]+)$/;
 const OPPORTUNITY_ARCHIVE_PATTERN = /^\/api\/opportunities\/([^/]+)\/(archive|restore)$/;
 const OPPORTUNITY_EVENTS_PATTERN = /^\/api\/opportunities\/([^/]+)\/events$/;
 const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people|services|lobs)\/([^/]+)$/;
-const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
+const SERVICE_YEAR_ITEM_PATTERN = /^\/api\/service-years\/([^/]+)$/;
+const SERVICE_YEAR_COPY_PATTERN = /^\/api\/service-years\/([^/]+)\/copy-from\/([^/]+)$/;
+const ACTIONS_PATTERN =/^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
 const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
 const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;
 const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
@@ -1753,6 +1944,22 @@ async function handleApi(ctx, req, res, pathname, query) {
     return me(ctx, req, res);
   }
 
+  if (pathname === '/api/service-years') {
+    if (req.method === 'GET') return listServiceYears(ctx, req, res);
+    if (req.method === 'POST') return createServiceYear(ctx, req, res);
+    return rejectMethod(res, 'GET', 'POST');
+  }
+  const serviceYearCopy = SERVICE_YEAR_COPY_PATTERN.exec(pathname);
+  if (serviceYearCopy) {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return copyServiceYear(ctx, req, res, serviceYearCopy[1], serviceYearCopy[2]);
+  }
+  const serviceYearItem = SERVICE_YEAR_ITEM_PATTERN.exec(pathname);
+  if (serviceYearItem) {
+    if (req.method !== 'DELETE') return rejectMethod(res, 'DELETE');
+    return deleteServiceYear(ctx, req, res, serviceYearItem[1]);
+  }
+
   const masterItem = MASTER_ITEM_PATTERN.exec(pathname);
   if (masterItem) {
     if (req.method === 'PATCH') return mutateMaster(ctx, req, res, masterItem[1], masterItem[2]);
@@ -1761,7 +1968,7 @@ async function handleApi(ctx, req, res, pathname, query) {
   }
   if (Object.hasOwn(MASTER_CONFIG, pathname.slice('/api/'.length)) && pathname.split('/').length === 3) {
     const kind = pathname.slice('/api/'.length);
-    if (req.method === 'GET') return listMaster(ctx, req, res, kind);
+    if (req.method === 'GET') return listMaster(ctx, req, res, kind, query);
     if (req.method === 'POST') return mutateMaster(ctx, req, res, kind);
     return rejectMethod(res, 'GET', 'POST');
   }

@@ -35,6 +35,22 @@ function rawGet(port, requestPath) {
   });
 }
 
+/**
+ * Real time with the year pinned, so the "current fiscal year" service rule is deterministic.
+ * Mutate `clock.year` to move the server to another year.
+ */
+function pinnedYearClock(year) {
+  const clock = {
+    year,
+    now() {
+      const date = new Date();
+      date.setFullYear(clock.year);
+      return date;
+    },
+  };
+  return clock;
+}
+
 function statusOf(rawResponse) {
   return Number(rawResponse.split(' ')[1]);
 }
@@ -46,7 +62,8 @@ describe('CRM API', () => {
   let session;
 
   before(async () => {
-    app = await startTestServer();
+    // The seeded service catalog belongs to 2026, the year new assignments must come from.
+    app = await startTestServer({ now: pinnedYearClock(2026).now });
     const first = await app.register({
       email: 'ada@example.com',
       name: 'Ada Lovelace',
@@ -1659,5 +1676,202 @@ describe('registration throttle', () => {
     } finally {
       await app.cleanup();
     }
+  });
+});
+
+describe('service fiscal years', () => {
+  /** @type {Awaited<ReturnType<typeof startTestServer>>} */
+  let app;
+  const clock = pinnedYearClock(2026);
+  let session;
+
+  /** Sessions expire against the server clock, so each move in time logs in again. */
+  async function travelTo(year) {
+    clock.year = year;
+    const login = await app.login({ email: 'years@example.com', password: 'password123' });
+    assert.equal(login.status, 200);
+    session = login.cookie;
+  }
+
+  async function servicesOf(year) {
+    const response = await app.json('GET', `/api/services?year=${year}`, { cookie: session });
+    assert.equal(response.status, 200);
+    return response.body.records;
+  }
+
+  before(async () => {
+    app = await startTestServer({ now: clock.now });
+    const registered = await app.register({ email: 'years@example.com', name: 'Year Keeper' });
+    assert.equal(registered.status, 201);
+    session = registered.cookie;
+  });
+
+  after(async () => {
+    await app.cleanup();
+  });
+
+  test('years are listed, created once, validated, and deleted only while empty', async () => {
+    const listed = await app.json('GET', '/api/service-years', { cookie: session });
+    assert.equal(listed.status, 200);
+    assert.equal(listed.body.currentYear, 2026);
+    assert.deepEqual(listed.body.years.map(({ year, serviceCount, activeServiceCount }) => [year, serviceCount, activeServiceCount]), [[2026, 9, 9]]);
+
+    const created = await app.json('POST', '/api/service-years', { body: { year: 2030 }, cookie: session });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.year.year, 2030);
+    assert.equal(created.body.year.serviceCount, 0);
+    assert.equal(created.body.created, 0);
+
+    const duplicate = await app.json('POST', '/api/service-years', { body: { year: '2030' }, cookie: session });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.error.message, 'El ejercicio 2030 ya existe.');
+    for (const year of [1999, 2101, 2026.5, 'abc', null]) {
+      const invalid = await app.json('POST', '/api/service-years', { body: { year }, cookie: session });
+      assert.equal(invalid.status, 400, `year ${year} should be rejected`);
+    }
+    assert.equal((await app.json('POST', '/api/service-years', { body: { year: 2031 } })).status, 401);
+
+    const blocked = await app.json('DELETE', '/api/service-years/2026', { cookie: session });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.error.code, 'service_year_in_use');
+    assert.equal(blocked.body.error.message, 'No se puede eliminar el ejercicio 2026: tiene 9 servicios. Elimínalos antes.');
+    const service = await app.json('POST', '/api/services', { body: { name: 'Servicio 2030', year: 2030 }, cookie: session });
+    assert.equal(service.status, 201);
+    assert.equal(service.body.record.year, 2030);
+    const blockedOne = await app.json('DELETE', '/api/service-years/2030', { cookie: session });
+    assert.equal(blockedOne.body.error.message, 'No se puede eliminar el ejercicio 2030: tiene 1 servicio. Elimínalos antes.');
+    assert.equal((await app.json('DELETE', `/api/services/${service.body.record.id}`, { cookie: session })).status, 200);
+    const removed = await app.json('DELETE', '/api/service-years/2030', { cookie: session });
+    assert.equal(removed.status, 200);
+    assert.deepEqual(removed.body, { deleted: true });
+    assert.equal((await app.json('DELETE', '/api/service-years/2030', { cookie: session })).status, 404);
+    assert.equal((await app.json('DELETE', '/api/service-years/2026')).status, 401);
+  });
+
+  test('services carry their year, filter by year, and keep names unique per year only', async () => {
+    const all = await app.json('GET', '/api/services', { cookie: session });
+    assert.ok(all.body.records.every((record) => record.year === 2026));
+    assert.equal((await app.json('GET', '/api/services?year=abc', { cookie: session })).status, 400);
+
+    await app.json('POST', '/api/service-years', { body: { year: 2027 }, cookie: session });
+    const sameName = await app.json('POST', '/api/services', { body: { name: 'qa automation', year: 2027 }, cookie: session });
+    assert.equal(sameName.status, 201);
+    const duplicate = await app.json('POST', '/api/services', { body: { name: 'QA AUTOMATION', year: 2027 }, cookie: session });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.error.message, 'Ya existe un servicio con ese nombre en el ejercicio 2027.');
+    // Without a year the service goes to the current one.
+    const defaulted = await app.json('POST', '/api/services', { body: { name: 'Servicio sin año' }, cookie: session });
+    assert.equal(defaulted.body.record.year, 2026);
+    const missingYear = await app.json('POST', '/api/services', { body: { name: 'Servicio futuro', year: 2040 }, cookie: session });
+    assert.equal(missingYear.status, 400);
+    assert.equal(missingYear.body.error.message, 'El ejercicio 2040 no existe. Créalo en Datos maestros > Servicios.');
+
+    // Moving a service to a year that already has its name is rejected.
+    const moveBlocked = await app.json('PATCH', `/api/services/${sameName.body.record.id}`, { body: { year: 2026 }, cookie: session });
+    assert.equal(moveBlocked.status, 409);
+    const moved = await app.json('PATCH', `/api/services/${defaulted.body.record.id}`, { body: { year: 2027 }, cookie: session });
+    assert.equal(moved.status, 200);
+    assert.equal(moved.body.record.year, 2027);
+
+    assert.deepEqual((await servicesOf(2027)).map((record) => record.name).sort(), ['Servicio sin año', 'qa automation']);
+    assert.equal((await servicesOf(2026)).length, 9);
+    for (const id of [sameName.body.record.id, defaulted.body.record.id]) {
+      await app.json('DELETE', `/api/services/${id}`, { cookie: session });
+    }
+  });
+
+  test('copying a year duplicates only active services and skips names already present', async () => {
+    const services2026 = await servicesOf(2026);
+    const otros = services2026.find((record) => record.name === 'Otros');
+    await app.json('PATCH', `/api/services/${otros.id}`, { body: { active: false }, cookie: session });
+    await app.json('POST', '/api/services', { body: { name: 'api testing', description: 'Ya existente', year: 2027 }, cookie: session });
+
+    const copied = await app.json('POST', '/api/service-years/2027/copy-from/2026', { cookie: session });
+    assert.equal(copied.status, 200);
+    assert.equal(copied.body.created, 7);
+    assert.equal(copied.body.skipped, 1);
+    assert.equal(copied.body.year.serviceCount, 8);
+    const services2027 = await servicesOf(2027);
+    assert.ok(services2027.every((record) => record.active && record.year === 2027));
+    assert.ok(!services2027.some((record) => record.name === 'Otros'));
+    assert.equal(services2027.filter((record) => record.name.toLowerCase() === 'api testing').length, 1);
+    const sourceIds = new Set(services2026.map((record) => record.id));
+    assert.ok(services2027.every((record) => !sourceIds.has(record.id)));
+    // The source year is untouched.
+    assert.equal((await servicesOf(2026)).length, 9);
+
+    const again = await app.json('POST', '/api/service-years/2027/copy-from/2026', { cookie: session });
+    assert.equal(again.body.created, 0);
+    assert.equal((await app.json('POST', '/api/service-years/2027/copy-from/2027', { cookie: session })).status, 400);
+    assert.equal((await app.json('POST', '/api/service-years/2027/copy-from/2019', { cookie: session })).status, 404);
+    assert.equal((await app.json('POST', '/api/service-years/2035/copy-from/2026', { cookie: session })).status, 404);
+
+    // Creating a year can copy in the same transaction; a failed copy leaves no year behind.
+    const withCopy = await app.json('POST', '/api/service-years', { body: { year: 2028, copyFromYear: 2026 }, cookie: session });
+    assert.equal(withCopy.status, 201);
+    assert.equal(withCopy.body.created, 8);
+    assert.equal(withCopy.body.year.serviceCount, 8);
+    const failedCopy = await app.json('POST', '/api/service-years', { body: { year: 2029, copyFromYear: 2019 }, cookie: session });
+    assert.equal(failedCopy.status, 404);
+    const years = await app.json('GET', '/api/service-years', { cookie: session });
+    assert.deepEqual(years.body.years.map((item) => item.year), [2026, 2027, 2028]);
+
+    await app.json('PATCH', `/api/services/${otros.id}`, { body: { active: true }, cookie: session });
+  });
+
+  test('only active services of the current year can be newly assigned; existing links are kept', async () => {
+    const byName = (records, name) => records.find((record) => record.name.toLowerCase() === name.toLowerCase());
+    const services2026 = await servicesOf(2026);
+    const services2027 = await servicesOf(2027);
+    const qa2026 = byName(services2026, 'QA Automation');
+    const api2026 = byName(services2026, 'API Testing');
+    const qa2027 = byName(services2027, 'QA Automation');
+
+    const futureService = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [qa2027.id] }, cookie: session });
+    assert.equal(futureService.status, 400);
+    assert.equal(futureService.body.error.message, 'El servicio «QA Automation» pertenece al ejercicio 2027: solo se pueden asignar servicios activos del ejercicio 2026.');
+    const opportunity = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [qa2026.id] }, cookie: session });
+    assert.equal(opportunity.status, 201);
+    assert.deepEqual(opportunity.body.opportunity.services.map((item) => item.year), [2026]);
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa con ejercicio', serviceIds: [qa2026.id] }, cookie: session });
+    assert.equal(initiative.status, 201);
+    const opportunityId = opportunity.body.opportunity.id;
+    const initiativeId = initiative.body.initiative.id;
+
+    await travelTo(2027);
+    const kept = await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { serviceIds: [qa2026.id, qa2027.id] }, cookie: session });
+    assert.equal(kept.status, 200);
+    assert.deepEqual(kept.body.opportunity.services.map((item) => item.year).sort(), [2026, 2027]);
+    const oldYear = await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { serviceIds: [qa2026.id, api2026.id] }, cookie: session });
+    assert.equal(oldYear.status, 400);
+    assert.match(oldYear.body.error.message, /ejercicio 2026: solo se pueden asignar servicios activos del ejercicio 2027\.$/);
+    const initiativeKept = await app.json('PATCH', `/api/initiatives/${initiativeId}`, { body: { serviceIds: [qa2026.id, qa2027.id] }, cookie: session });
+    assert.equal(initiativeKept.status, 200);
+    assert.equal(initiativeKept.body.initiative.services.length, 2);
+    const initiativeOld = await app.json('PATCH', `/api/initiatives/${initiativeId}`, { body: { serviceIds: [api2026.id] }, cookie: session });
+    assert.equal(initiativeOld.status, 400);
+    const newInitiative = await app.json('POST', '/api/initiatives', { body: { title: 'Nueva', serviceIds: [qa2026.id] }, cookie: session });
+    assert.equal(newInitiative.status, 400);
+
+    // Deactivated later, a linked current-year service is still kept but not newly assignable.
+    await app.json('PATCH', `/api/services/${qa2027.id}`, { body: { active: false }, cookie: session });
+    const keptInactive = await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { serviceIds: [qa2026.id, qa2027.id] }, cookie: session });
+    assert.equal(keptInactive.status, 200);
+    const inactive = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [qa2027.id] }, cookie: session });
+    assert.equal(inactive.status, 400);
+    await app.json('PATCH', `/api/services/${qa2027.id}`, { body: { active: true }, cookie: session });
+
+    // A year without services hints where to create or copy them.
+    await travelTo(2029);
+    const noServices = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [qa2027.id] }, cookie: session });
+    assert.equal(noServices.status, 400);
+    assert.equal(
+      noServices.body.error.message,
+      'El servicio «QA Automation» pertenece al ejercicio 2027: solo se pueden asignar servicios activos del ejercicio 2029. Crea o copia los servicios del ejercicio 2029 en Datos maestros > Servicios.',
+    );
+    const unchanged = await app.json('PATCH', `/api/opportunities/${opportunityId}`, { body: { serviceIds: [qa2026.id] }, cookie: session });
+    assert.equal(unchanged.status, 200);
+    assert.deepEqual(unchanged.body.opportunity.services.map((item) => item.id), [qa2026.id]);
+    await travelTo(2026);
   });
 });

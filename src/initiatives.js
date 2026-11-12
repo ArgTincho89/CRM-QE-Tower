@@ -1,4 +1,5 @@
 import { COMPLETED_INITIATIVE_STAGE, initiativeStages, initiativeStatuses } from './data.js';
+import { isAssignableService } from './serviceYears.js';
 
 // Legacy commercial stages mapped to the four permanent initiative columns.
 // Mirrors the server migration: lost becomes Pendiente (with a discarded status).
@@ -53,13 +54,14 @@ export function scopeInitiativesToPage(list, page) {
   return list.filter((item) => item.category === 'Cross-selling' || item.category === 'cross_selling');
 }
 
-// Prefill for "Crear oportunidad": client and active services are inherited but editable,
+// Prefill for "Crear oportunidad": client and the services that are still assignable (active
+// and of the current fiscal year) are inherited but editable,
 // the origin defaults to an internal initiative and the new record links back to it.
-export function buildOpportunityPrefill(initiative, clients = [], services = []) {
+export function buildOpportunityPrefill(initiative, clients = [], services = [], currentYear = new Date().getFullYear()) {
   const serviceIds = (initiative.serviceIds
     || (initiative.services || []).map((item) => item.id)
     || []);
-  const inherited = services.filter((item) => item.active && serviceIds.includes(item.id));
+  const inherited = services.filter((item) => isAssignableService(item, currentYear) && serviceIds.includes(item.id));
   return {
     clientId: initiative.clientId || '',
     account: clients.find((item) => item.id === initiative.clientId)?.name || initiative.clientName || '',

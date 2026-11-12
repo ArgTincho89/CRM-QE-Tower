@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { applySchema, closeDatabase, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
+import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
 import { createTempDatabase } from './testing.js';
 
 function count(db, table) {
@@ -216,6 +216,76 @@ test('framework agreement amount and notes are added idempotently with defaults 
     db.prepare("INSERT INTO framework_agreements (id, title, created_at, updated_at) VALUES ('A-2','Nuevo','2026-01-02','2026-01-02')").run();
     assert.deepEqual({ ...db.prepare("SELECT amount, notes FROM framework_agreements WHERE id = 'A-2'").get() }, { amount: 0, notes: '' });
     closeDatabase(db);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('a fresh database seeds the catalog into the 2026 fiscal year', () => {
+  const temp = createTempDatabase();
+  try {
+    assert.deepEqual(temp.db.prepare('SELECT year FROM service_years').all().map((row) => row.year), [INITIAL_SERVICE_YEAR]);
+    assert.equal(INITIAL_SERVICE_YEAR, 2026);
+    const years = temp.db.prepare('SELECT DISTINCT year FROM services').all().map((row) => row.year);
+    assert.deepEqual(years, [2026]);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('services migrate to the 2026 fiscal year with ids, links and per-year uniqueness intact', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-service-years-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO schema_meta VALUES ('legacy_evolution_v1', '2026-01-01');
+    CREATE TABLE services (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE opportunities (id TEXT PRIMARY KEY, title TEXT NOT NULL, account TEXT NOT NULL, amount TEXT NOT NULL, stage TEXT NOT NULL, tower TEXT NOT NULL, owner TEXT NOT NULL, due TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE initiatives (id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'external', amount TEXT NOT NULL DEFAULT '0', qa_percent REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'open', closure_reason TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE opportunity_services (opportunity_id TEXT NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE, service_id TEXT NOT NULL REFERENCES services(id), PRIMARY KEY(opportunity_id, service_id));
+    CREATE TABLE initiative_services (initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE, service_id TEXT NOT NULL REFERENCES services(id), PRIMARY KEY(initiative_id, service_id));
+    INSERT INTO services VALUES ('SVC-0001','QA Automation','Automatización','active','2025-01-01','2025-02-01');
+    INSERT INTO services VALUES ('svc-custom','Servicio propio','','inactive','2025-03-01','2025-03-02');
+    INSERT INTO opportunities VALUES ('OP-0001','A','','100','prospecting','','','','[]','2026-01-01','2026-01-01');
+    INSERT INTO initiatives (id, title, created_at, updated_at) VALUES ('IN-0001','B','2026-01-01','2026-01-01');
+    INSERT INTO opportunity_services VALUES ('OP-0001','SVC-0001');
+    INSERT INTO opportunity_services VALUES ('OP-0001','svc-custom');
+    INSERT INTO initiative_services VALUES ('IN-0001','svc-custom');
+  `);
+  original.close();
+  try {
+    const db = openDatabase(dbPath);
+    const snapshot = () => db.prepare('SELECT id, name, description, status, year, created_at, updated_at FROM services ORDER BY id').all().map((row) => ({ ...row }));
+    assert.deepEqual(snapshot(), [
+      { id: 'SVC-0001', name: 'QA Automation', description: 'Automatización', status: 'active', year: 2026, created_at: '2025-01-01', updated_at: '2025-02-01' },
+      { id: 'svc-custom', name: 'Servicio propio', description: '', status: 'inactive', year: 2026, created_at: '2025-03-01', updated_at: '2025-03-02' },
+    ]);
+    assert.deepEqual(db.prepare('SELECT year FROM service_years').all().map((row) => row.year), [2026]);
+    assert.equal(count(db, 'opportunity_services'), 2);
+    assert.equal(count(db, 'initiative_services'), 1);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
+    assert.ok(db.prepare('PRAGMA foreign_key_list(services)').all().some((row) => row.from === 'year' && row.table === 'service_years'));
+    // Join rows still resolve to the same services and are still guarded by foreign keys.
+    assert.throws(() => db.prepare("INSERT INTO opportunity_services VALUES ('OP-0001','missing')").run(), /FOREIGN KEY/);
+
+    // Same name in another year is a distinct service; within one year it stays unique.
+    db.prepare("INSERT INTO service_years (year, created_at) VALUES (2027, '2026-12-01')").run();
+    db.prepare("INSERT INTO services (id, name, year, created_at, updated_at) VALUES ('svc-2027','QA Automation',2027,'x','x')").run();
+    assert.throws(() => db.prepare("INSERT INTO services (id, name, year, created_at, updated_at) VALUES ('svc-dup','qa automation',2026,'x','x')").run(), /UNIQUE/);
+    assert.throws(() => db.prepare("INSERT INTO services (id, name, year, created_at, updated_at) VALUES ('svc-orphan','Huérfano',2040,'x','x')").run(), /FOREIGN KEY/);
+
+    // Idempotent: a second boot changes nothing.
+    const before = snapshot();
+    applySchema(db);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    assert.deepEqual(reopened.prepare('SELECT id, name, description, status, year, created_at, updated_at FROM services ORDER BY id').all().map((row) => ({ ...row })), before);
+    assert.deepEqual(reopened.prepare('SELECT year FROM service_years ORDER BY year').all().map((row) => row.year), [2026, 2027]);
+    assert.equal(count(reopened, 'opportunity_services'), 2);
+    assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'service_years_v1'").get().count, 1);
+    closeDatabase(reopened);
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }

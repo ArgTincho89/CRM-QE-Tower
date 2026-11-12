@@ -2,6 +2,11 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+const SERVICES_COLUMNS = `id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
+      description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
+      year INTEGER NOT NULL REFERENCES service_years(year),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL`;
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
      id TEXT PRIMARY KEY,
@@ -84,11 +89,10 @@ const SCHEMA_STATEMENTS = [
       user_name TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
     )`,
   'CREATE INDEX IF NOT EXISTS idx_card_events_card ON card_events(card_id, id)',
-  `CREATE TABLE IF NOT EXISTS services (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    )`,
+  // Fiscal years ("ejercicios") that group the service catalog.
+  'CREATE TABLE IF NOT EXISTS service_years (year INTEGER PRIMARY KEY, created_at TEXT NOT NULL)',
+  // Name uniqueness is per year (idx_services_year_name): the same service may exist in several years.
+  `CREATE TABLE IF NOT EXISTS services (${SERVICES_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS lobs (
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
       description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
@@ -134,6 +138,10 @@ export const SERVICE_CATALOG = [
 ];
 
 const MIGRATION_MARKER = 'legacy_evolution_v1';
+const SERVICE_YEARS_MARKER = 'service_years_v1';
+
+/** Fiscal year that receives the seeded catalog and every service created before years existed. */
+export const INITIAL_SERVICE_YEAR = 2026;
 
 /**
  * Runs `fn` inside an immediate write transaction.
@@ -245,14 +253,18 @@ export function applySchema(db) {
  * Preserves IDs and legacy columns; unknown stage values are left untouched.
  */
 export function runMigrations(db) {
+  // Runs first: the legacy migration below seeds services, which needs the per-year shape.
+  migrateServiceYears(db);
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_year_name ON services(year, name COLLATE NOCASE)');
   if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(MIGRATION_MARKER)) return;
   withTransaction(db, () => {
     const now = new Date().toISOString();
+    db.prepare('INSERT OR IGNORE INTO service_years (year, created_at) VALUES (?, ?)').run(INITIAL_SERVICE_YEAR, now);
     const seedService = db.prepare(
-      'INSERT OR IGNORE INTO services (id, name, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO services (id, name, description, status, year, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
     SERVICE_CATALOG.forEach((name, index) => {
-      seedService.run(`SVC-${String(index + 1).padStart(4, '0')}`, name, '', 'active', now, now);
+      seedService.run(`SVC-${String(index + 1).padStart(4, '0')}`, name, '', 'active', INITIAL_SERVICE_YEAR, now, now);
     });
 
     db.exec(`
@@ -290,6 +302,43 @@ export function runMigrations(db) {
 
     db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(MIGRATION_MARKER, now);
   });
+}
+
+/**
+ * Moves services to fiscal years. Guarded by `schema_meta`, so it runs once per database.
+ * Creates year 2026 and, when `services` still has the pre-year shape (global UNIQUE name, no
+ * `year`), rebuilds the table inside one transaction: same ids and column values, every existing
+ * service assigned to 2026, and name uniqueness moved to the per-year index. Join tables
+ * reference services by id, so their rows stay valid; the foreign key check proves it.
+ */
+export function migrateServiceYears(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(SERVICE_YEARS_MARKER)) return;
+  const hasYear = db.prepare('PRAGMA table_info(services)').all().some((row) => row.name === 'year');
+  // SQLite ignores this pragma inside a transaction, so it is switched around the rebuild.
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  if (!hasYear) db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    withTransaction(db, () => {
+      const now = new Date().toISOString();
+      db.prepare('INSERT OR IGNORE INTO service_years (year, created_at) VALUES (?, ?)').run(INITIAL_SERVICE_YEAR, now);
+      if (!hasYear) {
+        db.exec(`CREATE TABLE services_next (${SERVICES_COLUMNS})`);
+        db.prepare(
+          `INSERT INTO services_next (id, name, description, status, year, created_at, updated_at)
+           SELECT id, name, description, status, ?, created_at, updated_at FROM services`,
+        ).run(INITIAL_SERVICE_YEAR);
+        db.exec('DROP TABLE services');
+        db.exec('ALTER TABLE services_next RENAME TO services');
+        // Only the tables touched by the rebuild: unrelated legacy rows must not block it.
+        const broken = ['services', 'opportunity_services', 'initiative_services']
+          .flatMap((table) => db.prepare(`PRAGMA foreign_key_check(${table})`).all());
+        if (broken.length > 0) throw new Error(`Service year migration left ${broken.length} broken foreign key reference(s).`);
+      }
+      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(SERVICE_YEARS_MARKER, now);
+    });
+  } finally {
+    if (!hasYear && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 /**
