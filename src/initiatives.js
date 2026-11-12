@@ -1,4 +1,4 @@
-import { initiativeStages, initiativeStatuses } from './data.js';
+import { COMPLETED_INITIATIVE_STAGE, initiativeStages, initiativeStatuses } from './data.js';
 
 // Legacy commercial stages mapped to the four permanent initiative columns.
 // Mirrors the server migration: lost becomes Pendiente (with a discarded status).
@@ -21,6 +21,21 @@ export const DEFAULT_INITIATIVE_ORIGIN = 'Iniciativa interna';
 export function mapInitiativeStage(stage) {
   if (initiativeStages.some((item) => item.id === stage)) return stage;
   return LEGACY_INITIATIVE_STAGE_MAP[stage] || 'pending';
+}
+
+/** Legacy stages resolve first, so a legacy `won` initiative also counts as completed. */
+export function isInitiativeCompleted(item) {
+  return mapInitiativeStage(item?.stage) === COMPLETED_INITIATIVE_STAGE;
+}
+
+/** Records shown on the active board: completed initiatives are excluded. */
+export function activeBoardInitiatives(list) {
+  return list.filter((item) => !isInitiativeCompleted(item));
+}
+
+/** Completed, non-archived initiatives for the "Ver completadas" table. */
+export function completedInitiatives(list) {
+  return list.filter((item) => isInitiativeCompleted(item) && !item.archivedAt);
 }
 
 export function initiativeStatusLabel(status) {

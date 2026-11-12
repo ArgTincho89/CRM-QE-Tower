@@ -1,14 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
-import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
+import { initiativeBoardStages, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
 import { applyOriginChange, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 import { NAV_GROUPS } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
-import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
+import { INITIATIVE_STATUS_FILTERS, activeBoardInitiatives, addInitiative, buildOpportunityPrefill, completedInitiatives, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
 import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
 import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
-import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, restoreInitiative, deleteInitiative, listAgreements, createAgreement, updateAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
+import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
 
@@ -108,7 +108,8 @@ function App() {
     setNotice(message);
     setNoticeTone(tone);
     if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
-    noticeTimerRef.current = window.setTimeout(() => setNotice(''), 2600);
+    // Errors (e.g. a blocked delete naming its relations) stay longer so they can be read.
+    noticeTimerRef.current = window.setTimeout(() => setNotice(''), tone === 'error' ? 6000 : 2600);
   };
 
   // Single version source: package.json, served by GET /api/version.
@@ -278,21 +279,47 @@ function App() {
     }
   };
 
-  const deleteBoardCard = async (record) => {
-    const typeLabel = record.entityType === 'initiative' ? 'iniciativa' : 'oportunidad';
+  const archiveRecord = async (record) => {
+    const isInitiative = record.entityType === 'initiative';
+    const typeLabel = isInitiative ? 'iniciativa' : 'oportunidad';
     if (!window.confirm(`¿Archivar la ${typeLabel} «${record.title}»? Se ocultará del tablero activo y podrás restaurarla con todo su historial.`)) return false;
     try {
-      if (record.entityType === 'initiative') {
-        await deleteInitiative(record.id);
+      if (isInitiative) {
+        await archiveInitiative(record.id);
         setInitiatives((current) => removeInitiative(current, record.id));
       } else {
-        await deleteOpportunity(record.id);
+        await archiveOpportunity(record.id);
         setOpportunities((current) => current.filter((item) => item.id !== record.id));
       }
       showNotice(`Se archivó la ${typeLabel} «${record.title}».`);
       return true;
     } catch (err) {
       showNotice(err?.message || `No se pudo archivar la ${typeLabel}.`, 'error');
+      return false;
+    }
+  };
+
+  // Physical delete: the server refuses (409) while other records still reference it.
+  const deleteRecord = async (record) => {
+    const isInitiative = record.entityType === 'initiative';
+    const typeLabel = isInitiative ? 'iniciativa' : 'oportunidad';
+    if (!window.confirm(`¿Eliminar definitivamente la ${typeLabel} «${record.title}»? Se borrarán también su historial, acciones y enlaces. Esta acción no se puede deshacer.`)) return false;
+    try {
+      if (isInitiative) {
+        await deleteInitiative(record.id);
+        setInitiatives((current) => removeInitiative(current, record.id));
+        setArchivedInitiatives((current) => removeInitiative(current, record.id));
+      } else {
+        await deleteOpportunity(record.id);
+        setOpportunities((current) => current.filter((item) => item.id !== record.id));
+        setArchivedOpportunities((current) => current.filter((item) => item.id !== record.id));
+        // Its source initiative lists generated opportunities: refresh it.
+        if (record.initiativeId) listInitiatives().then(({ initiatives: list }) => setInitiatives(Array.isArray(list) ? list : [])).catch(() => {});
+      }
+      showNotice(`Se eliminó la ${typeLabel} «${record.title}».`);
+      return true;
+    } catch (err) {
+      showNotice(err?.message || `No se pudo eliminar la ${typeLabel}.`, 'error');
       return false;
     }
   };
@@ -391,9 +418,15 @@ function App() {
         serviceIds: record.serviceIds || [],
         links: record.links || [],
       };
+      // Only the explicit "Crear oportunidad" flow from an initiative completes it (server-side).
+      const sourceInitiativeId = !isExisting ? editing?.convertFromInitiativeId : '';
       let opportunity;
       if (isExisting && record.id) {
         ({ opportunity } = await updateOpportunity(record.id, payload));
+      } else if (sourceInitiativeId) {
+        const result = await convertInitiative(sourceInitiativeId, payload);
+        opportunity = result.opportunity;
+        setInitiatives((current) => current.map((item) => (item.id === result.initiative.id ? result.initiative : item)));
       } else {
         ({ opportunity } = await createOpportunity(payload));
       }
@@ -409,7 +442,15 @@ function App() {
         listInitiatives().then(({ initiatives: list }) => setInitiatives(Array.isArray(list) ? list : [])).catch(() => {});
       }
       setEditing(null);
-      showNotice('Oportunidad guardada correctamente.');
+      if (sourceInitiativeId) {
+        // Show the new opportunity on the pipeline Kanban, with no filter hiding it.
+        clearFilters();
+        setView('kanban');
+        navigate('pipeline');
+        showNotice(`Oportunidad ${opportunity.id} creada. La iniciativa se ha marcado como completada.`);
+      } else {
+        showNotice('Oportunidad guardada correctamente.');
+      }
     } catch (err) {
       setSaveError(err?.message || 'No se pudo guardar la oportunidad.');
       throw err;
@@ -438,20 +479,39 @@ function App() {
 
   const deactivateMaster = async (kind, record) => {
     const fn = { clients: deactivateClient, services: deactivateService, lobs: deactivateLob, people: deactivatePerson }[kind];
-    const { record: saved } = await fn(record.id);
-    const setter = { clients: setClients, services: setServices, lobs: setLobs, people: setPeople }[kind];
-    setter((current) => current.map((item) => item.id === saved.id ? saved : item));
-    showNotice('Registro desactivado. Sus vínculos se mantienen.');
+    try {
+      const { record: saved } = await fn(record.id);
+      const setter = { clients: setClients, services: setServices, lobs: setLobs, people: setPeople }[kind];
+      setter((current) => current.map((item) => item.id === saved.id ? saved : item));
+      showNotice('Registro desactivado. Sus vínculos se mantienen.');
+    } catch (err) {
+      showNotice(err?.message || 'No se pudo desactivar el registro.', 'error');
+    }
   };
 
-  const removeTower = async (record) => {
-    if (!window.confirm(`¿Eliminar la tower «${record.name}»? Esta acción no se puede deshacer.`)) return;
+  // Physical delete of a master record; the server answers 409 naming what still references it.
+  const deleteMaster = async (kind, record) => {
+    const label = { clients: 'el cliente', towers: 'la tower', services: 'el servicio', lobs: 'la LoB', people: 'el responsable' }[kind];
+    if (!window.confirm(`¿Eliminar definitivamente ${label} «${record.name}»? Esta acción no se puede deshacer.`)) return;
     try {
-      await deleteTower(record.id);
-      setTowers((current) => current.filter((item) => item.id !== record.id));
-      showNotice('Tower eliminada correctamente.');
+      const fn = { clients: deleteClient, towers: deleteTower, services: deleteService, lobs: deleteLob, people: deletePerson }[kind];
+      await fn(record.id);
+      const setter = { clients: setClients, towers: setTowers, services: setServices, lobs: setLobs, people: setPeople }[kind];
+      setter((current) => current.filter((item) => item.id !== record.id));
+      showNotice('Registro eliminado correctamente.');
     } catch (err) {
-      showNotice(err?.message || 'No se pudo eliminar la tower.', 'error');
+      showNotice(err?.message || 'No se pudo eliminar el registro.', 'error');
+    }
+  };
+
+  const removeAgreement = async (record) => {
+    if (!window.confirm(`¿Eliminar definitivamente el acuerdo marco «${record.title}»? Esta acción no se puede deshacer.`)) return;
+    try {
+      await deleteAgreement(record.id);
+      setAgreements((current) => current.filter((item) => item.id !== record.id));
+      showNotice('Acuerdo marco eliminado correctamente.');
+    } catch (err) {
+      showNotice(err?.message || 'No se pudo eliminar el acuerdo marco.', 'error');
     }
   };
 
@@ -460,6 +520,16 @@ function App() {
     setInitiatives((current) => record.id ? current.map((item) => item.id === initiative.id ? initiative : item) : [initiative, ...current]);
     setEditingInitiative(null);
     showNotice('Iniciativa guardada correctamente.');
+  };
+
+  // "Crear oportunidad": persist the pending initiative edits first (a failure aborts and
+  // surfaces in the dialog), then open the prefilled opportunity form in conversion mode.
+  // The initiative is completed only when that opportunity is saved; cancelling leaves it as is.
+  const startOpportunityFromInitiative = async (record) => {
+    const { initiative } = await updateInitiative(record.id, record);
+    setInitiatives((current) => current.map((item) => (item.id === initiative.id ? initiative : item)));
+    setEditingInitiative(null);
+    setEditing({ ...buildOpportunityPrefill(initiative, clients, services), convertFromInitiativeId: initiative.id });
   };
 
   const saveAgreement = async (record) => {
@@ -566,17 +636,17 @@ function App() {
             <div className="results-line"><span><strong>{page === 'pipeline' ? (view === 'kanban' ? advancedFilteredPipelineCards.length : filteredPipelineOpportunities.length) : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
             {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
             {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
-            {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onDelete={deleteBoardCard} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
+            {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
           </> : page === 'opportunities'
-            ? <OpportunityManagementPanel opportunities={filterOpportunityRecords(opportunities, archivedOpportunities, query, archivedView)} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} />
+            ? <OpportunityManagementPanel opportunities={filterOpportunityRecords(opportunities, archivedOpportunities, query, archivedView)} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} onArchive={archiveRecord} onDelete={deleteRecord} />
             : (page === 'initiatives' || page === 'crossSelling')
-              ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onDelete={deleteBoardCard} />
-            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteTower={removeTower} onEditAgreement={setEditingAgreement} />}
+              ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
+            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
       {editing !== null && <OpportunityDialog record={editing} clients={clients} towers={towers} services={services} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
-      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} services={services} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={(prefill) => { setEditingInitiative(null); setEditing(prefill); }} />}
+      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} clients={clients} services={services} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
       {editingAgreement !== null && <AgreementDialog agreement={editingAgreement} clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
       {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} lobs={lobs} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
       {notice && <div className={`toast${noticeTone === 'error' ? ' toast-error' : ''}`} role="status"><Icon name="check" size={16} />{notice}</div>}
@@ -619,7 +689,7 @@ function AdvancedFilters({ filters, people, services = [], lobs = [], towers = [
   </section>;
 }
 
-function Kanban({ cards, allCards, stageList = stages, expandedColumns, onToggleColumn, onEdit, onMove, onDelete }) {
+function Kanban({ cards, allCards, stageList = stages, expandedColumns, onToggleColumn, onEdit, onMove, onArchive, onDelete }) {
   const [draggingId, setDraggingId] = useState(null);
   const [dragOverStage, setDragOverStage] = useState(null);
   const suppressClickRef = useRef(false);
@@ -663,18 +733,18 @@ function Kanban({ cards, allCards, stageList = stages, expandedColumns, onToggle
       const { visibleCards, hiddenCount, canToggle } = getColumnVisibility(stageCards, isExpanded);
       return <section className={`kanban-column ${stage.id}${dragOverStage === stage.id ? ' drag-over' : ''}`} key={stage.id} aria-label={`${stage.label}: ${totalCount} registros totales`} onDragEnter={(event) => handleDragOver(event, stage.id)} onDragOver={(event) => handleDragOver(event, stage.id)} onDragLeave={(event) => handleDragLeave(event, stage.id)} onDrop={(event) => handleDrop(event, stage.id)}>
         <div className={`column-heading ${stage.tone}`}><span className="stage-indicator" /><h3>{stage.label}</h3><span className="column-count">{totalCount}</span><button className="column-menu" aria-label={`Opciones de ${stage.label}`}><Icon name="dots" size={17} /></button></div>
-        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.cardKey || record.id} record={record} stageList={stageList} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDelete={onDelete} isDragging={draggingId === (record.cardKey || record.id)} />)}{stageCards.length === 0 && <div className="empty-column">No hay registros para estos filtros.</div>}</div>
+        <div className="column-cards">{visibleCards.map((record) => <OpportunityCard key={record.cardKey || record.id} record={record} stageList={stageList} onCardClick={handleCardClick} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onArchive={onArchive} onDelete={onDelete} isDragging={draggingId === (record.cardKey || record.id)} />)}{stageCards.length === 0 && <div className="empty-column">No hay registros para estos filtros.</div>}</div>
         {(canToggle || (isExpanded && totalCount > COLLAPSED_CARD_LIMIT)) && <button className="show-more" aria-expanded={isExpanded} onClick={() => onToggleColumn(stage.id)}>{isExpanded ? '− Ver menos' : `+ Ver más (${hiddenCount})`}</button>}
       </section>;
     })}
   </div>;
 }
 
-function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete, isDragging }) {
+function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onArchive, onDelete, isDragging }) {
   const stage = stages.find((item) => item.id === record.stage);
   const isInitiative = record.entityType === 'initiative';
   const [menuOpen, setMenuOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [busy, setBusy] = useState(false);
   const menuRef = useRef(null);
   const triggerRef = useRef(null);
   const actionRef = useRef(null);
@@ -702,11 +772,11 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [menuOpen]);
-  const handleDelete = async () => {
-    setDeleting(true);
-    const deleted = await onDelete(record);
-    setDeleting(false);
-    if (deleted) setMenuOpen(false);
+  const runMenuAction = async (action) => {
+    setBusy(true);
+    const done = await action(record);
+    setBusy(false);
+    if (done) setMenuOpen(false);
   };
   const handleDragStart = (event) => {
     if (event.target.closest?.('[data-card-menu]')) {
@@ -726,7 +796,7 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete
     </button>
     <div className="card-menu-container" ref={menuRef} data-card-menu>
       <button type="button" className="card-menu-button" ref={triggerRef} draggable={false} aria-label={`Opciones de ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}><Icon name="dots" size={16} /></button>
-      {menuOpen && <div className="card-menu-popup" role="menu"><button type="button" role="menuitem" ref={actionRef} disabled={deleting} onClick={handleDelete}>Eliminar</button></div>}
+      {menuOpen && <div className="card-menu-popup" role="menu"><button type="button" role="menuitem" ref={actionRef} disabled={busy} onClick={() => runMenuAction(onArchive)}>Archivar</button><button type="button" role="menuitem" className="danger" disabled={busy} onClick={() => runMenuAction(onDelete)}>Eliminar</button></div>}
     </div>
   </article>;
 }
@@ -741,17 +811,17 @@ function OpportunityRows({ opportunities, view, onEdit }) {
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
-function SecondaryPage({ page, opportunities, clients, towers, services, lobs, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteTower, onEditAgreement }) {
+function SecondaryPage({ page, opportunities, clients, towers, services, lobs, people, initiatives, agreements, onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
   const grouped = towers.map((tower) => ({ tower: tower.name, count: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).length, amount: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios autenticados, que tienen los mismos permisos para consultar y modificar sus registros. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
-  if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
-  if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower', 'Responsable', 'LoB']} onEdit={onEditMaster} onDelete={onDeleteTower} />;
-  if (page === 'services') return <MasterPanel title="Servicios" records={services} kind="services" headers={['Servicio', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
-  if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
-  if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} />;
+  if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
+  if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower', 'Responsable', 'LoB']} onEdit={onEditMaster} onDelete={onDeleteMaster} />;
+  if (page === 'services') return <MasterPanel title="Servicios" records={services} kind="services" headers={['Servicio', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
+  if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
+  if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
-  if (page === 'agreements') return <AgreementPanel agreements={agreements} clients={clients} people={people} onEdit={onEditAgreement} />;
+  if (page === 'agreements') return <AgreementPanel agreements={agreements} clients={clients} people={people} onEdit={onEditAgreement} onDelete={onDeleteAgreement} />;
   return <Analytics opportunities={opportunities} grouped={grouped} />;
 }
 
@@ -763,7 +833,7 @@ function DataPanel({ title, description, headers, rows }) {
   return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{rows.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{headers.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={`${row[0]}-${index}`}>{row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cellIndex === row.length - 1 ? <span className={`status-pill ${String(cell).toLowerCase().includes('vigente') || cell === 'Activo' || cell === 'Ganada' ? 'green' : 'violet'}`}>{cell}</span> : cell}</td>)}</tr>)}</tbody></table></div><div className="panel-footnote"><span className="info-mark">i</span> Los datos de propuestas y estimaciones se conservan como referencia mientras se define su gestión persistente.</div></section>;
 }
 
-function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, searchQuery, onClearSearch, archivedView, onToggleArchived, onRestore }) {
+function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, searchQuery, onClearSearch, archivedView, onToggleArchived, onRestore, onArchive, onDelete }) {
   return <section className="secondary-panel opportunity-management-panel">
     <div className="secondary-panel-heading">
       <div><h2>{archivedView ? 'Oportunidades archivadas' : 'Oportunidades'}</h2><p>{archivedView ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.' : 'Registros comerciales independientes de las iniciativas.'}</p></div>
@@ -780,7 +850,7 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
         <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
         <td>{item.owner || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
         <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
-        <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button>}</td>
+        <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td>
       </tr>;
     })}</tbody></table>
     {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{searchQuery ? `No hay oportunidades archivadas que coincidan con la búsqueda.` : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{searchQuery && <button className="button button-secondary" onClick={onClearSearch}>Limpiar búsqueda</button>}</div>}
@@ -788,9 +858,12 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
   </section>;
 }
 
-function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView, archivedLoading, onToggleArchived, onRestore, query, expandedColumns, onToggleColumn, onEdit, onMove, onDelete }) {
-  const records = archivedView ? archivedInitiatives : initiatives;
+function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView, archivedLoading, onToggleArchived, onRestore, query, expandedColumns, onToggleColumn, onEdit, onMove, onArchive, onDelete }) {
   const [statusFilter, setStatusFilter] = useState('all');
+  const [completedToggle, setCompletedToggle] = useState(false);
+  // Archived and completed are mutually exclusive views; the board shows neither.
+  const completedView = completedToggle && !archivedView;
+  const records = archivedView ? archivedInitiatives : completedView ? completedInitiatives(initiatives) : activeBoardInitiatives(initiatives);
   const scoped = filterInitiativesByStatus(scopeInitiativesToPage(records, page), statusFilter);
   const normalizedQuery = query.trim().toLowerCase();
   const matched = normalizedQuery
@@ -807,16 +880,33 @@ function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView,
     cardKey: `initiative:${item.id}`,
     sourceRecord: item,
   }));
+  const toggleCompleted = () => {
+    if (archivedView) onToggleArchived();
+    setCompletedToggle(!completedView);
+  };
+  const toggleArchived = () => {
+    setCompletedToggle(false);
+    onToggleArchived();
+  };
   const heading = page === 'crossSelling' ? 'Iniciativas de Cross-Selling' : 'Iniciativas de desarrollo';
+  const title = archivedView ? `${heading} · archivadas` : completedView ? `${heading} · completadas` : heading;
+  const description = archivedView
+    ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.'
+    : completedView
+      ? 'Iniciativas completadas: salen del tablero, pero no están archivadas ni eliminadas.'
+      : 'Registro independiente de las oportunidades, con su propio ciclo de vida.';
+  const emptyMessage = (label) => (normalizedQuery ? `No hay iniciativas ${label} que coincidan con la búsqueda.` : `Todavía no hay iniciativas ${label}.`);
   return <section className="secondary-panel initiative-board-panel">
     <div className="secondary-panel-heading">
-      <div><h2>{archivedView ? `${heading} · archivadas` : heading}</h2><p>{archivedView ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.' : 'Registro independiente de las oportunidades, con su propio ciclo de vida.'}</p></div>
-      <div className="heading-actions"><span className="record-count">{cards.length} registros</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por estado operativo">{INITIATIVE_STATUS_FILTERS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button button-secondary" onClick={onToggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver activas' : 'Ver archivadas'}</button></div>
+      <div><h2>{title}</h2><p>{description}</p></div>
+      <div className="heading-actions"><span className="record-count">{cards.length} registros</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por estado operativo">{INITIATIVE_STATUS_FILTERS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button button-secondary" onClick={toggleCompleted} aria-pressed={completedView}>{completedView ? 'Ver activas' : 'Ver completadas'}</button><button className="button button-secondary" onClick={toggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver activas' : 'Ver archivadas'}</button></div>
     </div>
     {archivedLoading && <div className="board-state"><p>Cargando iniciativas archivadas…</p></div>}
     {archivedView
-      ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Categoría</th><th>Cliente</th><th>Prioridad</th><th>Estado</th><th>Archivada por</th><th>Acciones</th></tr></thead><tbody>{cards.map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.categoryLabel}</td><td>{item.account}</td><td>{item.priority || 'Media'}</td><td>{item.statusLabel}</td><td>{item.archivedByName || '—'}</td><td><button className="button button-secondary" onClick={() => onRestore(item.sourceRecord)}>Restaurar</button></td></tr>)}</tbody></table>{cards.length === 0 && <p className="empty-state">{normalizedQuery ? 'No hay iniciativas archivadas que coincidan con la búsqueda.' : 'Todavía no hay iniciativas archivadas.'}</p>}</div>
-      : <Kanban cards={cards} allCards={cards} stageList={initiativeStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={(record) => onEdit(record.sourceRecord)} onMove={onMove} onDelete={onDelete} />}
+      ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Categoría</th><th>Cliente</th><th>Prioridad</th><th>Estado</th><th>Archivada por</th><th>Acciones</th></tr></thead><tbody>{cards.map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.categoryLabel}</td><td>{item.account}</td><td>{item.priority || 'Media'}</td><td>{item.statusLabel}</td><td>{item.archivedByName || '—'}</td><td className="master-actions"><button className="button button-secondary" onClick={() => onRestore(item.sourceRecord)}>Restaurar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{cards.length === 0 && <p className="empty-state">{emptyMessage('archivadas')}</p>}</div>
+      : completedView
+        ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Categoría</th><th>Cliente</th><th>Prioridad</th><th>Estado</th><th>Oportunidades generadas</th><th>Acciones</th></tr></thead><tbody>{cards.map((item) => <tr key={item.id}><td><button className="table-title" onClick={() => onEdit(item.sourceRecord)}>{item.title}</button></td><td>{item.categoryLabel}</td><td>{item.account}</td><td>{item.priority || 'Media'}</td><td>{item.statusLabel}</td><td>{item.linkedOpportunityCount ?? 0}</td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item.sourceRecord)}>Abrir</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{cards.length === 0 && <p className="empty-state">{emptyMessage('completadas')}</p>}</div>
+        : <Kanban cards={cards} allCards={cards} stageList={initiativeBoardStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={(record) => onEdit(record.sourceRecord)} onMove={onMove} onArchive={onArchive} onDelete={onDelete} />}
   </section>;
 }
 
@@ -858,6 +948,8 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
   const dialogRef = useRef(null);
   const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
+  // Opened from an initiative's "Crear oportunidad": origin and source are fixed by the flow.
+  const isConversion = !isEditing && Boolean(record.convertFromInitiativeId);
   const [form, setForm] = useState({
     id: record.id || '',
     title: record.title || '', account: record.account || '',
@@ -979,8 +1071,8 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
         <label className="form-field">Cliente / cuenta<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></label>
         <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
-        <label className="form-field">Origen<select value={form.origin} onChange={(event) => setForm((current) => applyOriginChange(current, event.target.value))} disabled={saving}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
-        {requiresOriginInitiative(form.origin) && <label className="form-field">Iniciativa de origen *<select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} aria-required="true" disabled={saving}><option value="">Selecciona una iniciativa</option>{initiativeChoices.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.title}{item.archivedAt ? ' (archivada)' : ''}</option>)}</select><span className="field-hint">{linkedInitiative ? `Vinculada a ${linkedInitiative.id} · ${linkedInitiative.title}. ` : ''}Los ciclos de vida de la iniciativa y la oportunidad son independientes.</span></label>}
+        <label className="form-field">Origen<select value={form.origin} onChange={(event) => setForm((current) => applyOriginChange(current, event.target.value))} disabled={saving || isConversion}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
+        {requiresOriginInitiative(form.origin) && <label className="form-field">Iniciativa de origen *<select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} aria-required="true" disabled={saving || isConversion}><option value="">Selecciona una iniciativa</option>{initiativeChoices.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.title}{item.archivedAt ? ' (archivada)' : ''}</option>)}</select><span className="field-hint">{linkedInitiative ? `Vinculada a ${linkedInitiative.id} · ${linkedInitiative.title}. ` : ''}{isConversion ? 'Al guardar esta oportunidad, la iniciativa se marcará como Completada.' : 'Los ciclos de vida de la iniciativa y la oportunidad son independientes.'}</span></label>}
         <label className="form-field">Probabilidad (%)<input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado: ${formatCurrency(weightedPreview)}.`}</span></label>
         <label className="form-field">Fecha estimada de cierre<input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
@@ -1023,11 +1115,11 @@ function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDe
   const columns = { clients: ['name', 'sector'], people: ['name', 'email'], towers: ['name', 'responsibleName', 'lobName'], services: ['name', 'description'], lobs: ['name', 'description'] }[kind];
   const hasLifecycle = kind !== 'towers';
   const description = kind === 'services'
-    ? 'Los servicios inactivos no se pueden asignar a nuevos registros, pero siguen visibles en los vínculos existentes.'
+    ? 'Los servicios inactivos no se pueden asignar a nuevos registros, pero siguen visibles en los vínculos existentes. Solo se pueden eliminar los servicios sin vínculos.'
     : kind === 'lobs'
-      ? 'Una LoB no se puede desactivar mientras alguna tower u oportunidad la referencie.'
-      : hasLifecycle ? 'Los registros vinculados se desactivan en lugar de eliminarse.' : 'Cada tower tiene un responsable asignado. Las towers vinculadas no se pueden eliminar.';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr>{headers.map((label) => <th key={label}>{label}</th>)}{hasLifecycle && <th>Estado</th>}<th>Acciones</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>{columns.map((field) => <td key={field}>{record[field] || '—'}</td>)}{hasLifecycle && <td>{record.active ? 'Activo' : 'Inactivo'}</td>}<td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{kind === 'towers' ? <button className="button button-secondary" onClick={() => onDelete(record)}>Eliminar</button> : record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}</td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
+      ? 'Una LoB no se puede desactivar ni eliminar mientras alguna tower u oportunidad la referencie.'
+      : hasLifecycle ? 'Desactivar conserva el registro y sus vínculos. Eliminar solo es posible si no tiene vínculos.' : 'Cada tower tiene un responsable asignado. Las towers vinculadas no se pueden eliminar.';
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr>{headers.map((label) => <th key={label}>{label}</th>)}{hasLifecycle && <th>Estado</th>}<th>Acciones</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>{columns.map((field) => <td key={field}>{record[field] || '—'}</td>)}{hasLifecycle && <td>{record.active ? 'Activo' : 'Inactivo'}</td>}<td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
 }
 
 function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) {
@@ -1076,14 +1168,14 @@ function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, o
   const addLink = () => setForm((current) => (current.links.length >= 20 ? current : { ...current, links: [...current.links, { title: 'Enlace Workspace', url: '' }] }));
   const removeLink = (index) => setForm((current) => ({ ...current, links: current.links.filter((_, position) => position !== index) }));
   const generatedOpportunities = record.opportunities || [];
-  const save = async (event) => {
-    event.preventDefault();
+  // Same validation and payload for "Guardar" and for "Crear oportunidad" (which saves first).
+  const persist = async (handler, fallbackMessage) => {
     if (saving) return;
     if (!form.title.trim()) { setError('Indica el nombre de la iniciativa.'); return; }
     setError('');
     setSaving(true);
     try {
-      await onSave({
+      await handler({
         ...form,
         id: record.id || '',
         title: form.title.trim(),
@@ -1091,14 +1183,18 @@ function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, o
         links: form.links.map((link) => ({ title: link.title.trim(), url: link.url.trim() })).filter((link) => link.title && link.url),
       });
     } catch (err) {
-      setError(err?.message || 'No se pudo guardar la iniciativa.');
+      setError(err?.message || fallbackMessage);
     } finally {
       setSaving(false);
     }
   };
+  const save = (event) => {
+    event.preventDefault();
+    return persist(onSave, 'No se pudo guardar la iniciativa.');
+  };
   const createOpportunity = () => {
-    if (!onCreateOpportunity) return;
-    onCreateOpportunity(buildOpportunityPrefill({ ...form, services: record.services }, clients, services));
+    if (!onCreateOpportunity) return undefined;
+    return persist(onCreateOpportunity, 'No se pudo guardar la iniciativa antes de crear la oportunidad.');
   };
   return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="initiative-dialog-title" onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }} onClick={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
     <form onSubmit={save}>
@@ -1126,6 +1222,7 @@ function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, o
       </fieldset>
       {record.id && <section className="generated-opportunities">
         <div className="generated-opportunities-heading"><h3>Oportunidades generadas ({generatedOpportunities.length})</h3>{onCreateOpportunity && <button type="button" className="button button-secondary" onClick={createOpportunity} disabled={saving}>Crear oportunidad</button>}</div>
+        {onCreateOpportunity && <p className="field-hint">«Crear oportunidad» guarda antes los cambios de la iniciativa. La iniciativa pasará a Completada cuando se guarde la oportunidad; si cancelas, seguirá en su etapa actual.</p>}
         {generatedOpportunities.length === 0
           ? <p className="field-hint">Todavía no hay oportunidades vinculadas a esta iniciativa.</p>
           : <ul className="generated-opportunity-list">{generatedOpportunities.map((item) => <li key={item.id} className={item.archived ? 'archived' : undefined}><span><strong>{item.id} · {item.title}</strong><small>{[stages.find((stage) => stage.id === item.stage)?.label || item.stage, item.owner || 'Sin responsable', item.expectedCloseDate ? `Cierre ${item.expectedCloseDate}` : 'Sin fecha de cierre', item.outcome, item.archived ? 'Archivada' : ''].filter(Boolean).join(' · ')}</small></span><b>{item.amount}</b></li>)}</ul>}
@@ -1137,8 +1234,8 @@ function InitiativeDialog({ record, clients, services, onQuickCreate, onClose, o
   </dialog>;
 }
 
-function AgreementPanel({ agreements, clients, people, onEdit }) {
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{agreements.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{agreements.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button></td></tr>)}</tbody></table>{agreements.length === 0 && <p className="empty-state">Todavía no hay acuerdos marco.</p>}</div></section>;
+function AgreementPanel({ agreements, clients, people, onEdit, onDelete }) {
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{agreements.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{agreements.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{agreements.length === 0 && <p className="empty-state">Todavía no hay acuerdos marco.</p>}</div></section>;
 }
 
 function AgreementDialog({ agreement = {}, clients, people, onQuickCreate, onClose, onSave }) {
@@ -1174,7 +1271,7 @@ function RecordActions({ type, id }) {
 function InitiativeHistory({ id }) {
   const [events, setEvents] = useState([]);
   useEffect(() => { listInitiativeEvents(id).then(({ events: rows }) => setEvents(rows || [])).catch(() => setEvents([])); }, [id]);
-  const labels = { created: 'Creó la iniciativa', updated: 'Actualizó la iniciativa', action_added: 'Añadió una acción o nota', action_completed: 'Completó una acción', action_reopened: 'Reabrió una acción' };
+  const labels = { created: 'Creó la iniciativa', updated: 'Actualizó la iniciativa', action_added: 'Añadió una acción o nota', action_completed: 'Completó una acción', action_reopened: 'Reabrió una acción', converted: 'Creó una oportunidad y completó la iniciativa' };
   return <section className="record-actions"><h3>Historial</h3>{events.length === 0 ? <p className="empty-actions">Todavía no hay cambios registrados.</p> : <ul className="action-list">{events.map((event) => <li key={event.id}><span><strong>{labels[event.action] || event.action}</strong><small>{event.userName} · {new Date(event.createdAt).toLocaleString('es-ES')}</small></span></li>)}</ul>}</section>;
 }
 

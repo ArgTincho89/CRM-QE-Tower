@@ -39,6 +39,12 @@ export const initiativeStages = [
   { id: 'completed', label: 'Completada', tone: 'green' },
 ];
 
+export const COMPLETED_INITIATIVE_STAGE = 'completed';
+
+// Completed initiatives leave the board: it only shows the three working columns.
+// `completed` stays a valid stage (dialog select, API, history).
+export const initiativeBoardStages = initiativeStages.filter(({ id }) => id !== COMPLETED_INITIATIVE_STAGE);
+
 export const initiativeCategories = [
   'Prospección externa',
   'Desarrollo de negocio en cliente existente',

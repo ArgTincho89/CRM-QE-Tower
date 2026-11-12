@@ -156,8 +156,12 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .card-menu-button { width: 23px; height: 23px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a6afbc; cursor: pointer; }
 .card-menu-button:hover, .card-menu-button[aria-expanded='true'] { background: #f1f5fa; color: #51637c; }
 .card-menu-popup { position: absolute; top: calc(100% + 2px); right: 0; min-width: 112px; padding: 4px; border: 1px solid #e3e9f1; border-radius: 6px; background: #fff; box-shadow: 0 5px 16px #24344c24; }
-.card-menu-popup button { width: 100%; display: block; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: #a33b3b; font-size: 13px; text-align: left; cursor: pointer; }
-.card-menu-popup button:hover { background: #fff1f1; }
+.card-menu-popup button { width: 100%; display: block; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: #2d3a4f; font-size: 13px; text-align: left; cursor: pointer; }
+.card-menu-popup button:hover { background: #f2f5f9; }
+.card-menu-popup button.danger { color: #a33b3b; }
+.card-menu-popup button.danger:hover { background: #fff1f1; }
+.button.button-danger { color: #a33b3b; }
+.button.button-danger:hover { background: #fff1f1; }
 .card-menu-popup button:disabled { opacity: .6; cursor: default; }
 .opportunity-card h4 { min-height: 0; margin: 3px 0 4px; color: #293a53; font-size: 13px; font-weight: 700; line-height: 1.3; }
 .card-client { display: flex; align-items: center; gap: 6px; overflow: hidden; color: #768398; font-size: 13px; white-space: nowrap; }

@@ -1,21 +1,42 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { initiativeStages } from './data.js';
+import { COMPLETED_INITIATIVE_STAGE, initiativeBoardStages, initiativeStages } from './data.js';
 import { moveOpportunityToStage } from './kanban.js';
 import {
   INITIATIVE_STATUS_FILTERS,
+  activeBoardInitiatives,
   addInitiative,
   buildOpportunityPrefill,
+  completedInitiatives,
   filterInitiativesByStatus,
+  isInitiativeCompleted,
   initiativeStatusLabel,
   mapInitiativeStage,
   removeInitiative,
   scopeInitiativesToPage,
 } from './initiatives.js';
 
-test('initiative board has exactly four permanent columns and no paused/discarded column', () => {
+test('initiative stages keep Completada while the board shows only three working columns', () => {
   assert.deepEqual(initiativeStages.map(({ label }) => label), ['Pendiente', 'En curso', 'En seguimiento', 'Completada']);
+  assert.deepEqual(initiativeBoardStages.map(({ label }) => label), ['Pendiente', 'En curso', 'En seguimiento']);
+  assert.equal(initiativeBoardStages.some(({ id }) => id === COMPLETED_INITIATIVE_STAGE), false);
   assert.deepEqual(INITIATIVE_STATUS_FILTERS.map(({ id }) => id), ['all', 'active', 'paused', 'discarded']);
+});
+
+test('completed initiatives leave the active board and appear only in the completed list', () => {
+  const list = [
+    { id: 'IN-0001', stage: 'pending' },
+    { id: 'IN-0002', stage: 'completed' },
+    { id: 'IN-0003', stage: 'won' },
+    { id: 'IN-0004', stage: 'following' },
+    { id: 'IN-0005', stage: 'completed', archivedAt: '2026-01-01T00:00:00.000Z' },
+  ];
+  assert.equal(isInitiativeCompleted(list[1]), true);
+  assert.equal(isInitiativeCompleted(list[2]), true, 'legacy won maps to completed');
+  assert.equal(isInitiativeCompleted(list[0]), false);
+  assert.equal(isInitiativeCompleted(undefined), false);
+  assert.deepEqual(activeBoardInitiatives(list).map((item) => item.id), ['IN-0001', 'IN-0004']);
+  assert.deepEqual(completedInitiatives(list).map((item) => item.id), ['IN-0002', 'IN-0003']);
 });
 
 test('legacy commercial stages map onto the four initiative stages', () => {

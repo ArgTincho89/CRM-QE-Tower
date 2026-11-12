@@ -68,7 +68,9 @@ export const listInitiativeEvents = (id) => request(`/initiatives/${encodeURICom
 export const listClients = () => request('/clients');
 export const createClient = (body) => request('/clients', { method: 'POST', body });
 export const updateClient = (id, body) => request(`/clients/${encodeURIComponent(id)}`, { method: 'PATCH', body });
-export const deactivateClient = (id) => request(`/clients/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Deactivation keeps the record and its links; DELETE removes it only when nothing references it.
+export const deactivateClient = (id) => request(`/clients/${encodeURIComponent(id)}`, { method: 'PATCH', body: { active: false } });
+export const deleteClient = (id) => request(`/clients/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listTowers = () => request('/towers');
 export const createTower = (body) => request('/towers', { method: 'POST', body });
 export const updateTower = (id, body) => request(`/towers/${encodeURIComponent(id)}`, { method: 'PATCH', body });
@@ -76,15 +78,21 @@ export const deleteTower = (id) => request(`/towers/${encodeURIComponent(id)}`, 
 export const listServices = () => request('/services');
 export const createService = (body) => request('/services', { method: 'POST', body });
 export const updateService = (id, body) => request(`/services/${encodeURIComponent(id)}`, { method: 'PATCH', body });
-export const deactivateService = (id) => request(`/services/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Deactivation keeps the record and its links; DELETE removes it only when nothing references it.
+export const deactivateService = (id) => request(`/services/${encodeURIComponent(id)}`, { method: 'PATCH', body: { active: false } });
+export const deleteService = (id) => request(`/services/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listLobs = () => request('/lobs');
 export const createLob = (body) => request('/lobs', { method: 'POST', body });
 export const updateLob = (id, body) => request(`/lobs/${encodeURIComponent(id)}`, { method: 'PATCH', body });
-export const deactivateLob = (id) => request(`/lobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Deactivation keeps the record and its links; DELETE removes it only when nothing references it.
+export const deactivateLob = (id) => request(`/lobs/${encodeURIComponent(id)}`, { method: 'PATCH', body: { active: false } });
+export const deleteLob = (id) => request(`/lobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listPeople = () => request('/people');
 export const createPerson = (body) => request('/people', { method: 'POST', body });
 export const updatePerson = (id, body) => request(`/people/${encodeURIComponent(id)}`, { method: 'PATCH', body });
-export const deactivatePerson = (id) => request(`/people/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Deactivation keeps the record and its links; DELETE removes it only when nothing references it.
+export const deactivatePerson = (id) => request(`/people/${encodeURIComponent(id)}`, { method: 'PATCH', body: { active: false } });
+export const deletePerson = (id) => request(`/people/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listInitiatives = () => request('/initiatives');
 export const listArchivedInitiatives = () => request('/initiatives?archived=1');
 export const createInitiative = (body) => request('/initiatives', { method: 'POST', body });
@@ -92,9 +100,12 @@ export const updateInitiative = (id, body) => request(`/initiatives/${encodeURIC
 export const archiveInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}/archive`, { method: 'POST' });
 export const restoreInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}/restore`, { method: 'POST' });
 export const deleteInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}`, { method: 'DELETE' });
+// Creates the opportunity and marks the initiative completed in one server transaction.
+export const convertInitiative = (id, body) => request(`/initiatives/${encodeURIComponent(id)}/convert`, { method: 'POST', body });
 export const listAgreements = () => request('/agreements');
 export const createAgreement = (body) => request('/agreements', { method: 'POST', body });
 export const updateAgreement = (id, body) => request(`/agreements/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+export const deleteAgreement = (id) => request(`/agreements/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listActions = (type, id) => request(`/${type}/${encodeURIComponent(id)}/actions`);
 export const createAction = (type, id, body) => request(`/${type}/${encodeURIComponent(id)}/actions`, { method: 'POST', body });
 export const updateAction = (id, body) => request(`/actions/${encodeURIComponent(id)}`, { method: 'PATCH', body });

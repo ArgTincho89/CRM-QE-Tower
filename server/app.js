@@ -17,7 +17,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
-import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
+import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
 import {
   HttpError,
@@ -71,27 +71,156 @@ function notFoundError() {
   return new HttpError(404, 'not_found', 'La oportunidad no existe.');
 }
 
+// ---------------------------------------------------------------------------
+// Physical deletion guarded by relations
+// ---------------------------------------------------------------------------
+
+/** Joins Spanish list items: "a", "a y b", "a, b y c". */
+function joinSpanish(parts) {
+  if (parts.length <= 1) return parts.join('');
+  return `${parts.slice(0, -1).join(', ')} y ${parts[parts.length - 1]}`;
+}
+
 /**
- * `DELETE` is a logical archive from now on: records keep their identifiers, history,
- * relations, and comments, and can be restored. Nothing is physically deleted.
+ * Each check is [SQL returning `count` for the `$id` parameter, singular noun, plural noun].
+ * Archived records are counted on purpose: they still reference the record.
+ * Throws a 409 that names every blocking relation.
+ */
+function assertNoReferences(db, id, { code, subject, checks }) {
+  const parts = [];
+  for (const [sql, singular, plural] of checks) {
+    const count = Number(db.prepare(sql).get({ id })?.count ?? 0);
+    if (count > 0) parts.push(`${count} ${count === 1 ? singular : plural}`);
+  }
+  if (parts.length > 0) {
+    throw new HttpError(409, code, `No se puede eliminar ${subject}: tiene vínculos con ${joinSpanish(parts)}.`);
+  }
+}
+
+/** Actions, their comments, workspace links and entity events belong only to their record. */
+function deleteOwnedRecordRows(db, type, id) {
+  db.prepare(
+    'DELETE FROM record_action_comments WHERE action_id IN (SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?)',
+  ).run(type, id);
+  db.prepare('DELETE FROM record_actions WHERE entity_type = ? AND entity_id = ?').run(type, id);
+  db.prepare('DELETE FROM workspace_links WHERE entity_type = ? AND entity_id = ?').run(type, id);
+  db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(type, id);
+}
+
+/**
+ * `DELETE` physically removes an opportunity or initiative with everything that belongs only
+ * to it. Archiving is a separate action (`POST /:id/archive`). An initiative that already
+ * generated opportunities (archived ones included) cannot be deleted.
  */
 function deleteRecord(ctx, req, res, type, rawId) {
-  const user = requireUser(ctx, req);
+  requireUser(ctx, req);
   const id = decodeId(rawId);
-  const table = type === 'initiative' ? 'initiatives' : 'opportunities';
-  const nowIso = ctx.now().toISOString();
   withTransaction(ctx.db, () => {
-    const existing = ctx.db.prepare(`SELECT id, archived_at FROM ${table} WHERE id = ?`).get(id);
-    if (!existing) {
-      throw new HttpError(404, 'not_found', type === 'initiative' ? 'La iniciativa no existe.' : 'La oportunidad no existe.');
+    if (type === 'initiative') {
+      const existing = ctx.db.prepare('SELECT id, title FROM initiatives WHERE id = ?').get(id);
+      if (!existing) throw new HttpError(404, 'not_found', 'La iniciativa no existe.');
+      const generated = Number(ctx.db.prepare('SELECT COUNT(*) AS count FROM opportunities WHERE initiative_id = ?').get(id).count);
+      if (generated > 0) {
+        throw new HttpError(
+          409,
+          'initiative_in_use',
+          `No se puede eliminar la iniciativa «${existing.title}»: ya generó ${generated} ${generated === 1 ? 'oportunidad' : 'oportunidades'}.`,
+        );
+      }
+      deleteOwnedRecordRows(ctx.db, 'initiative', id);
+      ctx.db.prepare('DELETE FROM initiative_services WHERE initiative_id = ?').run(id);
+      ctx.db.prepare('DELETE FROM initiatives WHERE id = ?').run(id);
+      return;
     }
-    if (existing.archived_at) throw new HttpError(409, 'record_archived', 'El registro ya está archivado.');
-    ctx.db
-      .prepare(`UPDATE ${table} SET archived_at = ?, archived_by_id = ?, archived_by_name = ?, updated_at = ? WHERE id = ?`)
-      .run(nowIso, user.id, user.name, nowIso, id);
-    appendEntityEvent(ctx.db, { type, id, user, action: 'archived', now: nowIso });
+    if (!ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id)) throw notFoundError();
+    deleteOwnedRecordRows(ctx.db, 'opportunity', id);
+    ctx.db.prepare('DELETE FROM card_events WHERE card_id = ?').run(id);
+    ctx.db.prepare('DELETE FROM opportunity_towers WHERE opportunity_id = ?').run(id);
+    ctx.db.prepare('DELETE FROM opportunity_lobs WHERE opportunity_id = ?').run(id);
+    ctx.db.prepare('DELETE FROM opportunity_services WHERE opportunity_id = ?').run(id);
+    ctx.db.prepare('DELETE FROM opportunities WHERE id = ?').run(id);
   });
-  sendJson(res, 200, { deleted: true, archived: true });
+  sendJson(res, 200, { deleted: true });
+}
+
+/** Relations that block deleting a master record. */
+const MASTER_DELETE_RULES = {
+  clients: {
+    code: 'client_in_use',
+    subject: 'el cliente',
+    checks: [
+      ['SELECT COUNT(*) AS count FROM opportunities WHERE client_id = $id', 'oportunidad', 'oportunidades'],
+      ['SELECT COUNT(*) AS count FROM initiatives WHERE client_id = $id', 'iniciativa', 'iniciativas'],
+      ['SELECT COUNT(*) AS count FROM framework_agreements WHERE client_id = $id', 'acuerdo marco', 'acuerdos marco'],
+    ],
+  },
+  towers: {
+    code: 'tower_in_use',
+    subject: 'la tower',
+    checks: [
+      [
+        `SELECT COUNT(*) AS count FROM opportunities
+          WHERE tower_id = $id OR id IN (SELECT opportunity_id FROM opportunity_towers WHERE tower_id = $id)`,
+        'oportunidad',
+        'oportunidades',
+      ],
+      ['SELECT COUNT(*) AS count FROM initiatives WHERE tower_id = $id', 'iniciativa', 'iniciativas'],
+    ],
+  },
+  lobs: {
+    code: 'lob_in_use',
+    subject: 'la LoB',
+    checks: [
+      ['SELECT COUNT(*) AS count FROM towers WHERE lob_id = $id', 'tower', 'towers'],
+      ['SELECT COUNT(*) AS count FROM opportunity_lobs WHERE lob_id = $id', 'oportunidad', 'oportunidades'],
+    ],
+  },
+  services: {
+    code: 'service_in_use',
+    subject: 'el servicio',
+    checks: [
+      ['SELECT COUNT(*) AS count FROM opportunity_services WHERE service_id = $id', 'oportunidad', 'oportunidades'],
+      ['SELECT COUNT(*) AS count FROM initiative_services WHERE service_id = $id', 'iniciativa', 'iniciativas'],
+    ],
+  },
+  people: {
+    code: 'person_in_use',
+    subject: 'el responsable',
+    checks: [
+      ['SELECT COUNT(*) AS count FROM towers WHERE responsible_id = $id', 'tower', 'towers'],
+      ['SELECT COUNT(*) AS count FROM opportunities WHERE owner_id = $id OR bid_manager_id = $id', 'oportunidad', 'oportunidades'],
+      ['SELECT COUNT(*) AS count FROM initiatives WHERE owner_id = $id OR bid_manager_id = $id', 'iniciativa', 'iniciativas'],
+      ['SELECT COUNT(*) AS count FROM framework_agreements WHERE owner_id = $id', 'acuerdo marco', 'acuerdos marco'],
+    ],
+  },
+};
+
+/** Physically deletes a master record and its own history, unless something references it. */
+function deleteMaster(ctx, res, kind, id) {
+  const { table } = MASTER_CONFIG[kind];
+  withTransaction(ctx.db, () => {
+    const current = ctx.db.prepare(`SELECT id, name FROM ${table} WHERE id = ?`).get(id);
+    if (!current) throw new HttpError(404, 'not_found', 'El registro no existe.');
+    const rule = MASTER_DELETE_RULES[kind];
+    assertNoReferences(ctx.db, id, { ...rule, subject: `${rule.subject} «${current.name}»` });
+    ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(kind, id);
+    ctx.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+  });
+  sendJson(res, 200, { deleted: true });
+}
+
+/** Nothing references framework agreements, so they are always deletable with their history. */
+function deleteAgreement(ctx, req, res, rawId) {
+  requireUser(ctx, req);
+  const id = decodeId(rawId);
+  withTransaction(ctx.db, () => {
+    if (!ctx.db.prepare('SELECT id FROM framework_agreements WHERE id = ?').get(id)) {
+      throw new HttpError(404, 'not_found', 'El acuerdo marco no existe.');
+    }
+    ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run('agreement', id);
+    ctx.db.prepare('DELETE FROM framework_agreements WHERE id = ?').run(id);
+  });
+  sendJson(res, 200, { deleted: true });
 }
 
 function unauthorizedError() {
@@ -829,9 +958,33 @@ function readRelationIds(body, camelKey, snakeKey, field) {
   return parseIdList(Object.hasOwn(body, camelKey) ? body[camelKey] : body[snakeKey], field);
 }
 
-async function createOpportunity(ctx, req, res) {
+/**
+ * The source of a "Crear oportunidad" conversion must exist and be active; it is
+ * read again inside the create transaction before being completed.
+ */
+function loadConvertibleInitiative(db, id) {
+  const initiative = db.prepare('SELECT id, stage, archived_at FROM initiatives WHERE id = ?').get(id);
+  if (!initiative) throw notFoundInitiativeError();
+  if (initiative.archived_at) {
+    throw new HttpError(409, 'record_archived', 'Restaura la iniciativa antes de crear una oportunidad desde ella.');
+  }
+  return initiative;
+}
+
+/**
+ * Creates an opportunity. With `sourceInitiativeId` (POST /api/initiatives/:id/convert) the
+ * opportunity is forced to link that initiative with the internal-initiative origin, and the
+ * initiative is marked `completed` in the same transaction, so both happen or neither does.
+ */
+async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
   const user = requireUser(ctx, req);
+  const sourceInitiativeId = rawSourceInitiativeId === null ? null : decodeId(rawSourceInitiativeId);
+  if (sourceInitiativeId !== null) loadConvertibleInitiative(ctx.db, sourceInitiativeId);
   const body = await readJson(req);
+  if (sourceInitiativeId !== null) {
+    body.initiativeId = sourceInitiativeId;
+    body.origin = INTERNAL_INITIATIVE_ORIGIN;
+  }
 
   const stage = parseStage(body.stage ?? 'prospecting');
   const opportunityType = parseOpportunityType(body.opportunityType);
@@ -937,7 +1090,15 @@ async function createOpportunity(ctx, req, res) {
           detail: {},
           createdAt: nowIso,
         });
-        appendEntityEvent(ctx.db, { type: 'opportunity', id, user, action: 'created', now: nowIso });
+        appendEntityEvent(ctx.db, {
+          type: 'opportunity',
+          id,
+          user,
+          action: 'created',
+          detail: sourceInitiativeId === null ? {} : { fromInitiativeId: sourceInitiativeId },
+          now: nowIso,
+        });
+        if (sourceInitiativeId !== null) completeConvertedInitiative(ctx.db, sourceInitiativeId, id, user, nowIso);
         return id;
       });
       break;
@@ -947,7 +1108,27 @@ async function createOpportunity(ctx, req, res) {
   }
 
   const row = getOpportunityForDisplay(ctx.db, createdId);
-  sendJson(res, 201, { opportunity: mapOpportunity(row, ctx.db) });
+  const payload = { opportunity: mapOpportunity(row, ctx.db) };
+  if (sourceInitiativeId !== null) {
+    payload.initiative = mapInitiative(getInitiativeForDisplay(ctx.db, sourceInitiativeId), ctx.db);
+  }
+  sendJson(res, 201, payload);
+}
+
+/** Marks the source initiative completed and records the conversion in its history. */
+function completeConvertedInitiative(db, initiativeId, opportunityId, user, nowIso) {
+  const initiative = loadConvertibleInitiative(db, initiativeId);
+  if (initiative.stage !== COMPLETED_INITIATIVE_STAGE) {
+    db.prepare('UPDATE initiatives SET stage = ?, updated_at = ? WHERE id = ?').run(COMPLETED_INITIATIVE_STAGE, nowIso, initiativeId);
+  }
+  appendEntityEvent(db, {
+    type: 'initiative',
+    id: initiativeId,
+    user,
+    action: 'converted',
+    detail: { opportunityId, fields: ['stage'], from: initiative.stage, to: COMPLETED_INITIATIVE_STAGE },
+    now: nowIso,
+  });
 }
 
 async function patchOpportunity(ctx, req, res, rawId) {
@@ -1166,24 +1347,10 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
     const id = decodeId(rawId);
     const current = ctx.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id);
     if (!current) throw new HttpError(404, 'not_found', 'El registro no existe.');
+    // DELETE is a real, relation-guarded delete. Deactivation stays a PATCH with `active: false`.
     if (req.method === 'DELETE') {
-      if (kind === 'towers') {
-        withTransaction(ctx.db, () => {
-          const opportunity = ctx.db.prepare('SELECT id FROM opportunities WHERE tower_id = ? LIMIT 1').get(id);
-          const initiative = ctx.db.prepare('SELECT id FROM initiatives WHERE tower_id = ? LIMIT 1').get(id);
-          const relation = ctx.db.prepare('SELECT opportunity_id FROM opportunity_towers WHERE tower_id = ? LIMIT 1').get(id);
-          if (opportunity || initiative || relation) {
-            throw new HttpError(409, 'tower_in_use', 'No se puede eliminar esta tower porque está vinculada a oportunidades o iniciativas.');
-          }
-          appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deleted', now });
-          ctx.db.prepare('DELETE FROM towers WHERE id = ?').run(id);
-        });
-        sendJson(res, 200, { deleted: true });
-        return;
-      }
-      if (kind === 'lobs') assertLobUnreferenced(ctx.db, id);
-      ctx.db.prepare(`UPDATE ${table} SET status = 'inactive', updated_at = ? WHERE id = ?`).run(now, id);
-      appendEntityEvent(ctx.db, { type: kind, id, user, action: 'deactivated', now });
+      deleteMaster(ctx, res, kind, id);
+      return;
     } else {
       const changes = [];
       for (const field of fields) {
@@ -1548,6 +1715,7 @@ const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
 const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;
 const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
 const INITIATIVE_ARCHIVE_PATTERN = /^\/api\/initiatives\/([^/]+)\/(archive|restore)$/;
+const INITIATIVE_CONVERT_PATTERN = /^\/api\/initiatives\/([^/]+)\/convert$/;
 const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
 const AGREEMENT_ITEM_PATTERN = /^\/api\/agreements\/([^/]+)$/;
 
@@ -1607,6 +1775,11 @@ async function handleApi(ctx, req, res, pathname, query) {
     if (req.method !== 'POST') return rejectMethod(res, 'POST');
     return setInitiativeArchive(ctx, req, res, initiativeArchiveMatch[1], initiativeArchiveMatch[2] === 'archive');
   }
+  const initiativeConvertMatch = INITIATIVE_CONVERT_PATTERN.exec(pathname);
+  if (initiativeConvertMatch) {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return createOpportunity(ctx, req, res, initiativeConvertMatch[1]);
+  }
   if (pathname === '/api/agreements') {
     if (req.method === 'GET') return listAgreements(ctx, req, res);
     if (req.method === 'POST') return createAgreement(ctx, req, res);
@@ -1614,7 +1787,8 @@ async function handleApi(ctx, req, res, pathname, query) {
   }
   const agreementItem = AGREEMENT_ITEM_PATTERN.exec(pathname);
   if (agreementItem) {
-    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
+    if (req.method === 'DELETE') return deleteAgreement(ctx, req, res, agreementItem[1]);
+    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH', 'DELETE');
     return updateAgreement(ctx, req, res, agreementItem[1]);
   }
   const initiativeItem = INITIATIVE_ITEM_PATTERN.exec(pathname);

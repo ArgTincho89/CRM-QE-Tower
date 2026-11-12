@@ -433,10 +433,10 @@ describe('CRM API', () => {
     const blockedTowerDelete = await app.json('DELETE', `/api/towers/${tower.body.record.id}`, { cookie: session });
     assert.equal(blockedTowerDelete.status, 409);
     assert.equal(blockedTowerDelete.body.error.code, 'tower_in_use');
-    assert.match(blockedTowerDelete.body.error.message, /oportunidades o iniciativas/i);
+    assert.match(blockedTowerDelete.body.error.message, /No se puede eliminar la tower «QE Platform»: tiene vínculos con 1 oportunidad./);
     assert.ok(app.db.prepare('SELECT id FROM towers WHERE id = ?').get(tower.body.record.id));
 
-    const deactivate = await app.json('DELETE', `/api/clients/${client.body.record.id}`, { cookie: session });
+    const deactivate = await app.json('PATCH', `/api/clients/${client.body.record.id}`, { body: { active: false }, cookie: session });
     assert.equal(deactivate.status, 200);
     assert.equal(deactivate.body.record.active, false);
     const stillLinked = await app.json('GET', '/api/opportunities', { cookie: session });
@@ -504,7 +504,7 @@ describe('CRM API', () => {
     const duplicateService = await app.json('POST', '/api/services', { body: { name: 'service discovery' }, cookie: session });
     assert.equal(duplicateService.status, 409);
     assert.equal(duplicateService.body.error.code, 'duplicate_record');
-    const deactivatedService = await app.json('DELETE', `/api/services/${createdService.body.record.id}`, { cookie: session });
+    const deactivatedService = await app.json('PATCH', `/api/services/${createdService.body.record.id}`, { body: { active: false }, cookie: session });
     assert.equal(deactivatedService.status, 200);
     assert.equal(deactivatedService.body.record.active, false);
     const reactivatedService = await app.json('PATCH', `/api/services/${createdService.body.record.id}`, { body: { active: true }, cookie: session });
@@ -531,11 +531,15 @@ describe('CRM API', () => {
     const clearedTower = await app.json('PATCH', `/api/towers/${tower.body.record.id}`, { body: { lobId: '' }, cookie: session });
     assert.equal(clearedTower.status, 200);
     assert.equal(clearedTower.body.record.lobId, '');
-    const deactivatedLob = await app.json('DELETE', `/api/lobs/${lob.body.record.id}`, { cookie: session });
+    const deactivatedLob = await app.json('PATCH', `/api/lobs/${lob.body.record.id}`, { body: { active: false }, cookie: session });
     assert.equal(deactivatedLob.status, 200);
     assert.equal(deactivatedLob.body.record.active, false);
     const listedLobs = await app.json('GET', '/api/lobs', { cookie: session });
     assert.equal(listedLobs.body.records.find((item) => item.id === lob.body.record.id).active, false);
+    const deletedLob = await app.json('DELETE', `/api/lobs/${lob.body.record.id}`, { cookie: session });
+    assert.equal(deletedLob.status, 200);
+    assert.equal(deletedLob.body.deleted, true);
+    assert.equal(app.db.prepare('SELECT id FROM lobs WHERE id = ?').get(lob.body.record.id), undefined);
   });
 
   test('opportunity display fields use linked master names and retain legacy fallbacks', async () => {
@@ -855,7 +859,7 @@ describe('CRM API', () => {
     const service = services.body.records.find((item) => item.name === 'Accessibility Testing');
     const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [service.id] }, cookie: session });
     assert.equal(created.status, 201);
-    await app.json('DELETE', `/api/services/${service.id}`, { cookie: session });
+    await app.json('PATCH', `/api/services/${service.id}`, { body: { active: false }, cookie: session });
     const blocked = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, serviceIds: [service.id] }, cookie: session });
     assert.equal(blocked.status, 400);
     const listed = await app.json('GET', '/api/opportunities', { cookie: session });
@@ -1076,54 +1080,223 @@ describe('CRM API', () => {
     assert.equal(updated.body.initiative.towerId, tower.body.record.id);
   });
 
-  test('DELETE opportunity archives the record instead of destroying its history', async () => {
-    const created = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+  test('DELETE opportunity physically removes it with its own rows; archive stays a separate action', async () => {
+    const created = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, links: [{ title: 'Carpeta', url: 'https://example.com/a' }] }, cookie: session,
+    });
     const id = created.body.opportunity.id;
+    const lob = await app.json('POST', '/api/lobs', { body: { name: 'LoB borrado oportunidad' }, cookie: session });
+    const services = await app.json('GET', '/api/services', { cookie: session });
+    const serviceId = services.body.records.find((item) => item.name === 'API Testing').id;
+    await app.json('PATCH', `/api/opportunities/${id}`, { body: { lobIds: [lob.body.record.id], serviceIds: [serviceId] }, cookie: session });
     const action = await app.json('POST', `/api/opportunities/${id}/actions`, { body: { text: 'Preparar propuesta' }, cookie: session });
-    assert.equal(action.status, 201);
     const comment = await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text: 'Revisar versión final' }, cookie: session });
     assert.equal(comment.status, 201);
-    assert.ok(app.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get(id));
-    assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id));
+
+    const archived = await app.json('POST', `/api/opportunities/${id}/archive`, { cookie: session });
+    assert.equal(archived.status, 200);
+    assert.ok(archived.body.opportunity.archivedAt);
+    assert.equal((await app.json('POST', `/api/opportunities/${id}/restore`, { cookie: session })).status, 200);
 
     const deleted = await app.json('DELETE', `/api/opportunities/${id}`, { cookie: session });
     assert.equal(deleted.status, 200);
-    assert.equal(deleted.body.deleted, true);
-    assert.equal(deleted.body.archived, true);
-    const stored = app.db.prepare('SELECT id, archived_at, archived_by_name FROM opportunities WHERE id = ?').get(id);
-    assert.ok(stored);
-    assert.ok(stored.archived_at);
-    assert.equal(stored.archived_by_name, 'Ada Lovelace');
-    assert.ok(app.db.prepare('SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('opportunity', id));
-    assert.ok(app.db.prepare('SELECT id FROM record_action_comments WHERE action_id = ?').get(action.body.action.id));
-    assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id));
-    assert.ok(app.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get(id));
-    assert.equal((await app.json('GET', '/api/opportunities', { cookie: session })).body.opportunities.some((item) => item.id === id), false);
-    assert.equal((await app.json('POST', `/api/opportunities/${id}/restore`, { cookie: session })).status, 200);
-    assert.equal((await app.json('DELETE', `/api/opportunities/${id}`, { cookie: session })).status, 200);
-    assert.equal((await app.json('DELETE', `/api/opportunities/${id}`, { cookie: session })).status, 409);
+    assert.deepEqual(deleted.body, { deleted: true });
+    assert.equal(app.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id), undefined);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM card_events WHERE card_id = ?').get(id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('opportunity', id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('opportunity', id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM record_action_comments WHERE action_id = ?').get(action.body.action.id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM workspace_links WHERE entity_type = ? AND entity_id = ?').get('opportunity', id).count, 0);
+    for (const table of ['opportunity_towers', 'opportunity_lobs', 'opportunity_services']) {
+      assert.equal(app.db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE opportunity_id = ?`).get(id).count, 0, table);
+    }
+    // The shared master records it pointed to survive.
+    assert.ok(app.db.prepare('SELECT id FROM lobs WHERE id = ?').get(lob.body.record.id));
+    assert.equal((await app.json('DELETE', `/api/opportunities/${id}`, { cookie: session })).status, 404);
+
+    // Archived opportunities can be deleted too.
+    const other = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    await app.json('POST', `/api/opportunities/${other.body.opportunity.id}/archive`, { cookie: session });
+    assert.equal((await app.json('DELETE', `/api/opportunities/${other.body.opportunity.id}`, { cookie: session })).status, 200);
     assert.equal((await app.json('DELETE', '/api/opportunities/OP-9999', { cookie: session })).status, 404);
+    assert.equal((await app.json('DELETE', `/api/opportunities/${id}`)).status, 401);
   });
 
-  test('DELETE initiative archives the record instead of destroying its history', async () => {
-    const created = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa a archivar' }, cookie: session });
+  test('DELETE initiative removes it with its own rows unless it generated opportunities', async () => {
+    const services = await app.json('GET', '/api/services', { cookie: session });
+    const serviceId = services.body.records.find((item) => item.name === 'API Testing').id;
+    const created = await app.json('POST', '/api/initiatives', {
+      body: { title: 'Iniciativa a eliminar', serviceIds: [serviceId], links: [{ title: 'Doc', url: 'https://example.com/i' }] }, cookie: session,
+    });
     const id = created.body.initiative.id;
     const action = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Revisar alcance' }, cookie: session });
-    assert.equal(action.status, 201);
-    assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('initiative', id));
+    await app.json('POST', `/api/actions/${action.body.action.id}/comments`, { body: { text: 'Comentario' }, cookie: session });
 
     const deleted = await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session });
     assert.equal(deleted.status, 200);
-    assert.equal(deleted.body.deleted, true);
-    assert.equal(deleted.body.archived, true);
-    assert.ok(app.db.prepare('SELECT archived_at FROM initiatives WHERE id = ?').get(id).archived_at);
-    assert.ok(app.db.prepare('SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('initiative', id));
-    assert.ok(app.db.prepare('SELECT id FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('initiative', id));
-    assert.equal((await app.json('GET', '/api/initiatives', { cookie: session })).body.initiatives.some((item) => item.id === id), false);
-    assert.equal((await app.json('GET', `/api/initiatives/${id}/events`, { cookie: session })).status, 200);
-    assert.equal((await app.json('POST', `/api/initiatives/${id}/restore`, { cookie: session })).status, 200);
-    assert.equal((await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session })).status, 200);
-    assert.equal((await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session })).status, 409);
+    assert.deepEqual(deleted.body, { deleted: true });
+    assert.equal(app.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id), undefined);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM initiative_services WHERE initiative_id = ?').get(id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('initiative', id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM record_action_comments WHERE action_id = ?').get(action.body.action.id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('initiative', id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM workspace_links WHERE entity_type = ? AND entity_id = ?').get('initiative', id).count, 0);
+    assert.equal((await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session })).status, 404);
+
+    // An initiative that generated opportunities (even archived ones) is blocked.
+    const source = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa con hijas' }, cookie: session });
+    const sourceId = source.body.initiative.id;
+    const child = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, initiativeId: sourceId }, cookie: session });
+    await app.json('POST', `/api/opportunities/${child.body.opportunity.id}/archive`, { cookie: session });
+    const blocked = await app.json('DELETE', `/api/initiatives/${sourceId}`, { cookie: session });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.error.code, 'initiative_in_use');
+    assert.equal(blocked.body.error.message, 'No se puede eliminar la iniciativa «Iniciativa con hijas»: ya generó 1 oportunidad.');
+    assert.ok(app.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(sourceId));
+
+    // Archive remains a separate action and still works.
+    const archived = await app.json('POST', `/api/initiatives/${sourceId}/archive`, { cookie: session });
+    assert.equal(archived.status, 200);
+    assert.ok(archived.body.initiative.archivedAt);
+  });
+
+  test('POST /api/initiatives/:id/convert creates the opportunity and completes the initiative atomically', async () => {
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente conversión' }, cookie: session });
+    const initiative = await app.json('POST', '/api/initiatives', {
+      body: { title: 'Iniciativa a convertir', clientId: client.body.record.id, stage: 'following' }, cookie: session,
+    });
+    const id = initiative.body.initiative.id;
+    const stageOf = (initiativeId) => app.db.prepare('SELECT stage FROM initiatives WHERE id = ?').get(initiativeId).stage;
+    const generatedCount = () => app.db.prepare('SELECT COUNT(*) AS count FROM opportunities WHERE initiative_id = ?').get(id).count;
+
+    // Invalid opportunity data (the user never saved a valid form): nothing changes.
+    const invalid = await app.json('POST', `/api/initiatives/${id}/convert`, {
+      body: { ...OPPORTUNITY_PAYLOAD, opportunityType: '' }, cookie: session,
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal(stageOf(id), 'following');
+    assert.equal(generatedCount(), 0);
+
+    // A failure while completing the initiative rolls back the opportunity insert too.
+    app.db.exec("CREATE TEMP TRIGGER fail_initiative_complete BEFORE UPDATE OF stage ON initiatives WHEN NEW.stage = 'completed' BEGIN SELECT RAISE(ABORT, 'forced failure'); END");
+    const failed = await app.json('POST', `/api/initiatives/${id}/convert`, { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    app.db.exec('DROP TRIGGER fail_initiative_complete');
+    assert.equal(failed.status, 500);
+    assert.equal(stageOf(id), 'following');
+    assert.equal(generatedCount(), 0);
+
+    const converted = await app.json('POST', `/api/initiatives/${id}/convert`, {
+      body: { ...OPPORTUNITY_PAYLOAD, clientId: client.body.record.id, origin: 'Otros', initiativeId: '' }, cookie: session,
+    });
+    assert.equal(converted.status, 201);
+    assert.equal(converted.body.opportunity.initiativeId, id);
+    assert.equal(converted.body.opportunity.origin, 'Iniciativa interna');
+    assert.equal(converted.body.opportunity.clientId, client.body.record.id);
+    assert.equal(converted.body.initiative.stage, 'completed');
+    assert.equal(converted.body.initiative.linkedOpportunityCount, 1);
+
+    const history = await app.json('GET', `/api/initiatives/${id}/events`, { cookie: session });
+    const event = history.body.events.find((item) => item.action === 'converted');
+    assert.ok(event);
+    assert.deepEqual(event.detail, { opportunityId: converted.body.opportunity.id, fields: ['stage'], from: 'following', to: 'completed' });
+
+    // Linking an opportunity through the regular endpoints never completes an initiative.
+    const other = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa solo vinculada', stage: 'in_progress' }, cookie: session });
+    const otherId = other.body.initiative.id;
+    const linked = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, origin: 'Iniciativa interna', initiativeId: otherId }, cookie: session,
+    });
+    assert.equal(linked.status, 201);
+    const plain = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    const relinked = await app.json('PATCH', `/api/opportunities/${plain.body.opportunity.id}`, {
+      body: { origin: 'Iniciativa interna', initiativeId: otherId }, cookie: session,
+    });
+    assert.equal(relinked.status, 200);
+    assert.equal(stageOf(otherId), 'in_progress');
+
+    // Missing, archived, wrong method and anonymous requests.
+    assert.equal((await app.json('POST', '/api/initiatives/IN-9999/convert', { body: OPPORTUNITY_PAYLOAD, cookie: session })).status, 404);
+    await app.json('POST', `/api/initiatives/${otherId}/archive`, { cookie: session });
+    const archived = await app.json('POST', `/api/initiatives/${otherId}/convert`, { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    assert.equal(archived.status, 409);
+    assert.equal((await app.json('GET', `/api/initiatives/${id}/convert`, { cookie: session })).status, 405);
+    assert.equal((await app.json('POST', `/api/initiatives/${id}/convert`, { body: OPPORTUNITY_PAYLOAD })).status, 401);
+  });
+
+  test('master records and agreements delete physically only when nothing references them', async () => {
+    const del = (kind, id) => app.json('DELETE', `/api/${kind}/${id}`, { cookie: session });
+    const make = async (kind, body) => (await app.json('POST', `/api/${kind}`, { body, cookie: session })).body.record;
+    const expectBlocked = async (kind, id, code, message) => {
+      const response = await del(kind, id);
+      assert.equal(response.status, 409, `${kind} should be blocked`);
+      assert.equal(response.body.error.code, code);
+      assert.equal(response.body.error.message, message);
+    };
+
+    // Unreferenced records of every kind delete together with their own history.
+    const freePerson = await make('people', { name: 'Persona libre' });
+    const freeClient = await make('clients', { name: 'Cliente libre' });
+    const freeLob = await make('lobs', { name: 'LoB libre' });
+    const freeService = await make('services', { name: 'Servicio libre' });
+    const freeTower = await make('towers', { name: 'Tower libre', responsibleId: freePerson.id });
+    for (const [kind, record] of [['towers', freeTower], ['clients', freeClient], ['lobs', freeLob], ['services', freeService], ['people', freePerson]]) {
+      const response = await del(kind, record.id);
+      assert.equal(response.status, 200, kind);
+      assert.deepEqual(response.body, { deleted: true });
+      assert.equal(app.db.prepare(`SELECT id FROM ${kind} WHERE id = ?`).get(record.id), undefined, kind);
+      assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM entity_events WHERE entity_type = ? AND entity_id = ?').get(kind, record.id).count, 0, kind);
+    }
+    assert.equal((await del('clients', 'missing')).status, 404);
+    assert.equal((await app.json('DELETE', `/api/clients/${freeClient.id}`)).status, 401);
+
+    const owner = await make('people', { name: 'Persona bloqueante' });
+    const lob = await make('lobs', { name: 'LoB bloqueada' });
+    const towerA = await make('towers', { name: 'Tower A bloqueo', responsibleId: owner.id, lobId: lob.id });
+    await make('towers', { name: 'Tower B bloqueo', responsibleId: owner.id, lobId: lob.id });
+    const client = await make('clients', { name: 'Cliente bloqueado' });
+    const service = await make('services', { name: 'Servicio bloqueado' });
+    const opportunity = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, clientId: client.id, ownerId: owner.id, towerIds: [towerA.id], lobIds: [lob.id], serviceIds: [service.id] },
+      cookie: session,
+    });
+    assert.equal(opportunity.status, 201);
+    // Archived records still block.
+    await app.json('POST', `/api/opportunities/${opportunity.body.opportunity.id}/archive`, { cookie: session });
+    await expectBlocked('lobs', lob.id, 'lob_in_use', 'No se puede eliminar la LoB «LoB bloqueada»: tiene vínculos con 2 towers y 1 oportunidad.');
+    await expectBlocked('towers', towerA.id, 'tower_in_use', 'No se puede eliminar la tower «Tower A bloqueo»: tiene vínculos con 1 oportunidad.');
+
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa bloqueante', clientId: client.id, serviceIds: [service.id] }, cookie: session });
+    const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo bloqueante', clientId: client.id, ownerId: owner.id }, cookie: session });
+    assert.equal(agreement.status, 201);
+    await expectBlocked('clients', client.id, 'client_in_use', 'No se puede eliminar el cliente «Cliente bloqueado»: tiene vínculos con 1 oportunidad, 1 iniciativa y 1 acuerdo marco.');
+    await expectBlocked('services', service.id, 'service_in_use', 'No se puede eliminar el servicio «Servicio bloqueado»: tiene vínculos con 1 oportunidad y 1 iniciativa.');
+    await expectBlocked('people', owner.id, 'person_in_use', 'No se puede eliminar el responsable «Persona bloqueante»: tiene vínculos con 2 towers, 1 oportunidad y 1 acuerdo marco.');
+
+    // Legacy columns count too: initiatives.tower_id and initiative owners.
+    app.db.prepare('UPDATE initiatives SET tower_id = ?, owner_id = ? WHERE id = ?').run(towerA.id, owner.id, initiative.body.initiative.id);
+    await expectBlocked('towers', towerA.id, 'tower_in_use', 'No se puede eliminar la tower «Tower A bloqueo»: tiene vínculos con 1 oportunidad y 1 iniciativa.');
+    await expectBlocked('people', owner.id, 'person_in_use', 'No se puede eliminar el responsable «Persona bloqueante»: tiene vínculos con 2 towers, 1 oportunidad, 1 iniciativa y 1 acuerdo marco.');
+
+    // Blocked records are untouched, and deactivation is still a separate PATCH.
+    assert.ok(app.db.prepare('SELECT id FROM clients WHERE id = ?').get(client.id));
+    const deactivated = await app.json('PATCH', `/api/clients/${client.id}`, { body: { active: false }, cookie: session });
+    assert.equal(deactivated.status, 200);
+    assert.equal(deactivated.body.record.active, false);
+
+    // Agreements: nothing references them, so they delete with their history.
+    const agreementId = agreement.body.agreement.id;
+    const removed = await app.json('DELETE', `/api/agreements/${agreementId}`, { cookie: session });
+    assert.equal(removed.status, 200);
+    assert.equal(app.db.prepare('SELECT id FROM framework_agreements WHERE id = ?').get(agreementId), undefined);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM entity_events WHERE entity_type = ? AND entity_id = ?').get('agreement', agreementId).count, 0);
+    assert.equal((await app.json('DELETE', `/api/agreements/${agreementId}`, { cookie: session })).status, 404);
+    assert.equal((await app.json('DELETE', `/api/agreements/${agreementId}`)).status, 401);
+
+    // Once its references are gone, the client and service can be deleted.
+    await app.json('DELETE', `/api/opportunities/${opportunity.body.opportunity.id}`, { cookie: session });
+    await app.json('DELETE', `/api/initiatives/${initiative.body.initiative.id}`, { cookie: session });
+    assert.equal((await del('clients', client.id)).status, 200);
+    assert.equal((await del('services', service.id)).status, 200);
   });
 
   test('amount and QA percentage reject invalid values', async () => {
