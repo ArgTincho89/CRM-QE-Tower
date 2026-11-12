@@ -1,3 +1,5 @@
+import { opportunityTypes } from './data.js';
+
 /** Searchable text for the opportunity management table; archived view also searches the archiver. */
 export function matchesOpportunityQuery(item, query, archivedView = false) {
   const parts = [item.id, item.number, item.title, item.account, item.tower, item.owner, item.bidManager, item.due, item.closureReason];
@@ -19,4 +21,23 @@ export function validateOpportunityResult({ stage, outcome, expectedCloseDate, c
   if (!expectedCloseDate) return 'La etapa Resultado requiere una fecha estimada de cierre.';
   if (outcome !== 'won' && !String(closureReason || '').trim()) return 'Indica el motivo de pérdida o descarte.';
   return '';
+}
+
+export const MISSING_OPPORTUNITY_TYPE_LABEL = 'Sin tipo';
+
+/**
+ * Display data for an opportunity type id. Legacy records (no type, or an unknown value)
+ * resolve to a muted "Sin tipo" descriptor so the UI never shows a raw id.
+ */
+export function describeOpportunityType(id) {
+  const type = opportunityTypes.find((item) => item.id === id);
+  if (!type) return { id: '', label: MISSING_OPPORTUNITY_TYPE_LABEL, tone: 'gray', missing: true };
+  return { id: type.id, label: type.label, tone: type.tone, missing: false };
+}
+
+/** Returns a Spanish error message, or '' when the type is one of the allowed ids. */
+export function validateOpportunityType(value) {
+  return opportunityTypes.some((item) => item.id === value)
+    ? ''
+    : 'Selecciona el tipo de oportunidad (Pliego, Oferta o Staffing).';
 }

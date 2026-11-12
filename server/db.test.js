@@ -167,3 +167,29 @@ test('legacy stages and tower links migrate losslessly and idempotently', () => 
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test('opportunity_type is added idempotently as a nullable column and legacy rows stay NULL', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-opportunity-type-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE opportunities (id TEXT PRIMARY KEY, title TEXT NOT NULL, account TEXT NOT NULL, amount TEXT NOT NULL, stage TEXT NOT NULL, tower TEXT NOT NULL, owner TEXT NOT NULL, due TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    INSERT INTO opportunities VALUES ('O-1','A','','100','prospecting','','','','[]','2026-01-01','2026-01-01');
+  `);
+  original.close();
+  try {
+    const db = openDatabase(dbPath);
+    const column = db.prepare('PRAGMA table_info(opportunities)').all().find((row) => row.name === 'opportunity_type');
+    assert.ok(column, 'opportunity_type column should exist');
+    assert.equal(column.notnull, 0);
+    assert.equal(column.dflt_value, null);
+    assert.equal(db.prepare("SELECT opportunity_type FROM opportunities WHERE id = 'O-1'").get().opportunity_type, null);
+    applySchema(db);
+    const columns = db.prepare('PRAGMA table_info(opportunities)').all().filter((row) => row.name === 'opportunity_type');
+    assert.equal(columns.length, 1);
+    assert.equal(db.prepare("SELECT opportunity_type FROM opportunities WHERE id = 'O-1'").get().opportunity_type, null);
+    closeDatabase(db);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});

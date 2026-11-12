@@ -72,6 +72,7 @@ test('create-opportunity prefill inherits client and active services, defaults o
   assert.deepEqual(prefill.serviceIds, ['s1']);
   assert.deepEqual(prefill.services.map((item) => item.id), ['s1']);
   assert.equal(prefill.id, undefined);
+  assert.equal('opportunityType' in prefill, false, 'the user must choose the opportunity type');
 });
 
 test('prefill works without client and falls back to initiative services', () => {

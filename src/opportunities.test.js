@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { filterOpportunityRecords, validateOpportunityResult } from './opportunities.js';
+import { describeOpportunityType, filterOpportunityRecords, validateOpportunityResult, validateOpportunityType } from './opportunities.js';
 
 describe('opportunity result rules', () => {
   const base = { stage: 'result', outcome: 'won', expectedCloseDate: '2026-06-01', closureReason: '' };
@@ -36,5 +36,24 @@ describe('opportunity archive filtering', () => {
     assert.equal(filterOpportunityRecords(active, archived, 'lucía', true).length, 1);
     assert.equal(filterOpportunityRecords([{ ...active[0], archivedByName: 'Lucía' }], [], 'lucía', false).length, 0);
     assert.equal(filterOpportunityRecords(active, archived, 'nada', true).length, 0);
+  });
+});
+
+describe('opportunity type', () => {
+  test('known ids resolve to their Spanish label and tone', () => {
+    assert.deepEqual(describeOpportunityType('tender'), { id: 'tender', label: 'Pliego', tone: 'amber', missing: false });
+    assert.equal(describeOpportunityType('offer').label, 'Oferta');
+    assert.equal(describeOpportunityType('staffing').label, 'Staffing');
+  });
+
+  test('legacy records without a type, or with an unknown value, show a muted "Sin tipo"', () => {
+    for (const value of [undefined, null, '', 'Pliego']) {
+      assert.deepEqual(describeOpportunityType(value), { id: '', label: 'Sin tipo', tone: 'gray', missing: true });
+    }
+  });
+
+  test('validation requires one of the three ids', () => {
+    for (const value of ['tender', 'offer', 'staffing']) assert.equal(validateOpportunityType(value), '');
+    for (const value of ['', undefined, null, 'Oferta']) assert.match(validateOpportunityType(value), /tipo de oportunidad/);
   });
 });

@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
+import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
 
 const records = [
   {
     id: 'OP-0001', account: 'Acme', clientId: 'client-1',
     amount: '1.000 €', qaPercent: 70, number: 'EXT-7', due: '2026-06-15',
     tags: ['priority', 'qe'], closureReason: '', createdAt: '2026-01-10T00:00:00.000Z',
-    updatedAt: '2026-02-10T00:00:00.000Z', bidManagerId: 'person-1',
+    updatedAt: '2026-02-10T00:00:00.000Z', bidManagerId: 'person-1', opportunityType: 'tender',
     services: [{ id: 'svc-1' }, { id: 'svc-2' }], lobs: [{ id: 'lob-1' }], towers: [{ id: 'tw-1' }],
   },
   {
     id: 'OP-0002', account: 'Acme', clientId: 'client-1', amount: '2500', qaPercent: 40,
     number: 'EXT-9', closureReason: '', createdAt: '2026-01-20T00:00:00.000Z',
-    updatedAt: '2026-02-20T00:00:00.000Z', bidManagerId: 'person-1',
+    updatedAt: '2026-02-20T00:00:00.000Z', bidManagerId: 'person-1', opportunityType: 'staffing',
     services: [{ id: 'svc-2' }], lobs: [], towers: [{ id: 'tw-1' }, { id: 'tw-2' }],
   },
   { id: 'OP-0003', account: 'Beta', amount: '10', qaPercent: 0 },
@@ -52,5 +52,13 @@ describe('pipeline advanced filters', () => {
 
   test('opportunity external number filter applies', () => {
     assert.deepEqual(ids({ externalNumber: 'EXT-7' }), ['OP-0001']);
+  });
+
+  test('type filter matches a single type, or legacy records without a type', () => {
+    assert.equal(createDefaultAdvancedFilters().opportunityType, 'all');
+    assert.deepEqual(ids({ opportunityType: 'tender' }), ['OP-0001']);
+    assert.deepEqual(ids({ opportunityType: 'staffing' }), ['OP-0002']);
+    assert.deepEqual(ids({ opportunityType: 'offer' }), []);
+    assert.deepEqual(ids({ opportunityType: MISSING_OPPORTUNITY_TYPE_FILTER }), ['OP-0003']);
   });
 });

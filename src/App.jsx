@@ -1,12 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
-import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, proposals, stages } from './data.js';
-import { filterOpportunityRecords, validateOpportunityResult } from './opportunities.js';
+import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
+import { describeOpportunityType, filterOpportunityRecords, validateOpportunityResult, validateOpportunityType } from './opportunities.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
 import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
-import { createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
+import { MISSING_OPPORTUNITY_TYPE_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
 import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, listLobs, createLob, updateLob, deactivateLob, listPeople, createPerson, updatePerson, deactivatePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, restoreInitiative, deleteInitiative, listAgreements, createAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
@@ -400,6 +400,7 @@ function App() {
         initiativeId: record.initiativeId || '',
         outcome: record.outcome || '',
         pep: record.pep || '',
+        opportunityType: record.opportunityType || '',
         towerIds: record.towerIds || [],
         lobIds: record.lobIds || [],
         serviceIds: record.serviceIds || [],
@@ -610,6 +611,7 @@ function AdvancedFilters({ filters, people, services = [], lobs = [], towers = [
   );
   return <section className="advanced-filters-panel" id="advanced-filters-panel" aria-label="Filtros avanzados del pipeline" hidden={hidden}>
     {field('account', 'Cliente / cuenta')}
+    {field('opportunityType', 'Tipo', 'text', [['all', 'Todos'], ...opportunityTypes.map((item) => [item.id, item.label]), [MISSING_OPPORTUNITY_TYPE_FILTER, 'Sin tipo']])}
     {field('serviceId', 'Servicio', 'text', [['all', 'Todos'], ...services.map((item) => [item.id, item.active === false ? `${item.name} (inactivo)` : item.name])])}
     {field('lobId', 'LoB', 'text', [['all', 'Todas'], ...lobs.map((item) => [item.id, item.name])])}
     {field('towerId', 'Tower', 'text', [['all', 'Todas'], ...towers.map((item) => [item.id, item.name])])}
@@ -728,7 +730,7 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete
   };
   return <article className={`opportunity-card${isInitiative ? ' initiative-card' : ''}${isDragging ? ' dragging' : ''}`} draggable onDragStart={handleDragStart} onDragEnd={onDragEnd}>
     <button type="button" className="card-body-button" onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}, ${record.account}`}>
-      <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : record.number && <span className="external-opportunity-number">N.º {record.number}</span>}<span className={`card-stage-dot ${stage?.tone || ''}`} title={stage?.label || record.stage} /></div>
+      <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : <><OpportunityTypePill type={record.opportunityType} />{record.number && <span className="external-opportunity-number">N.º {record.number}</span>}</>}<span className={`card-stage-dot ${stage?.tone || ''}`} title={stage?.label || record.stage} /></div>
       <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
       <div className="card-value-row">{isInitiative ? <><strong className={`priority-text ${String(record.priority || 'media').toLowerCase()}`}>{record.priority || 'Media'}</strong><span className="tower-pill">{record.statusLabel}</span></> : <><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></>}</div>
       {!isInitiative && record.weightedAmount !== null && record.weightedAmount !== undefined && <small className="weighted-amount">Ponderado: {formatCurrency(Number(record.weightedAmount))}</small>}
@@ -741,8 +743,13 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onDelete
   </article>;
 }
 
+function OpportunityTypePill({ type }) {
+  const { label, tone, missing } = describeOpportunityType(type);
+  return <span className={`status-pill opportunity-type-pill ${tone}${missing ? ' missing' : ''}`}>{label}</span>;
+}
+
 function OpportunityRows({ opportunities, view, onEdit }) {
-  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
@@ -777,12 +784,12 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
     {loading && <div className="board-state"><p>{archivedView ? 'Cargando oportunidades archivadas…' : 'Cargando oportunidades…'}</p></div>}
     {error && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={onRetry}>Reintentar</button></div>}
     {!loading && !error && <div className="table-wrap"><table className="data-table opportunity-management-table"><thead><tr>
-      <th>ID interno</th><th>N.º externo</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
+      <th>ID interno</th><th>N.º externo</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
     </tr></thead><tbody>{opportunities.map((item) => {
       const stage = stages.find((entry) => entry.id === item.stage);
       return <tr key={item.id}>
         <td>{item.id}</td><td>{item.number || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
-        <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td>{item.tower || '—'}</td>
+        <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
         <td>{item.owner || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
         <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
         <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button>}</td>
@@ -872,6 +879,7 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
     origin: record.origin || '', probability: record.probability === null || record.probability === undefined ? '' : String(record.probability),
     expectedCloseDate: record.expectedCloseDate || '', nextMilestone: record.nextMilestone || '', nextMilestoneDate: record.nextMilestoneDate || '',
     need: record.need || '', initiativeId: record.initiativeId || '', outcome: record.outcome || '', pep: record.pep || '',
+    opportunityType: record.opportunityType || '',
     towerIds: (record.towers || []).map((item) => item.id),
     lobIds: (record.lobs || []).map((item) => item.id),
     serviceIds: (record.services || []).map((item) => item.id),
@@ -920,6 +928,8 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
     event.preventDefault();
     if (saving) return;
     if (!form.title.trim()) { setError('Completa el nombre de la oportunidad.'); return; }
+    const typeError = validateOpportunityType(form.opportunityType);
+    if (typeError) { setError(typeError); return; }
     const amount = parseAmount(amountText);
     if (!(amount >= 0)) { setError('El importe debe ser igual o superior a cero.'); return; }
     if (Number(form.qaPercent) < 0 || Number(form.qaPercent) > 100) { setError('La participación QA debe estar entre 0 y 100 %.'); return; }
@@ -952,6 +962,7 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
         initiativeId: form.initiativeId,
         outcome: isResult ? form.outcome : '',
         pep: form.pep.trim(),
+        opportunityType: form.opportunityType,
         towerIds: form.towerIds,
         lobIds: form.lobIds,
         serviceIds: form.serviceIds,
@@ -967,6 +978,7 @@ function OpportunityDialog({ record, clients, towers, services, lobs, people, in
       <div className="dialog-heading"><div><span className="eyebrow">CRM QE · OPORTUNIDAD</span><h2 id="dialog-title">{isEditing ? 'Editar oportunidad' : 'Nueva oportunidad'}</h2><p>Registra el seguimiento QE. No reemplaza la oportunidad del CRM corporativo.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose} disabled={saving}><Icon name="close" /></button></div>
       <div className="form-grid">
         <label className="form-field wide">Nombre de la oportunidad *<input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required disabled={saving} /></label>
+        <label className="form-field">Tipo de oportunidad *<select value={form.opportunityType} onChange={(event) => update('opportunityType', event.target.value)} aria-required="true" disabled={saving}><option value="">Selecciona un tipo</option>{opportunityTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select>{isEditing && !record.opportunityType && <span className="field-hint">Registro sin tipo: elige uno para guardar los cambios.</span>}</label>
         <label className="form-field">Número de oportunidad<input value={form.number} onChange={(event) => update('number', event.target.value)} placeholder="Identificador externo" disabled={saving} /></label>
         <label className="form-field">Cliente / cuenta<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></label>
         <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>

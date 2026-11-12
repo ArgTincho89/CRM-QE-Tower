@@ -12,6 +12,7 @@ const OPPORTUNITY_PAYLOAD = {
   owner: 'Lucía Martín',
   due: '12 jun',
   tags: ['Cross-selling', 'Alta prioridad'],
+  opportunityType: 'offer',
 };
 
 /** Sends a request with a raw path so the test can bypass client-side URL normalization. */
@@ -592,6 +593,7 @@ describe('CRM API', () => {
         account: 'Cliente multi',
         amount: '10000',
         stage: 'contacted',
+        opportunityType: 'staffing',
         towerIds: [towerA.body.record.id, towerB.body.record.id, towerA.body.record.id],
         lobIds: [lobA.body.record.id, lobB.body.record.id],
         serviceIds: [serviceA.id, serviceB.id],
@@ -643,6 +645,46 @@ describe('CRM API', () => {
     assert.deepEqual(updated.body.opportunity.lobs.map((item) => item.id), [lobA.body.record.id]);
     assert.equal(updated.body.opportunity.services.length, 1);
     assert.equal(updated.body.opportunity.links.length, 1);
+  });
+
+  test('opportunity type is required and validated on create', async () => {
+    const { opportunityType: _omitted, ...withoutType } = OPPORTUNITY_PAYLOAD;
+    const missing = await app.json('POST', '/api/opportunities', { body: withoutType, cookie: session });
+    assert.equal(missing.status, 400);
+    assert.match(missing.body.error.message, /tipo de oportunidad es obligatorio/i);
+    const empty = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType: '' }, cookie: session });
+    assert.equal(empty.status, 400);
+    const invalid = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType: 'Pliego' }, cookie: session });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.body.error.message, /Pliego, Oferta o Staffing/);
+
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType: 'tender' }, cookie: session });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.opportunity.opportunityType, 'tender');
+    assert.equal(app.db.prepare('SELECT opportunity_type FROM opportunities WHERE id = ?').get(created.body.opportunity.id).opportunity_type, 'tender');
+    const listed = await app.json('GET', '/api/opportunities', { cookie: session });
+    assert.equal(listed.body.opportunities.find((item) => item.id === created.body.opportunity.id).opportunityType, 'tender');
+  });
+
+  test('opportunity type is optional on PATCH, so legacy records without a type stay editable', async () => {
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Legacy sin tipo' }, cookie: session });
+    const id = created.body.opportunity.id;
+    app.db.prepare('UPDATE opportunities SET opportunity_type = NULL WHERE id = ?').run(id);
+
+    const legacyEdit = await app.json('PATCH', `/api/opportunities/${id}`, { body: { title: 'Legacy editada' }, cookie: session });
+    assert.equal(legacyEdit.status, 200);
+    assert.equal(legacyEdit.body.opportunity.title, 'Legacy editada');
+    assert.equal(legacyEdit.body.opportunity.opportunityType, '');
+
+    const invalid = await app.json('PATCH', `/api/opportunities/${id}`, { body: { opportunityType: 'otro' }, cookie: session });
+    assert.equal(invalid.status, 400);
+    const cleared = await app.json('PATCH', `/api/opportunities/${id}`, { body: { opportunityType: '' }, cookie: session });
+    assert.equal(cleared.status, 400);
+
+    const typed = await app.json('PATCH', `/api/opportunities/${id}`, { body: { opportunityType: 'staffing' }, cookie: session });
+    assert.equal(typed.status, 200);
+    assert.equal(typed.body.opportunity.opportunityType, 'staffing');
+    assert.ok(typed.body.events.some((event) => event.action === 'updated' && event.detail.fields.includes('opportunity_type')));
   });
 
   test('opportunity origin, outcome, close date, loss reason, and archived edits are validated', async () => {

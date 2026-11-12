@@ -3,6 +3,7 @@ import { parseAmount } from './money.js';
 export function createDefaultAdvancedFilters() {
   return {
     account: '',
+    opportunityType: 'all',
     serviceId: 'all',
     lobId: 'all',
     towerId: 'all',
@@ -37,6 +38,15 @@ function withinDateRange(value, from, to) {
   return (!from || date >= from) && (!to || date <= to);
 }
 
+/** Advanced-filter value that selects legacy Opportunities without a type. */
+export const MISSING_OPPORTUNITY_TYPE_FILTER = 'none';
+
+function matchesOpportunityType(value, filter = 'all') {
+  if (filter === 'all') return true;
+  if (filter === MISSING_OPPORTUNITY_TYPE_FILTER) return !value;
+  return value === filter;
+}
+
 function hasRelation(list, id) {
   return id === 'all' || (Array.isArray(list) && list.some((item) => item.id === id));
 }
@@ -49,6 +59,7 @@ function hasRelation(list, id) {
  */
 export function filterPipelineCards(cards, filters) {
   return cards.filter((record) => {
+    if (!matchesOpportunityType(record.opportunityType, filters.opportunityType)) return false;
     if (!hasRelation(record.services, filters.serviceId)) return false;
     if (!hasRelation(record.lobs, filters.lobId)) return false;
     if (!hasRelation(record.towers, filters.towerId)) return false;

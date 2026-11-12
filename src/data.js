@@ -15,6 +15,12 @@ export const opportunityOutcomes = [
   { id: 'discarded', label: 'Descartada', tone: 'gray' },
 ];
 
+export const opportunityTypes = [
+  { id: 'tender', label: 'Pliego', tone: 'amber' },
+  { id: 'offer', label: 'Oferta', tone: 'blue' },
+  { id: 'staffing', label: 'Staffing', tone: 'violet' },
+];
+
 export const opportunityOrigins = [
   'Iniciativa interna',
   'Cliente existente',

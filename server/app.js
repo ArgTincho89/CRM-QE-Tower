@@ -17,7 +17,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
-import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, stages } from '../src/data.js';
+import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
 import {
   HttpError,
@@ -32,6 +32,7 @@ import {
 const STAGES = new Set(stages.map(({ id }) => id));
 const OPPORTUNITY_ORIGINS = new Set(opportunityOrigins);
 const OUTCOMES = new Set(['won', 'lost', 'discarded']);
+const OPPORTUNITY_TYPE_IDS = new Set(opportunityTypes.map(({ id }) => id));
 const RESULT_STAGE = 'result';
 const INITIATIVE_STAGE_IDS = new Set(initiativeStages.map(({ id }) => id));
 const INITIATIVE_CATEGORIES = new Set(initiativeCategories);
@@ -52,7 +53,7 @@ const EDITABLE_FIELDS = [
   'title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number',
   'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason',
   'origin', 'probability', 'expected_close_date', 'next_milestone', 'next_milestone_date',
-  'need', 'initiative_id', 'outcome', 'pep',
+  'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type',
 ];
 
 const MAX_TAGS = 20;
@@ -187,6 +188,7 @@ function mapOpportunity(row, db) {
     initiativeId: row.initiative_id || '',
     initiativeTitle: initiative?.title || '',
     outcome: row.outcome || '',
+    opportunityType: row.opportunity_type || '',
     pep: row.pep || '',
     archivedAt: row.archived_at || '',
     archivedByName: row.archived_by_name || '',
@@ -389,6 +391,20 @@ function parseOutcome(value) {
   return value.trim();
 }
 
+/**
+ * Opportunity type is required whenever it is sent (create always sends it). A PATCH
+ * that omits it never reaches this parser, so legacy rows with NULL stay editable.
+ */
+function parseOpportunityType(value) {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+    throw validationError('El tipo de oportunidad es obligatorio (Pliego, Oferta o Staffing).');
+  }
+  if (typeof value !== 'string' || !OPPORTUNITY_TYPE_IDS.has(value.trim())) {
+    throw validationError('El tipo de oportunidad debe ser Pliego, Oferta o Staffing.');
+  }
+  return value.trim();
+}
+
 function parseOptionalDate(value, field) {
   if (value === undefined || value === null || value === '') return '';
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
@@ -533,6 +549,7 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'owner_id' || field === 'bid_manager_id') return optionalId(db, 'people', value, 'responsable');
   if (field === 'origin') return parseOrigin(value);
   if (field === 'outcome') return parseOutcome(value);
+  if (field === 'opportunity_type') return parseOpportunityType(value);
   if (field === 'probability') return parseProbability(value);
   if (field === 'expected_close_date' || field === 'next_milestone_date') return parseOptionalDate(value, field);
   if (field === 'next_milestone' || field === 'need' || field === 'pep') return parseShortText(value);
@@ -808,6 +825,7 @@ async function createOpportunity(ctx, req, res) {
   const body = await readJson(req);
 
   const stage = parseStage(body.stage ?? 'prospecting');
+  const opportunityType = parseOpportunityType(body.opportunityType);
   const outcome = parseOutcome(body.outcome);
   const expectedCloseDate = parseOptionalDate(body.expectedCloseDate, 'expectedCloseDate');
   const closureReason = parseShortText(body.closureReason, 160);
@@ -850,6 +868,7 @@ async function createOpportunity(ctx, req, res) {
     initiative_id: initiativeId,
     outcome,
     pep: parseShortText(body.pep),
+    opportunity_type: opportunityType,
   };
 
   const nowIso = ctx.now().toISOString();
@@ -858,8 +877,8 @@ async function createOpportunity(ctx, req, res) {
        (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at,
         number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason,
         origin, probability, expected_close_date, next_milestone, next_milestone_date, need,
-        initiative_id, outcome, pep)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        initiative_id, outcome, pep, opportunity_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -895,6 +914,7 @@ async function createOpportunity(ctx, req, res) {
           values.initiative_id,
           values.outcome,
           values.pep,
+          values.opportunity_type,
         );
         replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
         replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
@@ -937,7 +957,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
     qaPercent: 'qa_percent', closureReason: 'closure_reason', origin: 'origin', probability: 'probability',
     expectedCloseDate: 'expected_close_date', nextMilestone: 'next_milestone',
     nextMilestoneDate: 'next_milestone_date', need: 'need', initiativeId: 'initiative_id',
-    outcome: 'outcome', pep: 'pep',
+    outcome: 'outcome', pep: 'pep', opportunityType: 'opportunity_type',
   };
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;

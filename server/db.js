@@ -194,6 +194,8 @@ export function applySchema(db) {
     ['archived_at', 'TEXT'],
     ['archived_by_id', 'TEXT REFERENCES users(id)'],
     ['archived_by_name', "TEXT NOT NULL DEFAULT ''"],
+    // Nullable on purpose: legacy rows keep NULL until someone edits them and picks a type.
+    ['opportunity_type', 'TEXT'],
   ];
   for (const [name, declaration] of opportunityAdditions) {
     if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);

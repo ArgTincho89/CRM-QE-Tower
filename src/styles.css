@@ -497,3 +497,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .multi-select-options { max-height: 160px; overflow-y: auto; }
 .relation-option.inactive { color: #8a97a8; border-style: dashed; }
 .relation-option:has(input:disabled) { cursor: not-allowed; opacity: 0.6; }
+
+/* Opportunity type badge (Pliego / Oferta / Staffing); legacy records show a muted "Sin tipo". */
+.status-pill.opportunity-type-pill { padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.status-pill.opportunity-type-pill.missing { font-style: italic; font-weight: 500; opacity: 0.85; }
