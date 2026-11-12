@@ -1,4 +1,12 @@
-import { opportunityTypes } from './data.js';
+import { opportunityOutcomes, opportunityTypes } from './data.js';
+
+/** Label and tone for an opportunity outcome (accepts id or label); null when there is no outcome. */
+export function describeOpportunityOutcome(value) {
+  if (!value) return null;
+  const normalized = String(value).trim().toLowerCase();
+  const match = opportunityOutcomes.find((outcome) => outcome.id === normalized || outcome.label.toLowerCase() === normalized);
+  return match ? { label: match.label, tone: match.tone } : { label: String(value), tone: 'gray' };
+}
 
 /** Searchable text for the opportunity management table; archived view also searches the archiver. */
 export function matchesOpportunityQuery(item, query, archivedView = false) {

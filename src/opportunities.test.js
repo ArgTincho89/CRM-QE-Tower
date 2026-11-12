@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { applyOriginChange, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 
 describe('opportunity result rules', () => {
   const base = { stage: 'result', outcome: 'won', expectedCloseDate: '2026-06-01', closureReason: '' };
@@ -94,5 +94,17 @@ describe('origin initiative rules', () => {
     const list = [{ id: 'IN-1' }, { id: 'IN-2', archivedAt: '2026-01-01' }, { id: 'IN-3', archivedAt: '2026-01-02' }];
     assert.deepEqual(originInitiativeOptions(list).map((item) => item.id), ['IN-1']);
     assert.deepEqual(originInitiativeOptions(list, 'IN-2').map((item) => item.id), ['IN-1', 'IN-2']);
+  });
+});
+
+describe('describeOpportunityOutcome', () => {
+  test('maps outcome ids and labels to their display label', () => {
+    assert.deepEqual(describeOpportunityOutcome('won'), { label: 'Ganada', tone: 'green' });
+    assert.deepEqual(describeOpportunityOutcome('Perdida'), { label: 'Perdida', tone: 'gray' });
+  });
+
+  test('returns null when there is no outcome', () => {
+    assert.equal(describeOpportunityOutcome(''), null);
+    assert.equal(describeOpportunityOutcome(null), null);
   });
 });

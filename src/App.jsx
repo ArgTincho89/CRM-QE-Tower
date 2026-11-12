@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
-import { applyOriginChange, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 import { NAV_GROUPS } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
@@ -846,13 +846,18 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onArchiv
   </article>;
 }
 
+function OutcomeCell({ outcome }) {
+  const described = describeOpportunityOutcome(outcome);
+  return described ? <span className={`status-pill ${described.tone}`}>{described.label}</span> : '—';
+}
+
 function OpportunityTypePill({ type }) {
   const { label, tone, missing } = describeOpportunityType(type);
   return <span className={`status-pill opportunity-type-pill ${tone}${missing ? ' missing' : ''}`}>{label}</span>;
 }
 
 function OpportunityRows({ opportunities, view, onEdit }) {
-  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>ID registro</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.registryId || '—'}</td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>ID registro</th><th>Cliente</th><th>Etapa</th><th>Resultado</th><th>Tipo</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.registryId || '—'}</td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td><OutcomeCell outcome={item.outcome} /></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
@@ -887,12 +892,12 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
     {loading && <div className="board-state"><p>{archivedView ? 'Cargando oportunidades archivadas…' : 'Cargando oportunidades…'}</p></div>}
     {error && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={onRetry}>Reintentar</button></div>}
     {!loading && !error && <div className="table-wrap"><table className="data-table opportunity-management-table"><thead><tr>
-      <th>ID interno</th><th>N.º externo</th><th>ID registro</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
+      <th>ID interno</th><th>N.º externo</th><th>ID registro</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Resultado</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
     </tr></thead><tbody>{opportunities.map((item) => {
       const stage = stages.find((entry) => entry.id === item.stage);
       return <tr key={item.id}>
         <td>{item.id}</td><td>{item.number || '—'}</td><td>{item.registryId || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
-        <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
+        <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OutcomeCell outcome={item.outcome} /></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
         <td>{item.owner || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
         <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
         <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td>
@@ -1297,9 +1302,19 @@ function InitiativeDialog({ record, clients, services, currentServiceYear, onQui
 
 /** Shared Workspace links editor for opportunities, initiatives and framework agreements. */
 function WorkspaceLinksEditor({ links, onChange, disabled }) {
+  // Saved links with a safe URL render as clickable links; new or edited rows render as inputs.
+  const [editingRows, setEditingRows] = useState(() => new Set());
   const updateLink = (index, field, value) => onChange(links.map((link, position) => (position === index ? { ...link, [field]: value } : link)));
-  const addLink = () => { if (links.length < MAX_WORKSPACE_LINKS) onChange([...links, { title: DEFAULT_WORKSPACE_LINK_TITLE, url: '' }]); };
-  const removeLink = (index) => onChange(links.filter((_, position) => position !== index));
+  const addLink = () => {
+    if (links.length >= MAX_WORKSPACE_LINKS) return;
+    setEditingRows((current) => new Set(current).add(links.length));
+    onChange([...links, { title: DEFAULT_WORKSPACE_LINK_TITLE, url: '' }]);
+  };
+  const editLink = (index) => setEditingRows((current) => new Set(current).add(index));
+  const removeLink = (index) => {
+    setEditingRows((current) => new Set([...current].filter((row) => row !== index).map((row) => (row > index ? row - 1 : row))));
+    onChange(links.filter((_, position) => position !== index));
+  };
   return <fieldset className="relation-field">
     <legend>Enlaces Workspace</legend>
     <span className="field-hint">Cada enlace necesita título y URL. Hasta {MAX_WORKSPACE_LINKS} enlaces.</span>
@@ -1307,6 +1322,14 @@ function WorkspaceLinksEditor({ links, onChange, disabled }) {
       {links.length === 0 && <span className="field-hint">Todavía no hay enlaces.</span>}
       {links.map((link, index) => {
         const href = safeWorkspaceUrl(link.url);
+        const linkTitle = link.title || DEFAULT_WORKSPACE_LINK_TITLE;
+        if (href && !editingRows.has(index)) {
+          return <div className="link-view" key={index}>
+            <span className="link-view-text"><strong>{linkTitle}</strong><a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${linkTitle}: ${link.url} (se abre en una pestaña nueva)`}>{link.url}</a></span>
+            <button type="button" className="inline-link" onClick={() => editLink(index)} disabled={disabled} aria-label={`Editar enlace ${linkTitle}`}>Editar</button>
+            <button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={disabled}><Icon name="close" size={16} /></button>
+          </div>;
+        }
         return <div className="link-row" key={index}><input aria-label={`Título del enlace ${index + 1}`} value={link.title} onChange={(event) => updateLink(index, 'title', event.target.value)} placeholder={DEFAULT_WORKSPACE_LINK_TITLE} maxLength="120" disabled={disabled} /><input aria-label={`URL del enlace ${index + 1}`} value={link.url} onChange={(event) => updateLink(index, 'url', event.target.value)} placeholder="https://workspaces.example/..." maxLength="500" disabled={disabled} />{href ? <a className="link-open" href={href} target="_blank" rel="noopener noreferrer" aria-label={`Abrir ${link.title || DEFAULT_WORKSPACE_LINK_TITLE} en una pestaña nueva`}>Abrir</a> : <span className="link-open" aria-hidden="true" />}<button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={disabled}><Icon name="close" size={16} /></button></div>;
       })}
     </div>
