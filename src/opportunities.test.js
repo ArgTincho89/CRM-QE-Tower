@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { describeOpportunityType, filterOpportunityRecords, validateOpportunityResult, validateOpportunityType } from './opportunities.js';
+import { applyOriginChange, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 
 describe('opportunity result rules', () => {
   const base = { stage: 'result', outcome: 'won', expectedCloseDate: '2026-06-01', closureReason: '' };
@@ -55,5 +55,37 @@ describe('opportunity type', () => {
   test('validation requires one of the three ids', () => {
     for (const value of ['tender', 'offer', 'staffing']) assert.equal(validateOpportunityType(value), '');
     for (const value of ['', undefined, null, 'Oferta']) assert.match(validateOpportunityType(value), /tipo de oportunidad/);
+  });
+});
+
+describe('origin initiative rules', () => {
+  test('only Iniciativa interna requires a source initiative', () => {
+    assert.equal(requiresOriginInitiative('Iniciativa interna'), true);
+    assert.equal(requiresOriginInitiative('Cliente existente'), false);
+    assert.equal(requiresOriginInitiative(''), false);
+  });
+
+  test('changing the origin away clears the link, keeping it otherwise', () => {
+    const form = { origin: 'Iniciativa interna', initiativeId: 'IN-0001', title: 'X' };
+    assert.deepEqual(applyOriginChange(form, 'Otros'), { origin: 'Otros', initiativeId: '', title: 'X' });
+    assert.equal(applyOriginChange(form, 'Iniciativa interna').initiativeId, 'IN-0001');
+  });
+
+  test('new or changed internal origins need an initiative; untouched legacy records pass', () => {
+    assert.match(validateOriginInitiative({ origin: 'Iniciativa interna', initiativeId: '' }), /iniciativa de origen/);
+    assert.equal(validateOriginInitiative({ origin: 'Iniciativa interna', initiativeId: 'IN-0001' }), '');
+    assert.equal(validateOriginInitiative({ origin: 'Otros', initiativeId: '' }), '');
+    const legacy = { id: 'OP-1', origin: 'Iniciativa interna', initiativeId: '' };
+    assert.equal(validateOriginInitiative({ origin: 'Iniciativa interna', initiativeId: '' }, legacy), '');
+    const linked = { id: 'OP-2', origin: 'Iniciativa interna', initiativeId: 'IN-0001' };
+    assert.match(validateOriginInitiative({ origin: 'Iniciativa interna', initiativeId: '' }, linked), /iniciativa de origen/);
+    const otherOrigin = { id: 'OP-3', origin: 'Otros', initiativeId: '' };
+    assert.match(validateOriginInitiative({ origin: 'Iniciativa interna', initiativeId: '' }, otherOrigin), /iniciativa de origen/);
+  });
+
+  test('options exclude archived initiatives except the current link', () => {
+    const list = [{ id: 'IN-1' }, { id: 'IN-2', archivedAt: '2026-01-01' }, { id: 'IN-3', archivedAt: '2026-01-02' }];
+    assert.deepEqual(originInitiativeOptions(list).map((item) => item.id), ['IN-1']);
+    assert.deepEqual(originInitiativeOptions(list, 'IN-2').map((item) => item.id), ['IN-1', 'IN-2']);
   });
 });

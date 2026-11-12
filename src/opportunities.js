@@ -41,3 +41,31 @@ export function validateOpportunityType(value) {
     ? ''
     : 'Selecciona el tipo de oportunidad (Pliego, Oferta o Staffing).';
 }
+
+export const INTERNAL_INITIATIVE_ORIGIN = 'Iniciativa interna';
+
+/** Only the internal-initiative origin links an opportunity to its source initiative. */
+export function requiresOriginInitiative(origin) {
+  return origin === INTERNAL_INITIATIVE_ORIGIN;
+}
+
+/** Changing the origin away from an internal initiative drops the initiative link. */
+export function applyOriginChange(form, origin) {
+  return { ...form, origin, initiativeId: requiresOriginInitiative(origin) ? form.initiativeId : '' };
+}
+
+/**
+ * Mirrors the API rule: an internal-initiative origin needs a linked initiative whenever the
+ * origin or link is set or changed. Untouched legacy records (same origin, still unlinked) pass.
+ * Returns a Spanish error message, or '' when valid.
+ */
+export function validateOriginInitiative(form, original = {}) {
+  if (!requiresOriginInitiative(form.origin) || form.initiativeId) return '';
+  const untouchedLegacy = Boolean(original.id) && original.origin === form.origin && !original.initiativeId;
+  return untouchedLegacy ? '' : 'Selecciona la iniciativa de origen para el origen «Iniciativa interna».';
+}
+
+/** Selectable source initiatives: non-archived ones, plus the current link even if archived. */
+export function originInitiativeOptions(initiatives, currentId = '') {
+  return (initiatives || []).filter((item) => !item.archivedAt || item.id === currentId);
+}

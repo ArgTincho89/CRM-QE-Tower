@@ -193,3 +193,30 @@ test('opportunity_type is added idempotently as a nullable column and legacy row
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test('framework agreement amount and notes are added idempotently with defaults for legacy rows', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-agreement-amount-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE framework_agreements (id TEXT PRIMARY KEY, title TEXT NOT NULL, client_id TEXT, owner_id TEXT, end_date TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    INSERT INTO framework_agreements (id, title, created_at, updated_at) VALUES ('A-1','Legacy','2026-01-01','2026-01-01');
+  `);
+  original.close();
+  try {
+    const db = openDatabase(dbPath);
+    const read = () => ({ ...db.prepare("SELECT amount, notes FROM framework_agreements WHERE id = 'A-1'").get() });
+    assert.deepEqual(read(), { amount: 0, notes: '' });
+    applySchema(db);
+    const columns = db.prepare('PRAGMA table_info(framework_agreements)').all();
+    assert.equal(columns.filter((row) => row.name === 'amount').length, 1);
+    assert.equal(columns.filter((row) => row.name === 'notes').length, 1);
+    assert.equal(columns.find((row) => row.name === 'amount').notnull, 1);
+    assert.deepEqual(read(), { amount: 0, notes: '' });
+    db.prepare("INSERT INTO framework_agreements (id, title, created_at, updated_at) VALUES ('A-2','Nuevo','2026-01-02','2026-01-02')").run();
+    assert.deepEqual({ ...db.prepare("SELECT amount, notes FROM framework_agreements WHERE id = 'A-2'").get() }, { amount: 0, notes: '' });
+    closeDatabase(db);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});

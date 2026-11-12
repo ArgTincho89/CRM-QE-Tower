@@ -213,6 +213,15 @@ export function applySchema(db) {
   for (const [name, declaration] of initiativeAdditions) {
     if (!initiativeColumns.includes(name)) db.exec(`ALTER TABLE initiatives ADD COLUMN ${name} ${declaration}`);
   }
+  const agreementColumns = db.prepare('PRAGMA table_info(framework_agreements)').all().map((row) => row.name);
+  const agreementAdditions = [
+    // 0 is a valid amount for agreements without a committed value.
+    ['amount', 'REAL NOT NULL DEFAULT 0'],
+    ['notes', "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [name, declaration] of agreementAdditions) {
+    if (!agreementColumns.includes(name)) db.exec(`ALTER TABLE framework_agreements ADD COLUMN ${name} ${declaration}`);
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_action_comments_action ON record_action_comments(action_id, created_at)');
   for (const statement of [

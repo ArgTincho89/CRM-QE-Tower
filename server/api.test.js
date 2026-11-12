@@ -768,6 +768,88 @@ describe('CRM API', () => {
     assert.equal(missingInitiative.status, 400);
   });
 
+  test('origin Iniciativa interna requires a valid initiative, while untouched legacy rows stay editable', async () => {
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa obligatoria' }, cookie: session });
+    const missing = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, origin: 'Iniciativa interna' }, cookie: session });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.error.code, 'validation_error');
+    const unknown = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, origin: 'Iniciativa interna', initiativeId: 'IN-9999' }, cookie: session });
+    assert.equal(unknown.status, 400);
+    const linked = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, origin: 'Iniciativa interna', initiativeId: initiative.body.initiative.id },
+      cookie: session,
+    });
+    assert.equal(linked.status, 201);
+    assert.equal(linked.body.opportunity.initiativeId, initiative.body.initiative.id);
+    const generated = await app.json('GET', '/api/initiatives', { cookie: session });
+    const source = generated.body.initiatives.find((item) => item.id === initiative.body.initiative.id);
+    assert.ok(source.opportunities.some((item) => item.id === linked.body.opportunity.id));
+
+    // Unlinking while keeping the internal origin is rejected.
+    const unlink = await app.json('PATCH', `/api/opportunities/${linked.body.opportunity.id}`, { body: { initiativeId: '' }, cookie: session });
+    assert.equal(unlink.status, 400);
+
+    // Legacy row: internal origin without initiative, stored before the rule existed.
+    const plain = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Legado' }, cookie: session });
+    const legacyId = plain.body.opportunity.id;
+    app.db.prepare("UPDATE opportunities SET origin = 'Iniciativa interna', initiative_id = NULL WHERE id = ?").run(legacyId);
+    const untouched = await app.json('PATCH', `/api/opportunities/${legacyId}`, { body: { title: 'Legado editado', origin: 'Iniciativa interna', initiativeId: '' }, cookie: session });
+    assert.equal(untouched.status, 200);
+    assert.equal(untouched.body.opportunity.title, 'Legado editado');
+    const stageOnly = await app.json('PATCH', `/api/opportunities/${legacyId}`, { body: { stage: 'contacted' }, cookie: session });
+    assert.equal(stageOnly.status, 200);
+    const relinked = await app.json('PATCH', `/api/opportunities/${legacyId}`, { body: { initiativeId: initiative.body.initiative.id }, cookie: session });
+    assert.equal(relinked.status, 200);
+    assert.equal(relinked.body.opportunity.initiativeId, initiative.body.initiative.id);
+
+    // Re-sending the current link stays valid after the initiative is archived.
+    const archived = await app.json('POST', `/api/initiatives/${initiative.body.initiative.id}/archive`, { cookie: session });
+    assert.equal(archived.status, 200);
+    const resend = await app.json('PATCH', `/api/opportunities/${legacyId}`, { body: { title: 'Legado vinculado', origin: 'Iniciativa interna', initiativeId: initiative.body.initiative.id }, cookie: session });
+    assert.equal(resend.status, 200);
+  });
+
+  test('framework agreements store amount and notes on create and update', async () => {
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente acuerdo importe' }, cookie: session });
+    const defaults = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo sin importe' }, cookie: session });
+    assert.equal(defaults.status, 201);
+    assert.equal(defaults.body.agreement.amount, 0);
+    assert.equal(defaults.body.agreement.notes, '');
+
+    const created = await app.json('POST', '/api/agreements', {
+      body: { title: 'Acuerdo con importe', clientId: client.body.record.id, amount: 1250.5, notes: '  Renovación anual  ' },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.agreement.amount, 1250.5);
+    assert.equal(created.body.agreement.notes, 'Renovación anual');
+    assert.equal(created.body.agreement.clientId, client.body.record.id);
+
+    const negative = await app.json('POST', '/api/agreements', { body: { title: 'Negativo', amount: -1 }, cookie: session });
+    assert.equal(negative.status, 400);
+    assert.equal(negative.body.error.code, 'validation_error');
+    const invalid = await app.json('POST', '/api/agreements', { body: { title: 'Inválido', amount: 'abc' }, cookie: session });
+    assert.equal(invalid.status, 400);
+
+    const id = created.body.agreement.id;
+    const updated = await app.json('PATCH', `/api/agreements/${id}`, { body: { amount: '2.000,75', notes: 'Sin renovación' }, cookie: session });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.agreement.amount, 2000.75);
+    assert.equal(updated.body.agreement.notes, 'Sin renovación');
+    assert.equal(updated.body.agreement.title, 'Acuerdo con importe');
+    assert.equal(updated.body.agreement.clientId, client.body.record.id);
+
+    const zero = await app.json('PATCH', `/api/agreements/${id}`, { body: { amount: 0 }, cookie: session });
+    assert.equal(zero.body.agreement.amount, 0);
+    const rejected = await app.json('PATCH', `/api/agreements/${id}`, { body: { amount: -5 }, cookie: session });
+    assert.equal(rejected.status, 400);
+    const unchanged = await app.json('GET', '/api/agreements', { cookie: session });
+    assert.equal(unchanged.body.agreements.find((item) => item.id === id).amount, 0);
+
+    assert.equal((await app.json('PATCH', '/api/agreements/missing', { body: { notes: 'x' }, cookie: session })).status, 404);
+    assert.equal((await app.json('PATCH', `/api/agreements/${id}`, { body: { notes: 'x' } })).status, 401);
+  });
+
   test('inactive services cannot be newly assigned but stay on historical links', async () => {
     const services = await app.json('GET', '/api/services', { cookie: session });
     const service = services.body.records.find((item) => item.name === 'Accessibility Testing');

@@ -286,7 +286,7 @@ function mapInitiative(row, db) {
 }
 
 function mapAgreement(row) {
-  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, amount: Number(row.amount) || 0, notes: row.notes || '', status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapEvent(row) {
@@ -415,6 +415,15 @@ function parseOptionalDate(value, field) {
 
 function parseShortText(value, maxLength = 240) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+const INTERNAL_INITIATIVE_ORIGIN = 'Iniciativa interna';
+
+/** An internal-initiative origin must point at the initiative that generated the opportunity. */
+function assertOriginInitiative(origin, initiativeId) {
+  if (origin === INTERNAL_INITIATIVE_ORIGIN && !initiativeId) {
+    throw validationError('Selecciona la iniciativa de origen para el origen «Iniciativa interna».');
+  }
 }
 
 function optionalInitiativeId(db, value) {
@@ -832,7 +841,8 @@ async function createOpportunity(ctx, req, res) {
   assertOpportunityState({ stage, outcome, expectedCloseDate, closureReason });
 
   const initiativeId = optionalInitiativeId(ctx.db, body.initiativeId);
-  const origin = parseOrigin(body.origin) || (initiativeId ? 'Iniciativa interna' : '');
+  const origin = parseOrigin(body.origin) || (initiativeId ? INTERNAL_INITIATIVE_ORIGIN : '');
+  assertOriginInitiative(origin, initiativeId);
   const legacyTowerId = optionalTowerId(ctx.db, body.towerId);
   const relationTowerIds = readRelationIds(body, 'towerIds', 'tower_ids', 'towers');
   const towerIds = relationTowerIds.length > 0 ? relationTowerIds : (legacyTowerId ? [legacyTowerId] : []);
@@ -962,10 +972,20 @@ async function patchOpportunity(ctx, req, res, rawId) {
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
     const field = apiFields[apiField] || apiField;
+    // Re-sending the current link is a no-op, even if that initiative was archived later.
+    if (field === 'initiative_id' && existing.initiative_id && body[apiField] === existing.initiative_id) continue;
     const nextValue = normalizeFieldValue(ctx.db, field, body[apiField]);
     if (nextValue === existing[field]) continue;
     changes[field] = nextValue;
     changedFields.push(field);
+  }
+
+  // Only a change to origin or link triggers the rule, so untouched legacy rows stay editable.
+  if (changedFields.includes('origin') || changedFields.includes('initiative_id')) {
+    assertOriginInitiative(
+      changes.origin ?? existing.origin,
+      Object.hasOwn(changes, 'initiative_id') ? changes.initiative_id : existing.initiative_id,
+    );
   }
 
   // Leaving the Resultado stage clears the outcome; a result requires one.
@@ -1343,10 +1363,57 @@ async function createAgreement(ctx, req, res) {
   const title = parseTextField(body.title, 'title', 160);
   const clientId = optionalId(ctx.db, 'clients', body.clientId, 'cliente');
   const ownerId = optionalId(ctx.db, 'people', body.ownerId, 'responsable');
-  const endDate = typeof body.endDate === 'string' ? body.endDate.trim().slice(0, 40) : '';
-  ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)').run(id, title, clientId, ownerId, endDate, 'active', now, now);
+  const endDate = parseAgreementEndDate(body.endDate);
+  const amount = parseAgreementAmount(body.amount);
+  const notes = parseShortText(body.notes, AGREEMENT_NOTES_LIMIT);
+  ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, title, clientId, ownerId, endDate, amount, notes, 'active', now, now);
   appendEntityEvent(ctx.db, { type: 'agreement', id, user, action: 'created', now });
   sendJson(res, 201, { agreement: mapAgreement(ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id)) });
+}
+
+const AGREEMENT_NOTES_LIMIT = 2000;
+
+function parseAgreementEndDate(value) {
+  return typeof value === 'string' ? value.trim().slice(0, 40) : '';
+}
+
+/** Agreement amount is optional: empty means 0 (not applicable); otherwise it must be >= 0. */
+function parseAgreementAmount(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  return Number(parseAmount(value));
+}
+
+async function updateAgreement(ctx, req, res, rawId) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const existing = ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id);
+  if (!existing) throw new HttpError(404, 'not_found', 'El acuerdo marco no existe.');
+  const body = await readJson(req);
+  const parsers = {
+    title: ['title', (value) => parseTextField(value, 'title', 160)],
+    clientId: ['client_id', (value) => optionalId(ctx.db, 'clients', value, 'cliente')],
+    ownerId: ['owner_id', (value) => optionalId(ctx.db, 'people', value, 'responsable')],
+    endDate: ['end_date', parseAgreementEndDate],
+    amount: ['amount', parseAgreementAmount],
+    notes: ['notes', (value) => parseShortText(value, AGREEMENT_NOTES_LIMIT)],
+  };
+  const changes = {};
+  for (const [apiField, [column, parse]] of Object.entries(parsers)) {
+    if (!Object.hasOwn(body, apiField)) continue;
+    const next = parse(body[apiField]);
+    if (next !== existing[column]) changes[column] = next;
+  }
+  const columns = Object.keys(changes);
+  if (columns.length > 0) {
+    const now = ctx.now().toISOString();
+    withTransaction(ctx.db, () => {
+      ctx.db
+        .prepare(`UPDATE framework_agreements SET ${columns.map((column) => `${column} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+        .run(...columns.map((column) => changes[column]), now, id);
+      appendEntityEvent(ctx.db, { type: 'agreement', id, user, action: 'updated', detail: { fields: columns }, now });
+    });
+  }
+  sendJson(res, 200, { agreement: mapAgreement(ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id)) });
 }
 
 function listActions(ctx, req, res, type, rawId) {
@@ -1482,6 +1549,7 @@ const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;
 const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
 const INITIATIVE_ARCHIVE_PATTERN = /^\/api\/initiatives\/([^/]+)\/(archive|restore)$/;
 const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
+const AGREEMENT_ITEM_PATTERN = /^\/api\/agreements\/([^/]+)$/;
 
 async function handleApi(ctx, req, res, pathname, query) {
   // CSRF guard runs before any handler, including the auth routes.
@@ -1543,6 +1611,11 @@ async function handleApi(ctx, req, res, pathname, query) {
     if (req.method === 'GET') return listAgreements(ctx, req, res);
     if (req.method === 'POST') return createAgreement(ctx, req, res);
     return rejectMethod(res, 'GET', 'POST');
+  }
+  const agreementItem = AGREEMENT_ITEM_PATTERN.exec(pathname);
+  if (agreementItem) {
+    if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH');
+    return updateAgreement(ctx, req, res, agreementItem[1]);
   }
   const initiativeItem = INITIATIVE_ITEM_PATTERN.exec(pathname);
   if (initiativeItem) {

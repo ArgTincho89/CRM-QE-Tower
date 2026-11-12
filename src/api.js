@@ -94,6 +94,7 @@ export const restoreInitiative = (id) => request(`/initiatives/${encodeURICompon
 export const deleteInitiative = (id) => request(`/initiatives/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listAgreements = () => request('/agreements');
 export const createAgreement = (body) => request('/agreements', { method: 'POST', body });
+export const updateAgreement = (id, body) => request(`/agreements/${encodeURIComponent(id)}`, { method: 'PATCH', body });
 export const listActions = (type, id) => request(`/${type}/${encodeURIComponent(id)}/actions`);
 export const createAction = (type, id, body) => request(`/${type}/${encodeURIComponent(id)}/actions`, { method: 'POST', body });
 export const updateAction = (id, body) => request(`/actions/${encodeURIComponent(id)}`, { method: 'PATCH', body });
