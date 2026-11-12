@@ -60,21 +60,23 @@ export default function CardHistory({ opportunityId, refreshKey }) {
       )}
 
       {state.status === 'ready' && state.events.length > 0 && (
-        <ol className="history-timeline">
-          {state.events.map((event) => (
-            <li key={event.id} className="history-item">
-              <span className={ACTION_COLORS[event.action] || 'history-dot'} aria-hidden="true" />
-              <div className="history-body">
-                <p>
-                  <strong>{describeEvent(event)}</strong>
-                </p>
-                <p>
-                  {event.userName} · <time dateTime={event.createdAt}>{formatEventTime(event.createdAt)}</time>
-                </p>
-              </div>
-            </li>
-          ))}
-        </ol>
+        <div className="history-scroll" tabIndex={0} role="region" aria-label="Historial de la oportunidad">
+          <ol className="history-timeline">
+            {state.events.map((event) => (
+              <li key={event.id} className="history-item">
+                <span className={ACTION_COLORS[event.action] || 'history-dot'} aria-hidden="true" />
+                <div className="history-body">
+                  <p>
+                    <strong>{describeEvent(event)}</strong>
+                  </p>
+                  <p>
+                    {event.userName} · <time dateTime={event.createdAt}>{formatEventTime(event.createdAt)}</time>
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
     </section>
   );

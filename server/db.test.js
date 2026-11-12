@@ -49,7 +49,7 @@ test('schema migration preserves existing users and sessions', () => {
     assert.equal(count(db, 'users'), 2);
     assert.equal(count(db, 'sessions'), 1);
     assert.equal(db.prepare('SELECT name FROM users WHERE id = ?').get('u-1').name, 'First User');
-    assert.equal(db.prepare('SELECT stage FROM initiatives WHERE id = ?').get('i-1').stage, 'pending');
+    assert.equal(db.prepare('SELECT stage FROM initiatives WHERE id = ?').get('IN-000001').stage, 'pending');
     assert.equal(db.prepare('SELECT responsible_id FROM towers WHERE id = ?').get('tower-legacy').responsible_id, null);
     assert.ok(db.prepare('PRAGMA foreign_key_list(towers)').all().some((row) => row.from === 'responsible_id' && row.table === 'people'));
     closeDatabase(db);
@@ -140,21 +140,21 @@ test('legacy stages and tower links migrate losslessly and idempotently', () => 
     const db = openDatabase(dbPath);
     const stages = db.prepare('SELECT id, stage, outcome FROM opportunities ORDER BY id').all();
     assert.deepEqual(stages.map((row) => [row.id, row.stage, row.outcome]), [
-      ['O-1', 'prospecting', ''],
-      ['O-2', 'identified', ''],
-      ['O-3', 'negotiation', ''],
-      ['O-4', 'proposal', ''],
-      ['O-5', 'result', 'won'],
-      ['O-6', 'result', 'lost'],
+      ['OP-000001', 'prospecting', ''],
+      ['OP-000002', 'identified', ''],
+      ['OP-000003', 'negotiation', ''],
+      ['OP-000004', 'proposal', ''],
+      ['OP-000005', 'result', 'won'],
+      ['OP-000006', 'result', 'lost'],
     ]);
     const initiatives = db.prepare('SELECT id, stage, operational_status FROM initiatives ORDER BY id').all();
     assert.deepEqual(initiatives.map((row) => [row.id, row.stage, row.operational_status]), [
-      ['IN-1', 'pending', 'active'],
-      ['IN-2', 'in_progress', 'active'],
-      ['IN-3', 'following', 'active'],
-      ['IN-4', 'following', 'active'],
-      ['IN-5', 'completed', 'active'],
-      ['IN-6', 'pending', 'discarded'],
+      ['IN-000001', 'pending', 'active'],
+      ['IN-000002', 'in_progress', 'active'],
+      ['IN-000003', 'following', 'active'],
+      ['IN-000004', 'following', 'active'],
+      ['IN-000005', 'completed', 'active'],
+      ['IN-000006', 'pending', 'discarded'],
     ]);
     assert.equal(count(db, 'opportunity_towers'), 6);
     assert.equal(count(db, 'opportunity_lobs'), 0);
@@ -183,11 +183,11 @@ test('opportunity_type is added idempotently as a nullable column and legacy row
     assert.ok(column, 'opportunity_type column should exist');
     assert.equal(column.notnull, 0);
     assert.equal(column.dflt_value, null);
-    assert.equal(db.prepare("SELECT opportunity_type FROM opportunities WHERE id = 'O-1'").get().opportunity_type, null);
+    assert.equal(db.prepare("SELECT opportunity_type FROM opportunities WHERE id = 'OP-000001'").get().opportunity_type, null);
     applySchema(db);
     const columns = db.prepare('PRAGMA table_info(opportunities)').all().filter((row) => row.name === 'opportunity_type');
     assert.equal(columns.length, 1);
-    assert.equal(db.prepare("SELECT opportunity_type FROM opportunities WHERE id = 'O-1'").get().opportunity_type, null);
+    assert.equal(db.prepare("SELECT opportunity_type FROM opportunities WHERE id = 'OP-000001'").get().opportunity_type, null);
     closeDatabase(db);
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -205,7 +205,7 @@ test('framework agreement amount and notes are added idempotently with defaults 
   original.close();
   try {
     const db = openDatabase(dbPath);
-    const read = () => ({ ...db.prepare("SELECT amount, notes FROM framework_agreements WHERE id = 'A-1'").get() });
+    const read = () => ({ ...db.prepare("SELECT amount, notes FROM framework_agreements WHERE id = 'AM-000001'").get() });
     assert.deepEqual(read(), { amount: 0, notes: '' });
     applySchema(db);
     const columns = db.prepare('PRAGMA table_info(framework_agreements)').all();
@@ -377,13 +377,148 @@ test('registry_id is added idempotently to agreements and opportunities with an 
       assert.equal(columns.length, 1, table);
       assert.equal(columns[0].notnull, 1, table);
     }
-    assert.equal(db.prepare("SELECT registry_id FROM framework_agreements WHERE id = 'A-1'").get().registry_id, '');
-    assert.equal(db.prepare("SELECT registry_id FROM opportunities WHERE id = 'O-1'").get().registry_id, '');
+    assert.equal(db.prepare("SELECT registry_id FROM framework_agreements WHERE id = 'AM-000001'").get().registry_id, '');
+    assert.equal(db.prepare("SELECT registry_id FROM opportunities WHERE id = 'OP-000001'").get().registry_id, '');
     // No uniqueness: the same reference may repeat.
     db.prepare("UPDATE framework_agreements SET registry_id = 'R-1'").run();
     db.prepare("INSERT INTO framework_agreements (id, title, registry_id, created_at, updated_at) VALUES ('A-2','Otro','R-1','x','x')").run();
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM framework_agreements WHERE registry_id = 'R-1'").get().count, 2);
     closeDatabase(db);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+const SIX_DIGIT_REFERENCE_TABLES = [
+  'opportunities', 'initiatives', 'framework_agreements', 'card_events', 'opportunity_towers', 'opportunity_lobs',
+  'opportunity_services', 'initiative_services', 'record_actions', 'record_action_comments', 'workspace_links', 'entity_events',
+];
+
+/** Builds a database with pre-six-digit ids by opening it, inserting legacy rows and dropping the marker. */
+function createLegacyIdDatabase(dbPath, extraSql = '') {
+  const db = openDatabase(dbPath);
+  db.exec(`
+    INSERT INTO users VALUES ('u-1','ada@example.com','Ada','hash','admin','2026-01-01');
+    INSERT INTO clients (id, name, created_at, updated_at) VALUES ('c-1','Acme','2026-01-01','2026-01-01');
+    INSERT INTO towers (id, name, created_at, updated_at) VALUES ('t-1','Data','2026-01-01','2026-01-01');
+    INSERT INTO lobs (id, name, created_at, updated_at) VALUES ('l-1','Banca','2026-01-01','2026-01-01');
+    INSERT INTO initiatives (id, title, client_id, created_at, updated_at) VALUES ('IN-0001','Iniciativa','c-1','2026-03-01','2026-03-01');
+    INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at,initiative_id,client_id)
+      VALUES ('O-0001','Legacy O','','0','prospecting','','','','[]','2025-01-01','2025-01-01','IN-0001','c-1');
+    INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at)
+      VALUES ('OP-0001','Legacy OP','','0','prospecting','','','','[]','2026-02-01','2026-02-01');
+    INSERT INTO framework_agreements (id, title, client_id, created_at, updated_at) VALUES ('3f2b8c1e-0000-4000-8000-000000000001','Acuerdo','c-1','2026-01-01','2026-01-01');
+    INSERT INTO opportunity_towers VALUES ('O-0001','t-1'), ('OP-0001','t-1');
+    INSERT INTO opportunity_lobs VALUES ('O-0001','l-1'), ('OP-0001','l-1');
+    INSERT INTO opportunity_services VALUES ('O-0001','SVC-0001'), ('OP-0001','SVC-0002');
+    INSERT INTO initiative_services VALUES ('IN-0001','SVC-0001');
+    INSERT INTO card_events (card_id,user_id,user_name,action,detail,created_at) VALUES
+      ('O-0001','u-1','Ada','created','{"opportunityId":"O-0001","nested":[{"initiativeId":"IN-0001"}],"note":"O-0001"}','2025-01-01'),
+      ('OP-0001',NULL,'Sistema','moved','{"from":"prospecting","to":"proposal"}','2026-02-02'),
+      ('OP-0001',NULL,'Sistema','updated','not json','2026-02-03');
+    INSERT INTO record_actions (id,entity_type,entity_id,text,user_name,created_at) VALUES
+      ('a-1','opportunity','O-0001','Llamar','Ada','2026-01-01'),
+      ('a-2','initiative','IN-0001','Revisar','Ada','2026-01-01');
+    INSERT INTO record_action_comments (id,action_id,user_name,text,created_at) VALUES ('rc-1','a-1','Ada','Hecho','2026-01-02');
+    INSERT INTO workspace_links (id,entity_type,entity_id,title,url,created_at) VALUES
+      ('w-1','opportunity','O-0001','Carpeta','https://a.example','2026-01-01'),
+      ('w-2','initiative','IN-0001','Carpeta','https://b.example','2026-01-01'),
+      ('w-3','agreement','3f2b8c1e-0000-4000-8000-000000000001','Contrato','https://c.example','2026-01-01');
+    INSERT INTO entity_events (entity_type,entity_id,user_name,action,detail,created_at) VALUES
+      ('opportunity','O-0001','Ada','created','{"fromInitiativeId":"IN-0001"}','2026-03-02'),
+      ('initiative','IN-0001','Ada','converted','{"opportunityId":"O-0001","fields":["stage"],"from":"pending","to":"completed"}','2026-03-02'),
+      ('agreement','3f2b8c1e-0000-4000-8000-000000000001','Ada','created','{}','2026-01-01'),
+      ('services','SVC-0010','Ada','created','{"copiedFrom":"SVC-0001","year":2026}','2026-01-01'),
+      ('clients','O-0001','Ada','updated','{"fields":["name"]}','2026-01-01');
+    DELETE FROM schema_meta WHERE key = 'six_digit_ids_v1';
+  `);
+  if (extraSql) {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(extraSql);
+  }
+  closeDatabase(db);
+}
+
+function tableCounts(db) {
+  return Object.fromEntries(SIX_DIGIT_REFERENCE_TABLES.map((table) => [table, count(db, table)]));
+}
+
+test('commercial ids migrate to six-digit prefixes with every reference rewritten, idempotently', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-six-digit-ids-'));
+  const dbPath = path.join(dir, 'app.db');
+  try {
+    createLegacyIdDatabase(dbPath);
+    const raw = new DatabaseSync(dbPath);
+    const countsBefore = tableCounts(raw);
+    raw.close();
+
+    const db = openDatabase(dbPath);
+    const ids = (table) => db.prepare(`SELECT id FROM ${table} ORDER BY id`).all().map((row) => row.id);
+    // Kept numbers are reserved first: OP-0001 keeps 1 although O-0001 is older.
+    assert.deepEqual(ids('opportunities'), ['OP-000001', 'OP-000002']);
+    assert.equal(db.prepare("SELECT title FROM opportunities WHERE id = 'OP-000001'").get().title, 'Legacy OP');
+    assert.equal(db.prepare("SELECT title FROM opportunities WHERE id = 'OP-000002'").get().title, 'Legacy O');
+    assert.deepEqual(ids('initiatives'), ['IN-000001']);
+    assert.deepEqual(ids('framework_agreements'), ['AM-000001']);
+    assert.deepEqual(tableCounts(db), countsBefore);
+
+    assert.equal(db.prepare("SELECT initiative_id FROM opportunities WHERE id = 'OP-000002'").get().initiative_id, 'IN-000001');
+    const pairs = (table, column, value) => db.prepare(`SELECT ${column} AS owner, ${value} AS value FROM ${table} ORDER BY 1, 2`).all().map((row) => [row.owner, row.value]);
+    assert.deepEqual(pairs('opportunity_towers', 'opportunity_id', 'tower_id'), [['OP-000001', 't-1'], ['OP-000002', 't-1']]);
+    assert.deepEqual(pairs('opportunity_lobs', 'opportunity_id', 'lob_id'), [['OP-000001', 'l-1'], ['OP-000002', 'l-1']]);
+    assert.deepEqual(pairs('opportunity_services', 'opportunity_id', 'service_id'), [['OP-000001', 'SVC-0002'], ['OP-000002', 'SVC-0001']]);
+    assert.deepEqual(pairs('initiative_services', 'initiative_id', 'service_id'), [['IN-000001', 'SVC-0001']]);
+    assert.deepEqual(db.prepare('SELECT card_id, detail FROM card_events ORDER BY id').all().map((row) => [row.card_id, row.detail]), [
+      ['OP-000002', '{"opportunityId":"OP-000002","nested":[{"initiativeId":"IN-000001"}],"note":"O-0001"}'],
+      ['OP-000001', '{"from":"prospecting","to":"proposal"}'],
+      ['OP-000001', 'not json'],
+    ]);
+    assert.deepEqual(db.prepare('SELECT id, entity_type, entity_id FROM record_actions ORDER BY id').all().map((row) => [row.id, row.entity_type, row.entity_id]), [
+      ['a-1', 'opportunity', 'OP-000002'],
+      ['a-2', 'initiative', 'IN-000001'],
+    ]);
+    assert.equal(db.prepare('SELECT action_id FROM record_action_comments').get().action_id, 'a-1');
+    assert.deepEqual(db.prepare('SELECT id, entity_type, entity_id FROM workspace_links ORDER BY id').all().map((row) => [row.id, row.entity_type, row.entity_id]), [
+      ['w-1', 'opportunity', 'OP-000002'],
+      ['w-2', 'initiative', 'IN-000001'],
+      ['w-3', 'agreement', 'AM-000001'],
+    ]);
+    assert.deepEqual(db.prepare('SELECT entity_type, entity_id, detail FROM entity_events ORDER BY id').all().map((row) => [row.entity_type, row.entity_id, row.detail]), [
+      ['opportunity', 'OP-000002', '{"fromInitiativeId":"IN-000001"}'],
+      ['initiative', 'IN-000001', '{"opportunityId":"OP-000002","fields":["stage"],"from":"pending","to":"completed"}'],
+      ['agreement', 'AM-000001', '{}'],
+      ['services', 'SVC-0010', '{"copiedFrom":"SVC-0001","year":2026}'],
+      // Other entity types never change, even when their id looks like a legacy opportunity id.
+      ['clients', 'O-0001', '{"fields":["name"]}'],
+    ]);
+    assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
+
+    // Idempotent: a second boot changes nothing and writes the marker once.
+    const snapshot = (target) => Object.fromEntries(SIX_DIGIT_REFERENCE_TABLES.map((table) => [table, target.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all().map((row) => ({ ...row }))]));
+    const before = snapshot(db);
+    applySchema(db);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    assert.deepEqual(snapshot(reopened), before);
+    assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'six_digit_ids_v1'").get().count, 1);
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('the six-digit id migration rolls back when it would leave a broken foreign key', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-six-digit-rollback-'));
+  const dbPath = path.join(dir, 'app.db');
+  try {
+    createLegacyIdDatabase(dbPath, "INSERT INTO opportunity_services VALUES ('OP-0001','missing-service')");
+    assert.throws(() => openDatabase(dbPath), /Six-digit id migration left 1 broken foreign key reference/);
+    const raw = new DatabaseSync(dbPath);
+    assert.deepEqual(raw.prepare('SELECT id FROM opportunities ORDER BY id').all().map((row) => row.id), ['O-0001', 'OP-0001']);
+    assert.equal(raw.prepare("SELECT entity_id FROM workspace_links WHERE id = 'w-3'").get().entity_id, '3f2b8c1e-0000-4000-8000-000000000001');
+    assert.equal(raw.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'six_digit_ids_v1'").get().count, 0);
+    raw.close();
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }

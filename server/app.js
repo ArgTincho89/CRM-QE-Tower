@@ -17,6 +17,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
+import { AGREEMENT_ID_PREFIX, IdSpaceExhaustedError, INITIATIVE_ID_PREFIX, nextPrefixedId, OPPORTUNITY_ID_PREFIX } from './ids.js';
 import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
 import {
@@ -776,33 +777,26 @@ function insertCardEvent(db, { cardId, user, action, detail, createdAt }) {
   };
 }
 
-/**
- * Builds the next prefixed id from the highest numeric suffix currently stored.
- * Uniqueness is re-checked for every candidate, and the caller retries the whole
- * insert on a unique violation (two processes on the same file).
- */
-function nextPrefixedId(db, table, prefix) {
-  const row = db
-    .prepare(`SELECT MAX(CAST(substr(id, ${prefix.length + 2}) AS INTEGER)) AS max_id FROM ${table} WHERE id GLOB '${prefix}-[0-9]*'`)
-    .get();
-  const highest = Number(row?.max_id ?? 0);
-  const start = Number.isFinite(highest) ? highest : 0;
-  const exists = db.prepare(`SELECT 1 AS found FROM ${table} WHERE id = ?`);
-
-  for (let offset = 1; offset <= 10000; offset += 1) {
-    const candidate = `${prefix}-${String((start + offset) % 10000).padStart(4, '0')}`;
-    if (!exists.get(candidate)) return candidate;
+/** Six-digit prefixed ids; exhausting the number space is a server error, never a wrap. */
+function nextEntityId(db, table, prefix) {
+  try {
+    return nextPrefixedId(db, table, prefix);
+  } catch (error) {
+    if (error instanceof IdSpaceExhaustedError) throw new HttpError(500, 'id_generation_failed', 'No se pudo generar un identificador único.');
+    throw error;
   }
-
-  throw new HttpError(500, 'id_generation_failed', 'No se pudo generar un identificador único.');
 }
 
 function nextOpportunityId(db) {
-  return nextPrefixedId(db, 'opportunities', 'OP');
+  return nextEntityId(db, 'opportunities', OPPORTUNITY_ID_PREFIX);
 }
 
 function nextInitiativeId(db) {
-  return nextPrefixedId(db, 'initiatives', 'IN');
+  return nextEntityId(db, 'initiatives', INITIATIVE_ID_PREFIX);
+}
+
+function nextAgreementId(db) {
+  return nextEntityId(db, 'framework_agreements', AGREEMENT_ID_PREFIX);
 }
 
 function getClientIp(req, config) {
@@ -1740,7 +1734,6 @@ function getAgreementForDisplay(db, id) {
 async function createAgreement(ctx, req, res) {
   const user = requireUser(ctx, req);
   const body = await readJson(req);
-  const id = randomUUID();
   const now = ctx.now().toISOString();
   const title = parseTextField(body.title, 'title', 160);
   const clientId = optionalId(ctx.db, 'clients', body.clientId, 'cliente');
@@ -1750,13 +1743,22 @@ async function createAgreement(ctx, req, res) {
   const notes = parseShortText(body.notes, AGREEMENT_NOTES_LIMIT);
   const registryId = parseRegistryId(body.registryId);
   const links = parseWorkspaceLinks(body.links);
-  withTransaction(ctx.db, () => {
-    ctx.db
-      .prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,registry_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-      .run(id, title, clientId, ownerId, endDate, amount, notes, registryId, 'active', now, now);
-    replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, id, links, user, now);
-    appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id, user, action: 'created', now });
-  });
+  const insert = ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,registry_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+  let id;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      id = withTransaction(ctx.db, () => {
+        const nextId = nextAgreementId(ctx.db);
+        insert.run(nextId, title, clientId, ownerId, endDate, amount, notes, registryId, 'active', now, now);
+        replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, nextId, links, user, now);
+        appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id: nextId, user, action: 'created', now });
+        return nextId;
+      });
+      break;
+    } catch (error) {
+      if (!isUniqueViolation(error) || attempt >= 4) throw error;
+    }
+  }
   sendJson(res, 201, { agreement: getAgreementForDisplay(ctx.db, id) });
 }
 

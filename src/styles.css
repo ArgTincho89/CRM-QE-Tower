@@ -281,7 +281,8 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .dialog-heading h2 { margin: 7px 0 4px; color: #25344a; font: 700 19px 'Manrope', sans-serif; }
 .dialog-heading p { max-width: 425px; margin: 0; color: #8a95a4; font-size: 13px; line-height: 1.5; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 12px; }
-.form-field { display: grid; gap: 6px; color: #59677c; font-size: 13px; font-weight: 600; }
+/* align-content: start keeps paired inputs on one line when only one of them has a hint below. */
+.form-field { display: grid; align-content: start; gap: 6px; color: #59677c; font-size: 13px; font-weight: 600; }
 .form-field.wide { grid-column: 1 / -1; }
 .form-field input, .form-field select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #e2e7ee; border-radius: 5px; background: white; color: #354258; font-size: 14px; font-weight: 400; }
 .form-field input::placeholder { color: #adb5c1; }
@@ -438,7 +439,12 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .history-state { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; padding: 7px 0 2px; color: #8792a1; font-size: 13px; line-height: 1.5; }
 .history-state p { margin: 0; }
 .history-state .button { min-height: 28px; padding: 0 9px; font-size: 13px; }
-.history-timeline { max-height: 178px; display: grid; gap: 10px; margin: 0; padding: 0; overflow: auto; list-style: none; scrollbar-width: thin; }
+.history-timeline { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+/* Bounded, keyboard-scrollable history list shared by opportunity and initiative dialogs. */
+.history-scroll { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; border-radius: 6px; }
+.history-scroll:focus-visible { outline: 3px solid #7db6ff; outline-offset: 2px; }
+.history-scroll > .action-list { margin-top: 0; }
+@media (max-width: 620px) { .history-scroll { max-height: min(320px, 50vh); } }
 .history-item { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 9px; align-items: start; }
 .history-dot { width: 8px; height: 8px; margin-top: 3px; border-radius: 50%; background: #9ca7b5; }
 .history-dot.created { background: #42b784; }

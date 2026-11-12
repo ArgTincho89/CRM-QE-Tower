@@ -394,7 +394,7 @@ describe('CRM API', () => {
 
     assert.equal(response.status, 201);
     const opportunity = response.body.opportunity;
-    assert.match(opportunity.id, /^OP-\d{4}$/);
+    assert.match(opportunity.id, /^OP-\d{6}$/);
     assert.equal(opportunity.title, OPPORTUNITY_PAYLOAD.title);
     assert.equal(opportunity.stage, 'prospecting');
     assert.deepEqual(opportunity.tags, ['Cross-selling', 'Alta prioridad']);
@@ -1411,7 +1411,7 @@ describe('CRM API', () => {
     assert.equal(badPercent.status, 400);
   });
 
-  test('created ids stay unique and fully padded to four digits', async () => {
+  test('created ids stay unique and fully padded to six digits', async () => {
     const first = await app.json('POST', '/api/opportunities', {
       body: { ...OPPORTUNITY_PAYLOAD, title: 'Idempotencia A' },
       cookie: session,
@@ -1422,8 +1422,8 @@ describe('CRM API', () => {
     });
 
     assert.notEqual(first.body.opportunity.id, second.body.opportunity.id);
-    assert.match(first.body.opportunity.id, /^OP-\d{4}$/);
-    assert.match(second.body.opportunity.id, /^OP-\d{4}$/);
+    assert.match(first.body.opportunity.id, /^OP-\d{6}$/);
+    assert.match(second.body.opportunity.id, /^OP-\d{6}$/);
   });
 
   test('opportunity and initiative IDs start at their prefixes and advance without changing legacy records', async () => {
@@ -1439,24 +1439,51 @@ describe('CRM API', () => {
       assert.equal(fresh.db.prepare('SELECT COUNT(*) AS count FROM initiatives').get().count, 0);
       fresh.db.exec('DROP TRIGGER reject_initiative_event');
       const initiative = await fresh.json('POST', '/api/initiatives', { body: { title: 'Primera iniciativa', amount: '100' }, cookie });
-      assert.equal(opportunity.body.opportunity.id, 'OP-0001');
-      assert.equal(initiative.body.initiative.id, 'IN-0001');
+      assert.equal(opportunity.body.opportunity.id, 'OP-000001');
+      assert.equal(initiative.body.initiative.id, 'IN-000001');
 
       const now = new Date().toISOString();
-      fresh.db.prepare(`INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('OP-0012','Legacy OP','','0','prospecting','','','','[]',?,?)`).run(now, now);
+      fresh.db.prepare(`INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('OP-000012','Legacy OP','','0','prospecting','','','','[]',?,?)`).run(now, now);
       fresh.db.prepare(`INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('O-0009','Legacy O','','0','prospecting','','','','[]',?,?)`).run(now, now);
-      fresh.db.prepare(`INSERT INTO card_events (card_id,user_name,action,detail,created_at) VALUES ('OP-0012','Sistema','created','{}',?)`).run(now);
-      fresh.db.prepare(`INSERT INTO initiatives (id,title,created_at,updated_at) VALUES ('IN-0007','Legacy IN',?,?)`).run(now, now);
+      fresh.db.prepare(`INSERT INTO card_events (card_id,user_name,action,detail,created_at) VALUES ('OP-000012','Sistema','created','{}',?)`).run(now);
+      fresh.db.prepare(`INSERT INTO initiatives (id,title,created_at,updated_at) VALUES ('IN-000007','Legacy IN',?,?)`).run(now, now);
       fresh.db.prepare(`INSERT INTO initiatives (id,title,created_at,updated_at) VALUES ('legacy-initiative','Legacy initiative',?,?)`).run(now, now);
 
       const nextOpportunity = await fresh.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Siguiente oportunidad' }, cookie });
       const nextInitiative = await fresh.json('POST', '/api/initiatives', { body: { title: 'Siguiente iniciativa' }, cookie });
-      assert.equal(nextOpportunity.body.opportunity.id, 'OP-0013');
-      assert.equal(nextInitiative.body.initiative.id, 'IN-0008');
+      assert.equal(nextOpportunity.body.opportunity.id, 'OP-000013');
+      assert.equal(nextInitiative.body.initiative.id, 'IN-000008');
       assert.ok(fresh.db.prepare('SELECT id FROM opportunities WHERE id = ?').get('O-0009'));
-      assert.ok(fresh.db.prepare('SELECT id FROM opportunities WHERE id = ?').get('OP-0012'));
-      assert.ok(fresh.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get('OP-0012'));
+      assert.ok(fresh.db.prepare('SELECT id FROM opportunities WHERE id = ?').get('OP-000012'));
+      assert.ok(fresh.db.prepare('SELECT id FROM card_events WHERE card_id = ?').get('OP-000012'));
       assert.ok(fresh.db.prepare('SELECT id FROM initiatives WHERE id = ?').get('legacy-initiative'));
+    } finally {
+      await fresh.cleanup();
+    }
+  });
+
+  test('framework agreement IDs use the AM prefix with six digits and continue after the highest stored one', async () => {
+    const fresh = await startTestServer();
+    try {
+      const { cookie } = await fresh.register({ email: 'agreements-seq@example.com', name: 'Agreement User', password: 'password123' });
+      const first = await fresh.json('POST', '/api/agreements', { body: { title: 'Primer acuerdo' }, cookie });
+      assert.equal(first.status, 201);
+      assert.equal(first.body.agreement.id, 'AM-000001');
+      assert.equal(fresh.db.prepare("SELECT COUNT(*) AS count FROM entity_events WHERE entity_type = 'agreement' AND entity_id = 'AM-000001'").get().count, 1);
+
+      fresh.db.prepare("INSERT INTO framework_agreements (id, title, created_at, updated_at) VALUES ('AM-012345', 'Importado', 'x', 'x')").run();
+      const next = await fresh.json('POST', '/api/agreements', { body: { title: 'Siguiente acuerdo' }, cookie });
+      assert.equal(next.body.agreement.id, 'AM-012346');
+
+      // The old four-digit generator wrapped at 10000; six digits keep counting.
+      fresh.db.prepare("INSERT INTO opportunities (id,title,account,amount,stage,tower,owner,due,tags,created_at,updated_at) VALUES ('OP-009999','Borde','','0','prospecting','','','','[]','x','x')").run();
+      const opportunity = await fresh.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie });
+      assert.equal(opportunity.body.opportunity.id, 'OP-010000');
+
+      fresh.db.prepare("INSERT INTO initiatives (id, title, created_at, updated_at) VALUES ('IN-999999', 'Último', 'x', 'x')").run();
+      const exhausted = await fresh.json('POST', '/api/initiatives', { body: { title: 'Sin hueco' }, cookie });
+      assert.equal(exhausted.status, 500);
+      assert.equal(exhausted.body.error.code, 'id_generation_failed');
     } finally {
       await fresh.cleanup();
     }

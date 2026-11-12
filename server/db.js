@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { AGREEMENT_ID_PREFIX, INITIATIVE_ID_PREFIX, OPPORTUNITY_ID_PREFIX, planIdRename } from './ids.js';
 
 const SERVICES_COLUMNS = `id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
       description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
@@ -143,6 +144,7 @@ export const SERVICE_CATALOG = [
 const MIGRATION_MARKER = 'legacy_evolution_v1';
 const SERVICE_YEARS_MARKER = 'service_years_v1';
 const WORKSPACE_LINKS_AGREEMENTS_MARKER = 'workspace_links_agreements_v1';
+const SIX_DIGIT_IDS_MARKER = 'six_digit_ids_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -264,6 +266,12 @@ export function runMigrations(db) {
   migrateServiceYears(db);
   migrateWorkspaceLinkAgreements(db);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_year_name ON services(year, name COLLATE NOCASE)');
+  migrateLegacyEvolution(db);
+  // Last: it renames ids that the migrations above may have copied into join tables.
+  migrateSixDigitIds(db);
+}
+
+function migrateLegacyEvolution(db) {
   if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(MIGRATION_MARKER)) return;
   withTransaction(db, () => {
     const now = new Date().toISOString();
@@ -383,6 +391,128 @@ export function migrateWorkspaceLinkAgreements(db) {
 }
 
 /**
+ * Commercial entities renamed by `migrateSixDigitIds`: their table, id prefix, the entity_type
+ * strings that reference them in polymorphic tables (plural aliases cover any older writer), the
+ * foreign key columns that hold their ids, and the event detail JSON keys that carry their ids.
+ */
+const COMMERCIAL_ID_RENAMES = [
+  {
+    table: 'opportunities',
+    prefix: OPPORTUNITY_ID_PREFIX,
+    entityTypes: ['opportunity', 'opportunities'],
+    references: [['card_events', 'card_id'], ['opportunity_towers', 'opportunity_id'], ['opportunity_lobs', 'opportunity_id'], ['opportunity_services', 'opportunity_id']],
+    detailKeys: ['opportunityId', 'cardId'],
+  },
+  {
+    table: 'initiatives',
+    prefix: INITIATIVE_ID_PREFIX,
+    entityTypes: ['initiative', 'initiatives'],
+    references: [['opportunities', 'initiative_id'], ['initiative_services', 'initiative_id']],
+    detailKeys: ['initiativeId', 'fromInitiativeId'],
+  },
+  {
+    table: 'framework_agreements',
+    prefix: AGREEMENT_ID_PREFIX,
+    entityTypes: ['agreement', 'agreements', 'framework_agreements'],
+    references: [],
+    detailKeys: ['agreementId'],
+  },
+];
+const POLYMORPHIC_ID_TABLES = ['record_actions', 'workspace_links', 'entity_events'];
+const EVENT_DETAIL_TABLES = ['entity_events', 'card_events'];
+
+/**
+ * Renames opportunity, initiative and framework agreement ids to `OP-`/`IN-`/`AM-` plus six
+ * digits (numbering rules in `planIdRename`). Guarded by `schema_meta`, so it runs once per
+ * database. Runs in one transaction with foreign keys off (no ON UPDATE CASCADE exists), rewrites
+ * every foreign key column, polymorphic (entity_type, entity_id) pair and event detail JSON id,
+ * and rolls back unless the foreign key check over the touched tables is clean.
+ */
+export function migrateSixDigitIds(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(SIX_DIGIT_IDS_MARKER)) return;
+  const plans = COMMERCIAL_ID_RENAMES.map((entity) => ({
+    ...entity,
+    rename: planIdRename(db.prepare(`SELECT id, created_at FROM ${entity.table}`).all(), entity.prefix),
+  }));
+  const needsRename = plans.some((plan) => plan.rename.size > 0);
+  // SQLite ignores this pragma inside a transaction, so it is switched around the rename.
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  if (needsRename) db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    withTransaction(db, () => {
+      if (needsRename) {
+        for (const plan of plans) renameEntityIds(db, plan);
+        rewriteEventDetailIds(db, plans);
+        const touched = new Set(plans.flatMap((plan) => [plan.table, ...plan.references.map(([table]) => table)]));
+        const broken = [...touched].flatMap((table) => db.prepare(`PRAGMA foreign_key_check(${table})`).all());
+        if (broken.length > 0) throw new Error(`Six-digit id migration left ${broken.length} broken foreign key reference(s).`);
+      }
+      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(SIX_DIGIT_IDS_MARKER, new Date().toISOString());
+    });
+  } finally {
+    if (needsRename && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+function renameEntityIds(db, { table, entityTypes, references, rename }) {
+  if (rename.size === 0) return;
+  const statements = [
+    db.prepare(`UPDATE ${table} SET id = $next WHERE id = $old`),
+    ...references.map(([refTable, column]) => db.prepare(`UPDATE ${refTable} SET ${column} = $next WHERE ${column} = $old`)),
+    ...POLYMORPHIC_ID_TABLES.flatMap((refTable) =>
+      entityTypes.map((type) => db.prepare(`UPDATE ${refTable} SET entity_id = $next WHERE entity_type = '${type}' AND entity_id = $old`))),
+  ];
+  for (const [old, next] of rename) {
+    for (const statement of statements) statement.run({ old, next });
+  }
+}
+
+/** Rewrites exact id values stored under the known detail keys; other JSON is left byte-identical. */
+function rewriteEventDetailIds(db, plans) {
+  const renameByKey = new Map();
+  for (const plan of plans) for (const key of plan.detailKeys) renameByKey.set(key, plan.rename);
+  const rewrite = (value) => {
+    if (Array.isArray(value)) {
+      let changed = false;
+      const items = value.map((item) => {
+        const result = rewrite(item);
+        changed ||= result.changed;
+        return result.value;
+      });
+      return { value: changed ? items : value, changed };
+    }
+    if (value === null || typeof value !== 'object') return { value, changed: false };
+    let changed = false;
+    const next = {};
+    for (const [key, item] of Object.entries(value)) {
+      const rename = renameByKey.get(key);
+      if (rename && typeof item === 'string' && rename.has(item)) {
+        next[key] = rename.get(item);
+        changed = true;
+      } else {
+        const result = rewrite(item);
+        next[key] = result.value;
+        changed ||= result.changed;
+      }
+    }
+    return { value: changed ? next : value, changed };
+  };
+  for (const table of EVENT_DETAIL_TABLES) {
+    const update = db.prepare(`UPDATE ${table} SET detail = ? WHERE id = ?`);
+    for (const row of db.prepare(`SELECT id, detail FROM ${table}`).all()) {
+      let parsed;
+      try {
+        parsed = JSON.parse(row.detail);
+      } catch {
+        continue;
+      }
+      const result = rewrite(parsed);
+      if (result.changed) update.run(JSON.stringify(result.value), row.id);
+    }
+  }
+}
+
+/**
  * Opens (creating when needed) the SQLite database and makes it ready for use.
  * Safe to call repeatedly: every statement is idempotent.
  */
@@ -399,7 +529,13 @@ export function openDatabase(dbPath) {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
-  applySchema(db);
+  try {
+    applySchema(db);
+  } catch (error) {
+    // A failed migration must not leak the handle: the file stays locked on Windows otherwise.
+    closeDatabase(db);
+    throw error;
+  }
   return db;
 }
 
