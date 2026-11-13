@@ -430,6 +430,32 @@ describe('CRM API', () => {
     assert.equal(removedStage.status, 400);
   });
 
+  test('validation errors name the offending field so the UI can mark it', async () => {
+    const missingTitle = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: '' }, cookie: session });
+    assert.equal(missingTitle.status, 400);
+    assert.equal(missingTitle.body.error.field, 'title');
+    const missingType = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType: '' }, cookie: session });
+    assert.equal(missingType.body.error.field, 'opportunityType');
+    assert.match(missingType.body.error.message, /tipo de oportunidad es obligatorio/);
+    const missingAmount = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, amount: '' }, cookie: session });
+    assert.equal(missingAmount.body.error.field, 'amount');
+    const badQa = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, qaPercent: 140 }, cookie: session });
+    assert.equal(badQa.body.error.field, 'qaPercent');
+    const noOutcome = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result' }, cookie: session });
+    assert.equal(noOutcome.body.error.field, 'outcome');
+    const noReason = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'lost', expectedCloseDate: '2026-01-31' }, cookie: session });
+    assert.equal(noReason.body.error.field, 'closureReason');
+    const noInitiative = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, origin: 'Iniciativa interna' }, cookie: session });
+    assert.equal(noInitiative.body.error.field, 'initiativeId');
+    const towerWithoutResponsible = await app.json('POST', '/api/towers', { body: { name: 'Tower sin responsable (campo)' }, cookie: session });
+    assert.equal(towerWithoutResponsible.body.error.field, 'responsibleId');
+    const emptyAgreement = await app.json('POST', '/api/agreements', { body: { title: '  ' }, cookie: session });
+    assert.equal(emptyAgreement.status, 400);
+    assert.equal(emptyAgreement.body.error.field, 'title');
+    const badStage = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'archived' }, cookie: session });
+    assert.equal(Object.hasOwn(badStage.body.error, 'field'), false);
+  });
+
   test('master records can be created, linked and deactivated without deleting references', async () => {
     const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente maestro', sector: 'Tecnología' }, cookie: session });
     const person = await app.json('POST', '/api/people', { body: { name: 'Responsable QE', email: 'qe@example.com' }, cookie: session });

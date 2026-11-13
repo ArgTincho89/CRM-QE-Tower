@@ -78,8 +78,8 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const defaultLogger = { error: (message) => console.error(message) };
 
-function validationError(message) {
-  return new HttpError(400, 'validation_error', message);
+function validationError(message, field = undefined) {
+  return new HttpError(400, 'validation_error', message, field);
 }
 
 function notFoundError() {
@@ -462,17 +462,17 @@ function mapEvent(row) {
 
 function parseTextField(value, field, maxLength) {
   if (value === undefined || value === null) {
-    throw validationError(`El campo "${field}" es obligatorio.`);
+    throw validationError(`El campo "${field}" es obligatorio.`, field);
   }
   if (typeof value !== 'string') {
-    throw validationError(`El campo "${field}" debe ser texto.`);
+    throw validationError(`El campo "${field}" debe ser texto.`, field);
   }
   const trimmed = value.trim();
   if (trimmed === '') {
-    throw validationError(`El campo "${field}" no puede estar vacío.`);
+    throw validationError(`El campo "${field}" no puede estar vacío.`, field);
   }
   if (trimmed.length > maxLength) {
-    throw validationError(`El campo "${field}" no puede superar los ${maxLength} caracteres.`);
+    throw validationError(`El campo "${field}" no puede superar los ${maxLength} caracteres.`, field);
   }
   return trimmed;
 }
@@ -510,20 +510,20 @@ function parseStage(value) {
 }
 
 function parseAmount(value) {
-  if (value === undefined || value === null || value === '') throw validationError('El importe es obligatorio.');
+  if (value === undefined || value === null || value === '') throw validationError('El importe es obligatorio.', 'amount');
   const raw = typeof value === 'number' ? String(value) : String(value ?? '').trim();
   const clean = raw.replace(/\s|€|EUR/g, '');
   const normalized = clean.includes(',')
     ? clean.replace(/\./g, '').replace(',', '.')
     : (/^\d{1,3}(\.\d{3})+$/.test(clean) ? clean.replace(/\./g, '') : clean);
   const amount = Number(normalized);
-  if (!Number.isFinite(amount) || amount < 0) throw validationError('El importe debe ser un número no negativo.');
+  if (!Number.isFinite(amount) || amount < 0) throw validationError('El importe debe ser un número no negativo.', 'amount');
   return String(amount);
 }
 
 function parsePercent(value) {
   const number = Number(value);
-  if (!Number.isFinite(number) || number < 0 || number > 100) throw validationError('El porcentaje de participación QA debe estar entre 0 y 100.');
+  if (!Number.isFinite(number) || number < 0 || number > 100) throw validationError('El porcentaje de participación QA debe estar entre 0 y 100.', 'qaPercent');
   return number;
 }
 
@@ -531,7 +531,7 @@ function parseProbability(value) {
   if (value === undefined || value === null || value === '') return null;
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0 || number > 100) {
-    throw validationError('La probabilidad de cierre debe ser un número entre 0 y 100.');
+    throw validationError('La probabilidad de cierre debe ser un número entre 0 y 100.', 'probability');
   }
   return Math.trunc(number);
 }
@@ -547,7 +547,7 @@ function parseOrigin(value) {
 function parseOutcome(value) {
   if (value === undefined || value === null || value === '') return '';
   if (typeof value !== 'string' || !OUTCOMES.has(value.trim())) {
-    throw validationError('El resultado debe ser Ganada, Perdida o Descartada.');
+    throw validationError('El resultado debe ser Ganada, Perdida o Descartada.', 'outcome');
   }
   return value.trim();
 }
@@ -558,10 +558,10 @@ function parseOutcome(value) {
  */
 function parseOpportunityType(value) {
   if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
-    throw validationError('El tipo de oportunidad es obligatorio (Pliego, Oferta o Staffing).');
+    throw validationError('El tipo de oportunidad es obligatorio (Pliego, Oferta o Staffing).', 'opportunityType');
   }
   if (typeof value !== 'string' || !OPPORTUNITY_TYPE_IDS.has(value.trim())) {
-    throw validationError('El tipo de oportunidad debe ser Pliego, Oferta o Staffing.');
+    throw validationError('El tipo de oportunidad debe ser Pliego, Oferta o Staffing.', 'opportunityType');
   }
   return value.trim();
 }
@@ -569,7 +569,7 @@ function parseOpportunityType(value) {
 function parseOptionalDate(value, field) {
   if (value === undefined || value === null || value === '') return '';
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
-    throw validationError(`El campo "${field}" debe ser una fecha válida (AAAA-MM-DD).`);
+    throw validationError(`El campo "${field}" debe ser una fecha válida (AAAA-MM-DD).`, field);
   }
   return value.trim();
 }
@@ -583,7 +583,7 @@ const INTERNAL_INITIATIVE_ORIGIN = 'Iniciativa interna';
 /** An internal-initiative origin must point at the initiative that generated the opportunity. */
 function assertOriginInitiative(origin, initiativeId) {
   if (origin === INTERNAL_INITIATIVE_ORIGIN && !initiativeId) {
-    throw validationError('Selecciona la iniciativa de origen para el origen «Iniciativa interna».');
+    throw validationError('Selecciona la iniciativa de origen para el origen «Iniciativa interna».', 'initiativeId');
   }
 }
 
@@ -591,7 +591,7 @@ function optionalInitiativeId(db, value) {
   if (value === undefined || value === null || value === '') return null;
   const found = db.prepare('SELECT id FROM initiatives WHERE id = ? AND archived_at IS NULL').get(value);
   if (typeof value !== 'string' || !found) {
-    throw validationError('La iniciativa seleccionada no existe o está archivada.');
+    throw validationError('La iniciativa seleccionada no existe o está archivada.', 'initiativeId');
   }
   return value;
 }
@@ -786,14 +786,14 @@ function normalizeFieldValue(db, field, value) {
  */
 function assertOpportunityState({ stage, outcome, expectedCloseDate, closureReason }) {
   if (stage === RESULT_STAGE) {
-    if (!outcome) throw validationError('Selecciona el resultado (Ganada, Perdida o Descartada) para la etapa Resultado.');
-    if (!expectedCloseDate) throw validationError('La etapa Resultado requiere una fecha estimada de cierre.');
+    if (!outcome) throw validationError('Selecciona el resultado (Ganada, Perdida o Descartada) para la etapa Resultado.', 'outcome');
+    if (!expectedCloseDate) throw validationError('La etapa Resultado requiere una fecha estimada de cierre.', 'expectedCloseDate');
     if (outcome !== 'won' && !closureReason) {
-      throw validationError('Indica el motivo de pérdida o descarte.');
+      throw validationError('Indica el motivo de pérdida o descarte.', 'closureReason');
     }
     return;
   }
-  if (outcome) throw validationError('El resultado solo se registra en la etapa Resultado.');
+  if (outcome) throw validationError('El resultado solo se registra en la etapa Resultado.', 'outcome');
 }
 
 function insertCardEvent(db, { cardId, user, action, detail, createdAt }) {
@@ -1406,7 +1406,7 @@ const MAX_SERVICE_YEAR = 2100;
 function parseServiceYear(value) {
   const year = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
   if (!Number.isInteger(year) || year < MIN_SERVICE_YEAR || year > MAX_SERVICE_YEAR) {
-    throw validationError(`El ejercicio debe ser un año entre ${MIN_SERVICE_YEAR} y ${MAX_SERVICE_YEAR}.`);
+    throw validationError(`El ejercicio debe ser un año entre ${MIN_SERVICE_YEAR} y ${MAX_SERVICE_YEAR}.`, 'year');
   }
   return year;
 }
@@ -1558,6 +1558,7 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
     409,
     'duplicate_record',
     year === null ? 'Ya existe un registro con ese nombre.' : `Ya existe un servicio con ese nombre en el ejercicio ${year}.`,
+    'name',
   );
   if (req.method === 'POST') {
     const values = fields.map((field) => {
@@ -1574,7 +1575,7 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
     }
     if (kind === 'towers') {
       const responsibleId = optionalId(ctx.db, 'people', body.responsibleId, 'responsable');
-      if (!responsibleId) throw validationError('Selecciona un responsable para la tower.');
+      if (!responsibleId) throw validationError('Selecciona un responsable para la tower.', 'responsibleId');
       extraColumns.push('responsible_id', 'lob_id');
       extraValues.push(responsibleId, optionalId(ctx.db, 'lobs', body.lobId, 'LoB'));
     }
@@ -1615,7 +1616,7 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
         if (Object.hasOwn(body, 'active')) throw validationError('Las towers no tienen estado activo o inactivo.');
         if (Object.hasOwn(body, 'responsibleId')) {
           const responsibleId = optionalId(ctx.db, 'people', body.responsibleId, 'responsable');
-          if (!responsibleId) throw validationError('Selecciona un responsable para la tower.');
+          if (!responsibleId) throw validationError('Selecciona un responsable para la tower.', 'responsibleId');
           changes.push(['responsible_id', responsibleId]);
         }
         if (Object.hasOwn(body, 'lobId')) changes.push(['lob_id', optionalId(ctx.db, 'lobs', body.lobId, 'LoB')]);

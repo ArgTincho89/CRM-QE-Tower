@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
-import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
 import { NAV_GROUPS } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
@@ -15,6 +15,9 @@ import { formatNotificationTime, markNotificationsRead, notificationTargetPage, 
 import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
+import DataTable from './DataTable.jsx';
+import { FormField, useFieldErrors } from './FormField.jsx';
+import { AGREEMENT_FORM_FIELDS, INITIATIVE_FORM_FIELDS, MASTER_FORM_FIELDS, OPPORTUNITY_FORM_FIELDS, SERVICE_YEAR_FORM_FIELDS, mapServerFieldError, validateAgreementForm, validateInitiativeForm, validateMasterForm, validateOpportunityForm, validateServiceYearForm } from './formValidation.js';
 
 
 const pageTitles = {
@@ -978,8 +981,39 @@ function OpportunityTypePill({ type }) {
   return <span className={`status-pill opportunity-type-pill ${tone}${missing ? ' missing' : ''}`}>{label}</span>;
 }
 
+// Sort keys shared by the opportunity tables: stage follows the pipeline order and
+// records without outcome or type sort last (as empty values).
+const stageOrder = (item) => {
+  const index = stages.findIndex((stage) => stage.id === item.stage);
+  return index === -1 ? null : index;
+};
+// Priority sorts Alta -> Media -> Baja (unknown values fall back to their text).
+const priorityOrder = (priority) => {
+  const index = initiativePriorities.indexOf(priority);
+  return index === -1 ? priority : index;
+};
+const outcomeSortLabel =(item) => describeOpportunityOutcome(item.outcome)?.label || '';
+const typeSortLabel = (item) => {
+  const described = describeOpportunityType(item.opportunityType);
+  return described.missing ? '' : described.label;
+};
+
 function OpportunityRows({ opportunities, view, onEdit }) {
-  if (view === 'table') return <div className="table-wrap"><table className="data-table"><thead><tr><th>ID / Oportunidad</th><th>ID registro</th><th>Cliente</th><th>Etapa</th><th>Resultado</th><th>Tipo</th><th>Tower</th><th>Importe estimado</th><th>Responsable</th><th>Próximo hito</th><th><span className="sr-only">Acciones</span></th></tr></thead><tbody>{opportunities.map((item) => <tr key={item.id}><td><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></td><td>{item.registryId || '—'}</td><td>{item.account}</td><td><span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span></td><td><OutcomeCell outcome={item.outcome} /></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower}</td><td className="table-amount">{item.amount}</td><td><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span></td><td>{item.due}</td><td><button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button></td></tr>)}</tbody></table>{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+  if (view === 'table') {
+    const columns = [
+      { id: 'title', label: 'ID / Oportunidad', value: (item) => item.title, render: (item) => <><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></> },
+      { id: 'registryId', label: 'ID registro', value: (item) => item.registryId },
+      { id: 'account', label: 'Cliente', value: (item) => item.account, render: (item) => item.account },
+      { id: 'stage', label: 'Etapa', type: 'number', value: stageOrder, render: (item) => <span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span> },
+      { id: 'outcome', label: 'Resultado', value: outcomeSortLabel, render: (item) => <OutcomeCell outcome={item.outcome} /> },
+      { id: 'opportunityType', label: 'Tipo', value: typeSortLabel, render: (item) => <OpportunityTypePill type={item.opportunityType} /> },
+      { id: 'tower', label: 'Tower', value: (item) => item.tower, render: (item) => item.tower },
+      { id: 'amount', label: 'Importe estimado', type: 'amount', value: (item) => item.amount, render: (item) => item.amount, cellClassName: 'table-amount' },
+      { id: 'owner', label: 'Responsable', value: (item) => item.owner, render: (item) => <span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span> },
+      { id: 'due', label: 'Próximo hito', type: 'date', value: (item) => item.due, render: (item) => item.due },
+    ];
+    return <div className="table-wrap"><DataTable tableId="pipeline" columns={columns} rows={opportunities} actions={{ label: 'Acciones', srOnly: true, render: (item) => <button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button> }} />{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+  }
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
@@ -992,7 +1026,7 @@ function SecondaryPage({ page, opportunities, clients, towers, services, service
   if (page === 'services') return <ServicesPanel services={services} serviceYears={serviceYears} activeYear={activeServiceYear} onSelectYear={onSelectServiceYear} onNewYear={onNewServiceYear} onDeleteYear={onDeleteServiceYear} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
-  if (page === 'proposals') return <DataPanel title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
+  if (page === 'proposals') return <DataPanel tableId="proposals" types={['text', 'text', 'text', 'text', 'amount', 'text', 'text']} title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
   if (page === 'agreements') return <AgreementPanel agreements={agreements} query={query} clients={clients} people={people} onEdit={onEditAgreement} onDelete={onDeleteAgreement} />;
   return <Analytics opportunities={opportunities} grouped={grouped} />;
 }
@@ -1001,8 +1035,14 @@ function SummaryCard({ title, action, onAction, children }) {
   return <section className="panel-card"><div className="panel-heading"><h3>{title}</h3><button onClick={onAction}>{action} <Icon name="arrow" size={14} /></button></div>{children}</section>;
 }
 
-function DataPanel({ title, description, headers, rows }) {
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{rows.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{headers.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={`${row[0]}-${index}`}>{row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cellIndex === row.length - 1 ? <span className={`status-pill ${String(cell).toLowerCase().includes('vigente') || cell === 'Activo' || cell === 'Ganada' ? 'green' : 'violet'}`}>{cell}</span> : cell}</td>)}</tr>)}</tbody></table></div><div className="panel-footnote"><span className="info-mark">i</span> Los datos de propuestas y estimaciones se conservan como referencia mientras se define su gestión persistente.</div></section>;
+function DataPanel({ tableId, title, description, headers, types = [], rows }) {
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{rows.length} registros</span></div><div className="table-wrap"><DataTable tableId={tableId} className="data-table secondary-table" rowKey={(row, index) => `${row[0]}-${index}`} rows={rows} columns={headers.map((heading, cellIndex) => ({
+    id: `col-${cellIndex}`,
+    label: heading,
+    type: types[cellIndex] || 'text',
+    value: (row) => row[cellIndex],
+    render: (row) => (cellIndex === row.length - 1 ? <span className={`status-pill ${String(row[cellIndex]).toLowerCase().includes('vigente') || row[cellIndex] === 'Activo' || row[cellIndex] === 'Ganada' ? 'green' : 'violet'}`}>{row[cellIndex]}</span> : row[cellIndex]),
+  }))} /></div><div className="panel-footnote"><span className="info-mark">i</span> Los datos de propuestas y estimaciones se conservan como referencia mientras se define su gestión persistente.</div></section>;
 }
 
 function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, searchQuery, onClearSearch, archivedView, onToggleArchived, onRestore, onArchive, onDelete }) {
@@ -1013,18 +1053,24 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
     </div>
     {loading && <div className="board-state"><p>{archivedView ? 'Cargando oportunidades archivadas…' : 'Cargando oportunidades…'}</p></div>}
     {error && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={onRetry}>Reintentar</button></div>}
-    {!loading && !error && <div className="table-wrap"><table className="data-table opportunity-management-table"><thead><tr>
-      <th>ID interno</th><th>N.º externo</th><th>ID registro</th><th>Oportunidad</th><th>Cliente</th><th>Etapa</th><th>Resultado</th><th>Tipo</th><th>Tower</th><th>Responsable</th><th>Asignado a</th><th>Bid Manager</th><th>Importe</th><th>QA %</th><th>Próximo hito</th><th>Motivo de cierre</th><th>Acciones</th>
-    </tr></thead><tbody>{opportunities.map((item) => {
-      const stage = stages.find((entry) => entry.id === item.stage);
-      return <tr key={item.id}>
-        <td>{item.id}</td><td>{item.number || '—'}</td><td>{item.registryId || '—'}</td><td><button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button></td>
-        <td>{item.account || '—'}</td><td><span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span></td><td><OutcomeCell outcome={item.outcome} /></td><td><OpportunityTypePill type={item.opportunityType} /></td><td>{item.tower || '—'}</td>
-        <td>{item.owner || '—'}</td><td>{item.assignedUserName || '—'}</td><td>{item.bidManager || '—'}</td><td className="table-amount">{item.amount}</td><td>{Number(item.qaPercent || 0)}%</td>
-        <td>{item.due || '—'}</td><td>{item.closureReason || '—'}</td>
-        <td className="master-actions">{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td>
-      </tr>;
-    })}</tbody></table>
+    {!loading && !error && <div className="table-wrap"><DataTable tableId="opportunities" className="data-table opportunity-management-table" rows={opportunities} columns={[
+      { id: 'id', label: 'ID interno', value: (item) => item.id },
+      { id: 'number', label: 'N.º externo', value: (item) => item.number },
+      { id: 'registryId', label: 'ID registro', value: (item) => item.registryId },
+      { id: 'title', label: 'Oportunidad', value: (item) => item.title, render: (item) => <button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button> },
+      { id: 'account', label: 'Cliente', value: (item) => item.account },
+      { id: 'stage', label: 'Etapa', type: 'number', value: stageOrder, render: (item) => { const stage = stages.find((entry) => entry.id === item.stage); return <span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span>; } },
+      { id: 'outcome', label: 'Resultado', value: outcomeSortLabel, render: (item) => <OutcomeCell outcome={item.outcome} /> },
+      { id: 'opportunityType', label: 'Tipo', value: typeSortLabel, render: (item) => <OpportunityTypePill type={item.opportunityType} /> },
+      { id: 'tower', label: 'Tower', value: (item) => item.tower },
+      { id: 'owner', label: 'Responsable', value: (item) => item.owner },
+      { id: 'assignedUserName', label: 'Asignado a', value: (item) => item.assignedUserName },
+      { id: 'bidManager', label: 'Bid Manager', value: (item) => item.bidManager },
+      { id: 'amount', label: 'Importe', type: 'amount', value: (item) => item.amount, render: (item) => item.amount, cellClassName: 'table-amount' },
+      { id: 'qaPercent', label: 'QA %', type: 'percent', value: (item) => Number(item.qaPercent || 0), render: (item) => `${Number(item.qaPercent || 0)}%` },
+      { id: 'due', label: 'Próximo hito', type: 'date', value: (item) => item.due },
+      { id: 'closureReason', label: 'Motivo de cierre', value: (item) => item.closureReason },
+    ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />
     {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{searchQuery ? `No hay oportunidades archivadas que coincidan con la búsqueda.` : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{searchQuery && <button className="button button-secondary" onClick={onClearSearch}>Limpiar búsqueda</button>}</div>}
     </div>}
   </section>;
@@ -1065,7 +1111,14 @@ function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView,
     </div>
     {archivedLoading && <div className="board-state"><p>Cargando iniciativas archivadas…</p></div>}
     {archivedView
-      ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Iniciativa</th><th>Categoría</th><th>Cliente</th><th>Prioridad</th><th>Estado</th><th>Archivada por</th><th>Acciones</th></tr></thead><tbody>{cards.map((item) => <tr key={item.id}><td>{item.title}</td><td>{item.categoryLabel}</td><td>{item.account}</td><td>{item.priority || 'Media'}</td><td>{item.statusLabel}</td><td>{item.archivedByName || '—'}</td><td className="master-actions"><button className="button button-secondary" onClick={() => onRestore(item.sourceRecord)}>Restaurar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{cards.length === 0 && <p className="empty-state">{emptyMessage('archivadas')}</p>}</div>
+      ? <div className="table-wrap"><DataTable tableId="initiatives-archived" rows={cards} columns={[
+        { id: 'title', label: 'Iniciativa', value: (item) => item.title, render: (item) => item.title },
+        { id: 'category', label: 'Categoría', value: (item) => item.categoryLabel, render: (item) => item.categoryLabel },
+        { id: 'account', label: 'Cliente', value: (item) => item.account, render: (item) => item.account },
+        { id: 'priority', label: 'Prioridad', type: 'number', value: (item) => priorityOrder(item.priority || 'Media'), render: (item) => item.priority || 'Media' },
+        { id: 'status', label: 'Estado', value: (item) => item.statusLabel, render: (item) => item.statusLabel },
+        { id: 'archivedBy', label: 'Archivada por', value: (item) => item.archivedByName },
+      ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <><button className="button button-secondary" onClick={() => onRestore(item.sourceRecord)}>Restaurar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{cards.length === 0 && <p className="empty-state">{emptyMessage('archivadas')}</p>}</div>
       : <Kanban cards={cards} allCards={cards} stageList={initiativeStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={(record) => onEdit(record.sourceRecord)} onMove={onMove} onArchive={onArchive} onDelete={onDelete} />}
   </section>;
 }
@@ -1129,6 +1182,7 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
   });
   const [amountText, setAmountText] = useState(() => formatAmountInput(record.amount || ''));
   const [error, setError] = useState('');
+  const fieldErrors = useFieldErrors();
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -1136,12 +1190,12 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
     return () => { if (dialog?.open) dialog.close(); };
   }, []);
 
-  useEffect(() => {
-    if (saveError) setError(saveError);
-  }, [saveError]);
-
-  const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const update = (field, value) => {
+    fieldErrors.clear(field);
+    setForm((current) => ({ ...current, [field]: value }));
+  };
   const handleAmountChange = (event) => {
+    fieldErrors.clear('amount');
     const input = event.target;
     const caret = input.selectionStart ?? input.value.length;
     const digitsBefore = input.value.slice(0, caret).replace(/[^0-9,]/g, '').length;
@@ -1172,18 +1226,9 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
   const submit = async (event) => {
     event.preventDefault();
     if (saving) return;
-    if (!form.title.trim()) { setError('Completa el nombre de la oportunidad.'); return; }
-    const typeError = validateOpportunityType(form.opportunityType);
-    if (typeError) { setError(typeError); return; }
-    const amount = parseAmount(amountText);
-    if (!(amount >= 0)) { setError('El importe debe ser igual o superior a cero.'); return; }
-    if (Number(form.qaPercent) < 0 || Number(form.qaPercent) > 100) { setError('La participación QA debe estar entre 0 y 100 %.'); return; }
-    if (probabilityValue !== null && (Number.isNaN(probabilityValue) || probabilityValue < 0 || probabilityValue > 100)) { setError('La probabilidad debe estar entre 0 y 100 %.'); return; }
-    const originError = validateOriginInitiative(form, record);
-    if (originError) { setError(originError); return; }
-    const resultError = validateOpportunityResult(form);
-    if (resultError) { setError(resultError); return; }
     setError('');
+    if (fieldErrors.show(validateOpportunityForm(form, { amountText, original: record }))) return;
+    const amount = parseAmount(amountText);
     const selectedTowers = towers.filter((item) => form.towerIds.includes(item.id));
     const milestone = form.nextMilestone.trim();
     const milestoneDate = form.nextMilestoneDate.trim();
@@ -1217,34 +1262,37 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
         serviceIds: form.serviceIds,
         links: normalizeWorkspaceLinks(form.links),
       });
-    } catch {
-      // The parent surfaces the API message through saveError.
+    } catch (err) {
+      // A validation error naming a field is shown under that field; anything else above the actions.
+      const mapped = mapServerFieldError(err, OPPORTUNITY_FORM_FIELDS);
+      if (mapped) fieldErrors.show(mapped);
+      else setError(err?.message || saveError || 'No se pudo guardar la oportunidad.');
     }
   };
 
   return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="dialog-title" onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}>
-    <form onSubmit={submit}>
+    <form onSubmit={submit} noValidate ref={fieldErrors.formRef}>
       <div className="dialog-heading"><div><span className="eyebrow">CRM QE · OPORTUNIDAD</span><h2 id="dialog-title">{isEditing ? 'Editar oportunidad' : 'Nueva oportunidad'}</h2><p>Registra el seguimiento QE. No reemplaza la oportunidad del CRM corporativo.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose} disabled={saving}><Icon name="close" /></button></div>
       <div className="form-grid">
-        <label className="form-field wide">Nombre de la oportunidad *<input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required disabled={saving} /></label>
-        <label className="form-field">Tipo de oportunidad *<select value={form.opportunityType} onChange={(event) => update('opportunityType', event.target.value)} aria-required="true" disabled={saving}><option value="">Selecciona un tipo</option>{opportunityTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select>{isEditing && !record.opportunityType && <span className="field-hint">Registro sin tipo: elige uno para guardar los cambios.</span>}</label>
+        <FormField form={fieldErrors} field="title" label="Nombre de la oportunidad" required className="wide"><input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required disabled={saving} {...fieldErrors.fieldProps('title')} /></FormField>
+        <FormField form={fieldErrors} field="opportunityType" label="Tipo de oportunidad" required><select value={form.opportunityType} onChange={(event) => update('opportunityType', event.target.value)} aria-required="true" disabled={saving} {...fieldErrors.fieldProps('opportunityType')}><option value="">Selecciona un tipo</option>{opportunityTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select>{isEditing && !record.opportunityType && <span className="field-hint">Registro sin tipo: elige uno para guardar los cambios.</span>}</FormField>
         <label className="form-field">Número de oportunidad<input value={form.number} onChange={(event) => update('number', event.target.value)} placeholder="Identificador externo" disabled={saving} /></label>
         <label className="form-field">ID registro<input value={form.registryId} onChange={(event) => update('registryId', event.target.value)} placeholder="Portal del cliente, pliego o ERP" maxLength="120" disabled={saving} /><span className="field-hint">Opcional. Referencia externa del registro.</span></label>
         <label className="form-field">Cliente / cuenta<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></label>
-        <label className="form-field">Importe estimado *<span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></label>
-        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => update('stage', event.target.value)} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
-        <label className="form-field">Origen<select value={form.origin} onChange={(event) => setForm((current) => applyOriginChange(current, event.target.value))} disabled={saving || isConversion}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
-        {requiresOriginInitiative(form.origin) && <label className="form-field">Iniciativa de origen *<select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} aria-required="true" disabled={saving || isConversion}><option value="">Selecciona una iniciativa</option>{initiativeChoices.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.title}{item.archivedAt ? ' (archivada)' : ''}</option>)}</select><span className="field-hint">{linkedInitiative ? `Vinculada a ${linkedInitiative.id} · ${linkedInitiative.title}. ` : ''}{isConversion ? 'Al guardar esta oportunidad, la iniciativa se marcará como Completada.' : 'Los ciclos de vida de la iniciativa y la oportunidad son independientes.'}</span></label>}
-        <label className="form-field">Probabilidad (%)<input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado (importe QE × probabilidad): ${formatCurrency(weightedPreview)}.`}</span></label>
-        <label className="form-field">Fecha estimada de cierre<input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} disabled={saving} /></label>
+        <FormField form={fieldErrors} field="amount" label="Importe estimado" required><span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} {...fieldErrors.fieldProps('amount')} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></FormField>
+        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => { ['expectedCloseDate', 'outcome', 'closureReason'].forEach(fieldErrors.clear); update('stage', event.target.value); }} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
+        <label className="form-field">Origen<select value={form.origin} onChange={(event) => { fieldErrors.clear('initiativeId'); setForm((current) => applyOriginChange(current, event.target.value)); }} disabled={saving || isConversion}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
+        {requiresOriginInitiative(form.origin) && <FormField form={fieldErrors} field="initiativeId" label="Iniciativa de origen" required><select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} aria-required="true" disabled={saving || isConversion} {...fieldErrors.fieldProps('initiativeId')}><option value="">Selecciona una iniciativa</option>{initiativeChoices.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.title}{item.archivedAt ? ' (archivada)' : ''}</option>)}</select><span className="field-hint">{linkedInitiative ? `Vinculada a ${linkedInitiative.id} · ${linkedInitiative.title}. ` : ''}{isConversion ? 'Al guardar esta oportunidad, la iniciativa se marcará como Completada.' : 'Los ciclos de vida de la iniciativa y la oportunidad son independientes.'}</span></FormField>}
+        <FormField form={fieldErrors} field="probability" label="Probabilidad (%)"><input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} {...fieldErrors.fieldProps('probability')} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado (importe QE × probabilidad): ${formatCurrency(weightedPreview)}.`}</span></FormField>
+        <FormField form={fieldErrors} field="expectedCloseDate" label="Fecha estimada de cierre" required={isResult}><input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} aria-required={isResult ? 'true' : undefined} disabled={saving} {...fieldErrors.fieldProps('expectedCloseDate')} /></FormField>
         <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
         <label className="form-field">Fecha del próximo hito<input type="date" value={form.nextMilestoneDate} onChange={(event) => update('nextMilestoneDate', event.target.value)} disabled={saving} /></label>
         <label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)} disabled={saving}><option value="">Sin responsable</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))}>+ Crear responsable</button></label>
         <AssigneeField value={form.assignedUserId} users={users} onChange={(value) => update('assignedUserId', value)} disabled={saving} />
         <label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)} disabled={saving}><option value="">Sin asignar</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))}>+ Crear responsable</button></label>
-        <label className="form-field">Participación del equipo QA (%)<input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} /><span className="field-hint">Alimenta el KPI Pipeline QE.</span></label>
-        {isResult && <label className="form-field">Resultado *<select value={form.outcome} onChange={(event) => update('outcome', event.target.value)} disabled={saving}><option value="">Selecciona un resultado</option>{opportunityOutcomes.map((outcome) => <option key={outcome.id} value={outcome.id}>{outcome.label}</option>)}</select></label>}
-        {isResult && form.outcome !== 'won' && <label className="form-field wide">Motivo de cierre<input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} maxLength="160" disabled={saving} /></label>}
+        <FormField form={fieldErrors} field="qaPercent" label="Participación del equipo QA (%)"><input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('qaPercent')} /><span className="field-hint">Alimenta el KPI Pipeline QE.</span></FormField>
+        {isResult && <FormField form={fieldErrors} field="outcome" label="Resultado" required><select value={form.outcome} onChange={(event) => update('outcome', event.target.value)} aria-required="true" disabled={saving} {...fieldErrors.fieldProps('outcome')}><option value="">Selecciona un resultado</option>{opportunityOutcomes.map((outcome) => <option key={outcome.id} value={outcome.id}>{outcome.label}</option>)}</select></FormField>}
+        {isResult && form.outcome !== 'won' && <FormField form={fieldErrors} field="closureReason" label="Motivo de cierre" required className="wide"><input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} maxLength="160" aria-required="true" disabled={saving} {...fieldErrors.fieldProps('closureReason')} /></FormField>}
         {form.outcome === 'won' && <label className="form-field wide">PEP<input value={form.pep} onChange={(event) => update('pep', event.target.value)} placeholder="Identificador PEP" maxLength="160" disabled={saving} /><span className="field-hint">Obligatorio para la etapa Resultado con resultado Ganada. Se conserva si cambia el resultado.</span></label>}
         <label className="form-field wide">Descripción / necesidad<textarea rows="3" value={form.need} onChange={(event) => update('need', event.target.value)} placeholder="Contexto, alcance y necesidad del cliente" maxLength="2000" disabled={saving} /></label>
       </div>
@@ -1274,7 +1322,10 @@ function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDe
     : kind === 'lobs'
       ? 'Una LoB no se puede desactivar ni eliminar mientras alguna tower u oportunidad la referencie.'
       : hasLifecycle ? 'Desactivar conserva el registro y sus vínculos. Eliminar solo es posible si no tiene vínculos.' : 'Cada tower tiene un responsable asignado. Las towers vinculadas no se pueden eliminar.';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table"><thead><tr>{headers.map((label) => <th key={label}>{label}</th>)}{hasLifecycle && <th>Estado</th>}<th>Acciones</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}>{columns.map((field) => <td key={field}>{record[field] || '—'}</td>)}{hasLifecycle && <td>{record.active ? 'Activo' : 'Inactivo'}</td>}<td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId={`master-${kind}`} rows={records} columns={[
+    ...columns.map((field, index) => ({ id: field, label: headers[index], value: (record) => record[field] })),
+    ...(hasLifecycle ? [{ id: 'status', label: 'Estado', value: (record) => (record.active ? 'Activo' : 'Inactivo') }] : []),
+  ]} actions={{ label: 'Acciones', className: 'master-actions', render: (record) => <><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
 }
 
 /** Services of one fiscal year, with year tabs and the year create/delete actions. */
@@ -1302,22 +1353,27 @@ function ServiceYearDialog({ years, currentYear, onClose, onSave }) {
   const [copyPrevious, setCopyPrevious] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const fieldErrors = useFieldErrors();
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
   const parsedYear = Number(year);
   const previous = Number.isInteger(parsedYear) ? previousServiceYear(years, parsedYear) : null;
   const submit = async (event) => {
     event.preventDefault(); setError('');
-    if (!Number.isInteger(parsedYear) || parsedYear < 2000 || parsedYear > 2100) { setError('El ejercicio debe ser un año entre 2000 y 2100.'); return; }
+    if (fieldErrors.show(validateServiceYearForm({ year }))) return;
     setSaving(true);
     try { await onSave({ year: parsedYear, copyFromYear: copyPrevious && previous !== null ? previous : null }); }
-    catch (err) { setError(err?.message || 'No se pudo crear el ejercicio.'); }
+    catch (err) {
+      const mapped = mapServerFieldError(err, SERVICE_YEAR_FORM_FIELDS);
+      if (mapped) fieldErrors.show(mapped);
+      else setError(err?.message || 'No se pudo crear el ejercicio.');
+    }
     finally { setSaving(false); }
   };
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit}>
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit} noValidate ref={fieldErrors.formRef}>
     <div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>Nuevo ejercicio</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div>
     <div className="form-grid">
-      <label className="form-field wide">Año<input type="number" required min="2000" max="2100" step="1" value={year} onChange={(event) => setYear(event.target.value)} /></label>
+      <FormField form={fieldErrors} field="year" label="Año" required className="wide"><input type="number" required min="2000" max="2100" step="1" value={year} onChange={(event) => { fieldErrors.clear('year'); setYear(event.target.value); }} {...fieldErrors.fieldProps('year')} /></FormField>
       {previous !== null
         ? <label className="form-field wide checkbox-field"><span><input type="checkbox" checked={copyPrevious} onChange={(event) => setCopyPrevious(event.target.checked)} /> Copiar servicios del ejercicio anterior ({previous})</span><span className="field-hint">Se copian los servicios activos como registros nuevos del ejercicio.</span></label>
         : <span className="field-hint wide">No hay un ejercicio anterior del que copiar servicios.</span>}
@@ -1337,16 +1393,26 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
   }[kind];
   const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', description: record.description || '', responsibleId: record.responsibleId || '', lobId: record.lobId || '', active: record.active ?? true, ...(kind === 'services' && record.year ? { year: record.year } : {}) });
   const [error, setError] = useState('');
+  const fieldErrors = useFieldErrors();
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
+  const setValue = (field, value) => {
+    fieldErrors.clear(field);
+    setValues((current) => ({ ...current, [field]: value }));
+  };
   const submit = async (event) => {
     event.preventDefault(); setError('');
+    if (fieldErrors.show(validateMasterForm(kind, values))) return;
     try { const payload = { ...values, id: record.id }; if (kind === 'towers') delete payload.active; const saved = await onSave(kind, payload); onSaved?.(saved); onClose(); }
-    catch (err) { setError(err?.message || 'No se pudo guardar el registro.'); }
+    catch (err) {
+      const mapped = mapServerFieldError(err, MASTER_FORM_FIELDS);
+      if (mapped) fieldErrors.show(mapped);
+      else setError(err?.message || 'No se pudo guardar el registro.');
+    }
   };
   const fields = [];
   for (let index = 0; index < labels[2].length; index += 2) fields.push([labels[2][index], labels[2][index + 1]]);
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <label className="form-field wide" key={field}>{label}<input required={field === 'name'} value={values[field]} onChange={(event) => setValues((current) => ({ ...current, [field]: event.target.value }))} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</label>)}{kind === 'towers' && <label className="form-field wide">Responsable *<select required value={values.responsibleId} onChange={(event) => setValues((current) => ({ ...current, responsibleId: event.target.value }))}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit} noValidate ref={fieldErrors.formRef}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <FormField form={fieldErrors} field={field} label={label} required={field === 'name'} className="wide" key={field}><input required={field === 'name'} value={values[field]} onChange={(event) => setValue(field, event.target.value)} {...fieldErrors.fieldProps(field)} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</FormField>)}{kind === 'towers' && <FormField form={fieldErrors} field="responsibleId" label="Responsable" required className="wide"><select required value={values.responsibleId} onChange={(event) => setValue('responsibleId', event.target.value)} {...fieldErrors.fieldProps('responsibleId')}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></FormField>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
 }
 
 function InitiativeDialog({ record, users = [], clients, services, currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
@@ -1367,14 +1433,18 @@ function InitiativeDialog({ record, users = [], clients, services, currentServic
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const fieldErrors = useFieldErrors();
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
-  const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+  const update = (field, value) => {
+    fieldErrors.clear(field);
+    setForm((current) => ({ ...current, [field]: value }));
+  };
   const generatedOpportunities = record.opportunities || [];
   // Same validation and payload for "Guardar" and for "Crear oportunidad" (which saves first).
   const persist = async (handler, fallbackMessage) => {
     if (saving) return;
-    if (!form.title.trim()) { setError('Indica el nombre de la iniciativa.'); return; }
     setError('');
+    if (fieldErrors.show(validateInitiativeForm(form))) return;
     setSaving(true);
     try {
       await handler({
@@ -1384,7 +1454,9 @@ function InitiativeDialog({ record, users = [], clients, services, currentServic
         links: normalizeWorkspaceLinks(form.links),
       });
     } catch (err) {
-      setError(err?.message || fallbackMessage);
+      const mapped = mapServerFieldError(err, INITIATIVE_FORM_FIELDS);
+      if (mapped) fieldErrors.show(mapped);
+      else setError(err?.message || fallbackMessage);
     } finally {
       setSaving(false);
     }
@@ -1398,10 +1470,10 @@ function InitiativeDialog({ record, users = [], clients, services, currentServic
     return persist(onCreateOpportunity, 'No se pudo guardar la iniciativa antes de crear la oportunidad.');
   };
   return <dialog ref={dialogRef} className="opportunity-dialog" aria-labelledby="initiative-dialog-title" onCancel={(event) => { event.preventDefault(); if (!saving) onClose(); }}>
-    <form onSubmit={save}>
+    <form onSubmit={save} noValidate ref={fieldErrors.formRef}>
       <div className="dialog-heading"><div><span className="eyebrow">CRM QE · INICIATIVA</span><h2 id="initiative-dialog-title">{record.id ? 'Editar iniciativa' : 'Nueva iniciativa'}</h2><p>Registro independiente de las oportunidades, con su propio ciclo de vida.</p></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose} disabled={saving}><Icon name="close" /></button></div>
       <div className="form-grid">
-        <label className="form-field wide">Nombre de la iniciativa *<input autoFocus required value={form.title} onChange={(event) => update('title', event.target.value)} disabled={saving} /></label>
+        <FormField form={fieldErrors} field="title" label="Nombre de la iniciativa" required className="wide"><input autoFocus required value={form.title} onChange={(event) => update('title', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('title')} /></FormField>
         <label className="form-field">Categoría<select value={form.category} onChange={(event) => update('category', event.target.value)} disabled={saving}>{initiativeCategories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
         <label className="form-field">Cliente<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente</option>{clients.filter((x) => x.active).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => update('clientId', id))} disabled={saving}>+ Crear cliente</button></label>
         <label className="form-field">Prioridad<select value={form.priority} onChange={(event) => update('priority', event.target.value)} disabled={saving}>{initiativePriorities.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>
@@ -1474,7 +1546,18 @@ function WorkspaceLinkList({ links }) {
 function AgreementPanel({ agreements, query = '', clients, people, onEdit, onDelete }) {
   const records = filterAgreements(agreements, query, clients, people);
   const emptyMessage = query.trim() ? 'No hay acuerdos marco que coincidan con la búsqueda.' : 'Todavía no hay acuerdos marco.';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><table className="data-table secondary-table"><thead><tr>{['ID', 'Acuerdo', 'ID registro', 'Cliente', 'Importe', 'Fin de vigencia', 'Responsable', 'Asignado a', 'Enlaces', 'Estado', 'Acciones'].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{records.map((item) => <tr key={item.id}><td>{item.id.slice(0, 8)}</td><td>{item.title}</td><td>{item.registryId || '—'}</td><td>{clients.find((x) => x.id === item.clientId)?.name || '—'}</td><td>{formatCurrency(item.amount)}</td><td>{item.endDate || '—'}</td><td>{people.find((x) => x.id === item.ownerId)?.name || '—'}</td><td>{item.assignedUserName || '—'}</td><td><WorkspaceLinkList links={item.links} /></td><td><span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span></td><td className="master-actions"><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></td></tr>)}</tbody></table>{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>;
+  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId="agreements" className="data-table secondary-table" rows={records} columns={[
+    { id: 'id', label: 'ID', value: (item) => item.id, render: (item) => item.id.slice(0, 8) },
+    { id: 'title', label: 'Acuerdo', value: (item) => item.title, render: (item) => item.title },
+    { id: 'registryId', label: 'ID registro', value: (item) => item.registryId },
+    { id: 'client', label: 'Cliente', value: (item) => clients.find((x) => x.id === item.clientId)?.name },
+    { id: 'amount', label: 'Importe', type: 'amount', value: (item) => Number(item.amount) || 0, render: (item) => formatCurrency(item.amount) },
+    { id: 'endDate', label: 'Fin de vigencia', type: 'date', value: (item) => item.endDate },
+    { id: 'owner', label: 'Responsable', value: (item) => people.find((x) => x.id === item.ownerId)?.name },
+    { id: 'assignedUserName', label: 'Asignado a', value: (item) => item.assignedUserName },
+    { id: 'links', label: 'Enlaces', value: (item) => (item.links || []).map((link) => link.title).join(', '), render: (item) => <WorkspaceLinkList links={item.links} /> },
+    { id: 'status', label: 'Estado', value: (item) => (item.status === 'active' ? 'Vigente' : 'Inactivo'), render: (item) => <span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span> },
+  ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>;
 }
 
 function AgreementDialog({ agreement = {}, users = [], clients, people, onQuickCreate, onClose, onSave }) {
@@ -1482,10 +1565,20 @@ function AgreementDialog({ agreement = {}, users = [], clients, people, onQuickC
   const [form, setForm] = useState({ title: agreement.title || '', registryId: agreement.registryId || '', clientId: agreement.clientId || '', ownerId: agreement.ownerId || '', endDate: agreement.endDate || '', notes: agreement.notes || '', assignedUserId: agreement.assignedUserId || '', links: toWorkspaceLinkForm(agreement.links) });
   const [amountText, setAmountText] = useState(() => (agreement.amount ? formatAmountInput(String(agreement.amount).replace('.', ',')) : ''));
   const [error, setError] = useState('');
+  const fieldErrors = useFieldErrors();
   const dialogRef = useRef(null);
   useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
-  const submit = async (event) => { event.preventDefault(); try { await onSave({ ...form, ...(isEditing ? { id: agreement.id } : {}), registryId: form.registryId.trim(), links: normalizeWorkspaceLinks(form.links), amount: parseAmount(amountText) }); } catch (err) { setError(err?.message || 'No se pudo guardar el acuerdo.'); } };
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit}><div className="dialog-heading"><div><span className="eyebrow">DATOS COMERCIALES</span><h2>{isEditing ? 'Editar acuerdo marco' : 'Nuevo acuerdo marco'}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><label className="form-field wide">Nombre del acuerdo *<input required value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label><label className="form-field wide">ID registro<input value={form.registryId} onChange={(event) => setForm({ ...form, registryId: event.target.value })} placeholder="Portal del cliente, pliego o ERP" maxLength="120" /><span className="field-hint">Opcional. Referencia externa del registro.</span></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })}><option value="">Sin cliente</option>{clients.filter((x) => x.active || x.id === form.clientId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => setForm((current) => ({ ...current, clientId: id })))}>+ Crear cliente</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => setForm({ ...form, ownerId: event.target.value })}><option value="">Sin responsable</option>{people.filter((x) => x.active || x.id === form.ownerId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => setForm((current) => ({ ...current, ownerId: id })))}>+ Crear responsable</button></label><AssigneeField value={form.assignedUserId} users={users} onChange={(value) => setForm((current) => ({ ...current, assignedUserId: value }))} /><label className="form-field">Importe<span className="amount-field"><input value={amountText} onChange={(event) => setAmountText(formatAmountInput(event.target.value))} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="0,00" /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span><span className="field-hint">Déjalo vacío o en 0 si no aplica.</span></label><label className="form-field">Fin de vigencia<input type="date" value={form.endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value })} /></label><label className="form-field wide">Notas<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength="2000" /></label></div><WorkspaceLinksEditor links={form.links} onChange={(links) => setForm((current) => ({ ...current, links }))} disabled={false} />{error && <p className="form-error">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary">{isEditing ? 'Guardar cambios' : 'Crear acuerdo'}</button></div></form></dialog>;
+  const submit = async (event) => {
+    event.preventDefault(); setError('');
+    if (fieldErrors.show(validateAgreementForm(form))) return;
+    try { await onSave({ ...form, ...(isEditing ? { id: agreement.id } : {}), registryId: form.registryId.trim(), links: normalizeWorkspaceLinks(form.links), amount: parseAmount(amountText) }); }
+    catch (err) {
+      const mapped = mapServerFieldError(err, AGREEMENT_FORM_FIELDS);
+      if (mapped) fieldErrors.show(mapped);
+      else setError(err?.message || 'No se pudo guardar el acuerdo.');
+    }
+  };
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit} noValidate ref={fieldErrors.formRef}><div className="dialog-heading"><div><span className="eyebrow">DATOS COMERCIALES</span><h2>{isEditing ? 'Editar acuerdo marco' : 'Nuevo acuerdo marco'}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid"><FormField form={fieldErrors} field="title" label="Nombre del acuerdo" required className="wide"><input required value={form.title} onChange={(event) => { fieldErrors.clear('title'); setForm({ ...form, title: event.target.value }); }} {...fieldErrors.fieldProps('title')} /></FormField><label className="form-field wide">ID registro<input value={form.registryId} onChange={(event) => setForm({ ...form, registryId: event.target.value })} placeholder="Portal del cliente, pliego o ERP" maxLength="120" /><span className="field-hint">Opcional. Referencia externa del registro.</span></label><label className="form-field">Cliente<select value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })}><option value="">Sin cliente</option>{clients.filter((x) => x.active || x.id === form.clientId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => setForm((current) => ({ ...current, clientId: id })))}>+ Crear cliente</button></label><label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => setForm({ ...form, ownerId: event.target.value })}><option value="">Sin responsable</option>{people.filter((x) => x.active || x.id === form.ownerId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => setForm((current) => ({ ...current, ownerId: id })))}>+ Crear responsable</button></label><AssigneeField value={form.assignedUserId} users={users} onChange={(value) => setForm((current) => ({ ...current, assignedUserId: value }))} /><FormField form={fieldErrors} field="amount" label="Importe"><span className="amount-field"><input value={amountText} onChange={(event) => { fieldErrors.clear('amount'); setAmountText(formatAmountInput(event.target.value)); }} onBlur={() => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')))} inputMode="decimal" autoComplete="off" placeholder="0,00" {...fieldErrors.fieldProps('amount')} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span><span className="field-hint">Déjalo vacío o en 0 si no aplica.</span></FormField><label className="form-field">Fin de vigencia<input type="date" value={form.endDate} onChange={(event) => setForm({ ...form, endDate: event.target.value })} /></label><label className="form-field wide">Notas<textarea rows="3" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} maxLength="2000" /></label></div><WorkspaceLinksEditor links={form.links} onChange={(links) => setForm((current) => ({ ...current, links }))} disabled={false} />{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary">{isEditing ? 'Guardar cambios' : 'Crear acuerdo'}</button></div></form></dialog>;
 }
 
 function RecordActions({ type, id }) {

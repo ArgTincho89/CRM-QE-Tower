@@ -542,3 +542,20 @@ h1, h2, h3, h4, p { margin-top: 0; }
 /* Opportunity type badge (Pliego / Oferta / Staffing); legacy records show a muted "Sin tipo". */
 .status-pill.opportunity-type-pill { padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .status-pill.opportunity-type-pill.missing { font-style: italic; font-weight: 500; opacity: 0.85; }
+
+/* Sortable and reorderable data-table headers (DataTable). */
+.data-table th.sortable-header { cursor: grab; }
+.data-table th.sortable-header.dragging { opacity: 0.5; }
+.data-table th.sortable-header.drop-target { box-shadow: inset 2px 0 0 #1268d5; background: #eef4fd; }
+.data-table th[aria-sort="ascending"], .data-table th[aria-sort="descending"] { color: #354258; }
+.th-sort { display: inline-flex; align-items: center; gap: 5px; padding: 4px 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; white-space: nowrap; cursor: pointer; }
+.th-sort:hover { color: #1268d5; }
+.th-label { display: inline-block; padding: 4px 0; }
+.th-label:focus-visible { outline: 3px solid #7db6ff; outline-offset: 2px; }
+.sort-indicator { font-size: 9px; line-height: 1; color: #1268d5; }
+.sort-indicator.idle { color: #c3cad5; }
+
+/* Required-field validation: red border on invalid controls and the error text under the field. */
+.form-field [aria-invalid="true"] { border-color: #c34450; box-shadow: 0 0 0 1px #c34450; }
+.field-error { color: #c34450; font-size: 12px; font-weight: 600; line-height: 1.4; }
+.field-error:empty { display: none; }

@@ -1,13 +1,17 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-/** Typed error every handler can throw; the server maps it to `{ error: { code, message } }`. */
+/**
+ * Typed error every handler can throw; the server maps it to `{ error: { code, message } }`.
+ * Validation errors may name the offending request `field`, added to the envelope when present.
+ */
 export class HttpError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, field = undefined) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    if (field) this.field = field;
   }
 }
 
@@ -108,7 +112,7 @@ export function sendError(res, error) {
     return;
   }
   if (error instanceof HttpError) {
-    sendJson(res, error.status, { error: { code: error.code, message: error.message } });
+    sendJson(res, error.status, { error: { code: error.code, message: error.message, ...(error.field ? { field: error.field } : {}) } });
     return;
   }
   sendJson(res, 500, {

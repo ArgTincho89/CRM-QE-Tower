@@ -1,11 +1,13 @@
 const API_BASE = '/api';
 
 export class ApiError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, field = undefined) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    // Validation errors may name the request field that failed (e.g. `title`).
+    if (field) this.field = field;
   }
 }
 
@@ -41,7 +43,7 @@ async function request(path, { method = 'GET', body } = {}) {
   if (!response.ok) {
     const code = payload?.error?.code || `http_${response.status}`;
     const message = payload?.error?.message || 'Ha ocurrido un error inesperado.';
-    throw new ApiError(response.status, code, message);
+    throw new ApiError(response.status, code, message, typeof payload?.error?.field === 'string' ? payload.error.field : undefined);
   }
 
   return payload;
