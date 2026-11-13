@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, matchesAssignee,
+  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar, matchesAssignee,
 } from './pipelineFilters.js';
 
 const records = [
@@ -79,5 +79,25 @@ describe('pipeline advanced filters', () => {
     assert.deepEqual(pick(ASSIGNED_TO_ME_FILTER, 'user-1'), ['OP-A']);
     assert.deepEqual(pick(ASSIGNED_TO_ME_FILTER, ''), []);
     assert.equal(matchesAssignee(cards[0], undefined), true);
+  });
+});
+
+describe('pipeline toolbar filters', () => {
+  const records = [
+    { id: 'OP-000001', title: 'Migración', account: 'Acme', owner: 'Ana', tower: 'Testing', stage: 'proposal', registryId: 'ICRM-9', tags: ['sap'] },
+    { id: 'OP-000002', title: 'Auditoría', account: 'Globex', owner: 'Luis', tower: 'Performance', stage: 'result', closureReason: 'Precio' },
+  ];
+
+  test('search covers ids, registry id, tags and closure reason', () => {
+    assert.deepEqual(filterPipelineToolbar(records, { query: 'icrm-9' }).map((item) => item.id), ['OP-000001']);
+    assert.deepEqual(filterPipelineToolbar(records, { query: 'SAP' }).map((item) => item.id), ['OP-000001']);
+    assert.deepEqual(filterPipelineToolbar(records, { query: 'precio' }).map((item) => item.id), ['OP-000002']);
+  });
+
+  test('stage, tower and owner selects combine with the search', () => {
+    assert.deepEqual(filterPipelineToolbar(records, { stage: 'result' }).map((item) => item.id), ['OP-000002']);
+    assert.deepEqual(filterPipelineToolbar(records, { tower: 'Testing', owner: 'Luis' }), []);
+    assert.equal(filterPipelineToolbar(records).length, 2);
+    assert.deepEqual(filterPipelineToolbar(undefined), []);
   });
 });

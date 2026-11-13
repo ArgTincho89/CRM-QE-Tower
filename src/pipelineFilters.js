@@ -68,6 +68,23 @@ function hasRelation(list, id) {
   return id === 'all' || (Array.isArray(list) && list.some((item) => item.id === id));
 }
 
+function pipelineSearchText(item) {
+  const tags = Array.isArray(item.tags) ? item.tags.join(' ') : '';
+  return `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.number || ''} ${item.registryId || ''} ${item.due || ''} ${tags} ${item.category || ''} ${item.status || ''} ${item.closureReason || ''}`.toLowerCase();
+}
+
+/**
+ * Toolbar filters of the CRM QE page (search box, stage, tower and owner selects), shared by
+ * every view mode and by the archived opportunities table.
+ */
+export function filterPipelineToolbar(records, { query = '', stage = 'all', tower = 'all', owner = 'all' } = {}) {
+  const normalized = String(query || '').trim().toLowerCase();
+  return (records || []).filter((item) => pipelineSearchText(item).includes(normalized)
+    && (stage === 'all' || item.stage === stage)
+    && (tower === 'all' || item.tower === tower)
+    && (owner === 'all' || item.owner === owner));
+}
+
 /**
  * Filters Opportunity cards. The Pipeline page only shows Opportunities, so
  * Initiative-specific criteria (record type, category, status) do not exist here.

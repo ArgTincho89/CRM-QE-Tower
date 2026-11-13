@@ -1,16 +1,18 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
-import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
-import { NAV_GROUPS } from './navigation.js';
+import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
+import { NAV_GROUPS, resolveNavigationTarget } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
-import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativesByStatus, initiativeCountLabel, initiativeStatusLabel, mapInitiativeStage, removeInitiative, scopeInitiativesToPage } from './initiatives.js';
+import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
 import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLinks, safeWorkspaceUrl, toWorkspaceLinkForm } from './workspaceLinks.js';
 import { filterAgreements } from './agreements.js';
-import { computePipelineQe, computeWeightedAmount, computeWeightedPipeline } from './pipelineSummary.js';
+import { computeWeightedAmount } from './pipelineSummary.js';
+import { ALL_YEARS, availableYears, computePipelineKpis } from './pipelineMetrics.js';
+import { loadPipelineYear, loadViewMode, savePipelineYear, saveViewMode } from './preferences.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
-import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards } from './pipelineFilters.js';
+import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
 import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
@@ -23,7 +25,6 @@ import { AGREEMENT_FORM_FIELDS, INITIATIVE_FORM_FIELDS, MASTER_FORM_FIELDS, OPPO
 const pageTitles = {
   home: ['Inicio', 'Resumen de actividad comercial y señales de tus cuentas.'],
   pipeline: ['CRM QE', 'Gestiona el pipeline de oportunidades de calidad e ingeniería.'],
-  opportunities: ['Oportunidades', 'Seguimiento comercial y próximos hitos por cuenta.'],
   initiatives: ['Iniciativas', 'Desarrollo de negocio previo o independiente de una oportunidad formal.'],
   clients: ['Clientes', 'Cuentas activas, responsables y oportunidades de desarrollo.'],
   proposals: ['Propuestas / Estimaciones', 'Preventa interna y propuestas externas vinculadas a oportunidades.'],
@@ -94,7 +95,10 @@ function App() {
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [advancedFilters, setAdvancedFilters] = useState(createDefaultAdvancedFilters);
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  const [view, setView] = useState('kanban');
+  const [view, setViewState] = useState(() => loadViewMode('pipeline'));
+  // CRM QE KPI year (a number or ALL_YEARS), persisted per browser; defaults to the current year.
+  const [kpiYear, setKpiYearState] = useState(() => loadPipelineYear(new Date().getFullYear()));
+  const [opportunityBreakdownOpen, setOpportunityBreakdownOpen] = useState(false);
   const [expandedColumns, setExpandedColumns] = useState({});
   const [editing, setEditing] = useState(null);
   const [archivedOpportunities, setArchivedOpportunities] = useState([]);
@@ -236,29 +240,36 @@ function App() {
     () => opportunities.map((item) => ({ ...item, entityType: 'opportunity', cardKey: `opportunity:${item.id}` })),
     [opportunities],
   );
-  const owners = useMemo(() => {
-    const records = page === 'pipeline' ? pipelineCards : opportunities;
-    return [...new Set(records.map((item) => item.owner).filter(Boolean))].sort();
-  }, [page, pipelineCards, opportunities]);
-  const filtered = useMemo(() => opportunities.filter((item) => {
-    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.registryId || ''}`.toLowerCase();
-    return haystack.includes(query.trim().toLowerCase())
-      && (stageFilter === 'all' || item.stage === stageFilter)
-      && (towerFilter === 'all' || item.tower === towerFilter)
-      && (ownerFilter === 'all' || item.owner === ownerFilter);
-  }), [opportunities, query, stageFilter, towerFilter, ownerFilter]);
-  const filteredPipelineCards = useMemo(() => pipelineCards.filter((item) => {
-    const haystack = `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.number || ''} ${item.registryId || ''} ${item.due || ''} ${(item.tags || []).join?.(' ') || ''} ${item.category || ''} ${item.status || ''} ${item.closureReason || ''}`.toLowerCase();
-    return haystack.includes(query.trim().toLowerCase())
-      && (stageFilter === 'all' || item.stage === stageFilter)
-      && (towerFilter === 'all' || item.tower === towerFilter)
-      && (ownerFilter === 'all' || item.owner === ownerFilter);
-  }), [pipelineCards, query, stageFilter, towerFilter, ownerFilter]);
+  const owners = useMemo(
+    () => [...new Set(pipelineCards.map((item) => item.owner).filter(Boolean))].sort(),
+    [pipelineCards],
+  );
+  const toolbarFilters = { query, stage: stageFilter, tower: towerFilter, owner: ownerFilter };
+  // Search, toolbar selects and advanced filters apply to every CRM QE view, archived table included.
+  const applyPipelineFilters = (records) => filterPipelineCards(filterPipelineToolbar(records, toolbarFilters), advancedFilters, { currentUserId: session.user?.id || '' });
   const advancedFilteredPipelineCards = useMemo(
-    () => filterPipelineCards(filteredPipelineCards, advancedFilters, { currentUserId: session.user?.id || '' }),
-    [filteredPipelineCards, advancedFilters, session.user?.id],
+    () => applyPipelineFilters(pipelineCards),
+    [pipelineCards, query, stageFilter, towerFilter, ownerFilter, advancedFilters, session.user?.id],
   );
   const filteredPipelineOpportunities = advancedFilteredPipelineCards.filter((item) => item.entityType === 'opportunity');
+  const filteredArchivedOpportunities = useMemo(
+    () => applyPipelineFilters(archivedOpportunities),
+    [archivedOpportunities, query, stageFilter, towerFilter, ownerFilter, advancedFilters, session.user?.id],
+  );
+  const pipelineFiltersActive = Boolean(query.trim()) || stageFilter !== 'all' || towerFilter !== 'all' || ownerFilter !== 'all'
+    || JSON.stringify(advancedFilters) !== JSON.stringify(createDefaultAdvancedFilters());
+
+  const setView = (next) => {
+    setViewState(next);
+    saveViewMode('pipeline', next);
+    // "Ver archivadas" belongs to the table view; other views always show active records.
+    if (next !== 'table') setArchivedView(false);
+  };
+
+  const setKpiYear = (next) => {
+    setKpiYearState(next);
+    savePipelineYear(next);
+  };
 
   const clearFilters = () => {
     setQuery('');
@@ -268,8 +279,12 @@ function App() {
     setAdvancedFilters(createDefaultAdvancedFilters());
   };
 
-  const navigate = (nextPage) => {
-    setPage(nextPage);
+  // Retired page ids (e.g. the old Oportunidades page) resolve to their new home and view.
+  const navigate = (nextPage, { view: requestedView = null } = {}) => {
+    const target = resolveNavigationTarget(nextPage);
+    setPage(target.page);
+    const nextView = requestedView || target.view;
+    if (target.page === 'pipeline' && nextView) setView(nextView);
     setMobileNav(false);
   };
 
@@ -633,7 +648,8 @@ function App() {
         setOpportunities(Array.isArray(list) ? list : []);
         const record = (list || []).find((item) => item.id === notification.entityId);
         if (!record) { missing(); return; }
-        navigate(targetPage);
+        // Opportunities are managed in the CRM QE table view.
+        navigate(targetPage, { view: 'table' });
         setEditing(record);
       } else if (notification.entityType === 'initiative') {
         const { initiatives: list } = await listInitiatives();
@@ -690,8 +706,12 @@ function App() {
   const user = session.user;
   const activePage = page === 'home' ? 'home' : page;
   const [title, subtitle] = pageTitles[activePage] || pageTitles.pipeline;
-  const opportunityMetric = opportunities.length;
-  const weightedPipeline = computeWeightedPipeline(opportunities);
+  const kpiYears = availableYears([opportunities, initiatives, agreements, clients], serviceYears.currentYear, kpiYear);
+  const kpis = computePipelineKpis({ opportunities, initiatives, agreements, clients }, kpiYear);
+  const showingArchivedOpportunities = view === 'table' && archivedView;
+  const pipelineResultCount = view === 'kanban'
+    ? advancedFilteredPipelineCards.length
+    : showingArchivedOpportunities ? filteredArchivedOpportunities.length : filteredPipelineOpportunities.length;
 
   return (
     <div className="app-shell">
@@ -728,18 +748,23 @@ function App() {
         <div className="content-wrap">
           <div className="page-heading">
             <div><div className="eyebrow"><span className="eyebrow-dot" /> ESPAÑA <span className="eyebrow-divider">/</span> QUALITY ENGINEERING</div><h1>{title}</h1><p>{subtitle}</p></div>
-            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing(page === 'services' ? { kind: page, year: activeServiceYear } : { kind: page })} disabled={page === 'services' && activeServiceYear === null}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{['pipeline', 'opportunities'].includes(page) && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
+            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing(page === 'services' ? { kind: page, year: activeServiceYear } : { kind: page })} disabled={page === 'services' && activeServiceYear === null}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{page === 'pipeline' && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
           </div>
 
           {page === 'pipeline' ? <>
+            <div className="kpi-toolbar">
+              <label className="filter-select kpi-year-select"><Icon name="calendar" size={15} /><span>Año</span><select value={String(kpiYear)} onChange={(event) => setKpiYear(event.target.value === ALL_YEARS ? ALL_YEARS : Number(event.target.value))} aria-label="Año de creación de los indicadores">{kpiYears.map((year) => <option key={year} value={String(year)}>{year}</option>)}<option value={ALL_YEARS}>Todos</option></select></label>
+              <span className="kpi-toolbar-hint">{kpiYear === ALL_YEARS ? 'Todos los registros' : `Registros creados en ${kpiYear}`}</span>
+            </div>
             <section className="kpi-grid" aria-label="Indicadores principales">
-              <Kpi icon="users" color="blue" label="Clientes activos" value={String(clients.filter((item) => item.active).length)} detail="Registros activos" />
-              <Kpi icon="target" color="violet" label="Oportunidades" value={String(opportunityMetric)} detail="Registros actuales" />
-              <Kpi icon="arrow" color="orange" label="Propuestas externas" value={String(proposals.filter((item) => item.type === 'Externa').length)} detail="Datos de referencia" />
-              <Kpi icon="file" color="teal" label="Propuestas internas / Estimaciones" value={String(proposals.filter((item) => item.type === 'Interna').length)} detail="Datos de referencia" />
-              <Kpi icon="layers" color="blue" label="Acuerdos Marco" value={String(agreements.filter((item) => item.status === 'active').length)} detail="Registros activos" />
-              <Kpi icon="chart" color="green" label="Pipeline QE" value={formatCurrency(computePipelineQe(opportunities))} detail="Importe × participación QA" />
-              {weightedPipeline !== null && <Kpi icon="target" color="violet" label="Ponderado por probabilidad" value={formatCurrency(weightedPipeline)} detail="Importe QE × probabilidad; no suma al Pipeline QE" />}
+              <Kpi icon="users" color="blue" label="Clientes activos" value={String(kpis.activeClients)} detail="Registros activos" onClick={() => navigate('clients')} actionLabel="Ver clientes" />
+              <Kpi icon="share" color="teal" label="Iniciativas activas" value={String(kpis.activeInitiatives)} detail="Sin completadas ni archivadas" onClick={() => navigate('initiatives')} actionLabel="Ver iniciativas" />
+              <Kpi icon="target" color="violet" label="Oportunidades" value={String(kpis.opportunities)} detail={opportunityBreakdownOpen ? 'Desglose por tipo' : 'Pulsa para ver el desglose por tipo'} onClick={() => setOpportunityBreakdownOpen((open) => !open)} expanded={opportunityBreakdownOpen} controlsId="kpi-opportunity-breakdown" actionLabel={opportunityBreakdownOpen ? 'Ocultar desglose por tipo' : 'Ver desglose por tipo'}>
+                {opportunityBreakdownOpen && <ul className="kpi-breakdown" id="kpi-opportunity-breakdown" aria-label="Oportunidades por tipo">{kpis.opportunityTypes.map((item) => <li key={item.id}><span className={`status-pill opportunity-type-pill ${item.tone}${item.id === 'none' ? ' missing' : ''}`}>{item.label}</span><strong>{item.count}</strong></li>)}</ul>}
+              </Kpi>
+              <Kpi icon="arrow" color="orange" label="Propuestas externas" value={String(proposals.filter((item) => item.type === 'Externa').length)} detail="Datos de referencia" onClick={() => navigate('proposals')} actionLabel="Ver propuestas" />
+              <Kpi icon="layers" color="blue" label="Acuerdos Marco" value={String(kpis.activeAgreements)} detail="Registros activos" onClick={() => navigate('agreements')} actionLabel="Ver acuerdos marco" />
+              <PipelineQeKpi pipelineQe={kpis.pipelineQe} weightedPipeline={kpis.weightedPipeline} />
             </section>
             <div className="pipeline-toolbar">
               <div className="toolbar-title"><h2>Pipeline comercial</h2><span className="live-pill"><span /> Actualizado ahora</span></div>
@@ -747,18 +772,20 @@ function App() {
                 <label className="filter-select"><span className="sr-only">Filtrar por etapa</span><Icon name="filter" size={15} /><select value={stageFilter} onChange={(event) => setStageFilter(event.target.value)}><option value="all">Todas las etapas</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
                 <label className="filter-select"><span className="sr-only">Filtrar por torre</span><select value={towerFilter} onChange={(event) => setTowerFilter(event.target.value)}><option value="all">Todas las Towers</option>{towers.map((tower) => <option key={tower.id} value={tower.name}>{tower.name}</option>)}</select></label>
                 <label className="filter-select owner-filter"><span className="sr-only">Filtrar por responsable</span><select value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)}><option value="all">Todos los responsables</option>{owners.map((owner) => <option key={owner}>{owner}</option>)}</select></label>
-                {page === 'pipeline' && <button type="button" className="advanced-filter-toggle" aria-expanded={advancedFiltersOpen} aria-controls="advanced-filters-panel" onClick={() => setAdvancedFiltersOpen((open) => !open)}><Icon name="filter" size={15} /> Filtros avanzados</button>}
-                <div className="view-switch" aria-label="Tipo de vista">{[['kanban', 'grid', 'Kanban'], ['list', 'list', 'Lista'], ['table', 'table', 'Tabla']].map(([id, icon, label]) => <button key={id} title={label} aria-label={`Vista ${label}`} aria-pressed={view === id} className={view === id ? 'active' : ''} onClick={() => setView(id)}><Icon name={icon} size={16} /></button>)}</div>
+                <button type="button" className="advanced-filter-toggle" aria-expanded={advancedFiltersOpen} aria-controls="advanced-filters-panel" onClick={() => setAdvancedFiltersOpen((open) => !open)}><Icon name="filter" size={15} /> Filtros avanzados</button>
+                <ViewSwitch value={view} onChange={setView} />
               </div>
             </div>
-            {page === 'pipeline' && <AdvancedFilters filters={advancedFilters} people={people} users={users} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />}
-            <div className="results-line"><span><strong>{page === 'pipeline' ? (view === 'kanban' ? advancedFilteredPipelineCards.length : filteredPipelineOpportunities.length) : filtered.length}</strong> {page === 'pipeline' && view === 'kanban' ? 'registros encontrados' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
-            {oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
-            {oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
-            {view === 'kanban' ? <Kanban cards={page === 'pipeline' ? advancedFilteredPipelineCards : filtered} allCards={page === 'pipeline' ? pipelineCards : opportunities} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} /> : <OpportunityRows opportunities={page === 'pipeline' ? filteredPipelineOpportunities : filtered} view={view} onEdit={setEditing} />}
-          </> : page === 'opportunities'
-            ? <OpportunityManagementPanel opportunities={filterOpportunityRecords(opportunities, archivedOpportunities, query, archivedView)} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} searchQuery={query} onClearSearch={() => setQuery('')} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} onArchive={archiveRecord} onDelete={deleteRecord} />
-            : (page === 'initiatives' || page === 'crossSelling')
+            <AdvancedFilters filters={advancedFilters} people={people} users={users} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} towers={towers} hidden={!advancedFiltersOpen} onChange={(name, value) => setAdvancedFilters((current) => ({ ...current, [name]: value }))} />
+            <div className="results-line"><span><strong>{pipelineResultCount}</strong> {view === 'kanban' ? 'registros encontrados' : showingArchivedOpportunities ? 'oportunidades archivadas encontradas' : 'oportunidades encontradas'}</span><button onClick={clearFilters}>Limpiar filtros <Icon name="close" size={13} /></button></div>
+            {view !== 'table' && oppState === 'loading' && <div className="board-state"><p>Cargando oportunidades…</p></div>}
+            {view !== 'table' && oppState === 'error' && <div className="board-state"><p>No se pudieron cargar las oportunidades.</p><button className="button button-secondary" onClick={reloadOpportunities}>Reintentar</button></div>}
+            {view === 'kanban'
+              ? <Kanban cards={advancedFilteredPipelineCards} allCards={pipelineCards} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={(record) => record.entityType === 'initiative' ? setEditingInitiative(record.sourceRecord) : setEditing(record)} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
+              : view === 'table'
+                ? <OpportunityManagementPanel opportunities={showingArchivedOpportunities ? filteredArchivedOpportunities : filteredPipelineOpportunities} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} filtersActive={pipelineFiltersActive} onClearFilters={clearFilters} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} onArchive={archiveRecord} onDelete={deleteRecord} />
+                : <OpportunityRows opportunities={filteredPipelineOpportunities} onEdit={setEditing} />}
+          </> : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
             : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
@@ -823,8 +850,60 @@ function NotificationBell({ notifications, unreadCount, onOpen, onMarkAllRead })
   </div>;
 }
 
-function Kpi({ icon, color, label, value, detail, trend }) {
-  return <article className="kpi-card"><div className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></div><div className="kpi-content"><span>{label}</span><div className="kpi-value-row"><strong>{value}</strong>{trend && <span className="trend-badge">↗ 20%</span>}</div><small>{detail}</small></div></article>;
+/**
+ * KPI card. With `onClick` the card body is a button (navigation or, with `expanded`, a
+ * disclosure whose panel is passed as `children` and rendered inside the same card).
+ * Long labels, values and details wrap or truncate; the full text stays in the tooltip.
+ */
+function Kpi({ icon, color, label, value, detail, onClick, actionLabel, expanded, controlsId, children }) {
+  const body = <>
+    <span className={`kpi-icon ${color}`}><Icon name={icon} size={18} /></span>
+    <span className="kpi-content">
+      <span className="kpi-label" title={label}>{label}</span>
+      <span className="kpi-value-row"><strong title={value}>{value}</strong></span>
+      <small title={detail}>{detail}</small>
+    </span>
+  </>;
+  const isDisclosure = expanded !== undefined;
+  return <article className={`kpi-card${onClick ? ' kpi-card-interactive' : ''}${expanded ? ' kpi-card-expanded' : ''}`}>
+    {onClick
+      ? <button type="button" className="kpi-card-main" onClick={onClick} aria-expanded={isDisclosure ? expanded : undefined} aria-controls={isDisclosure && expanded ? controlsId : undefined} aria-label={`${label}: ${value}. ${actionLabel || ''}`.trim()} title={actionLabel}>{body}</button>
+      : <div className="kpi-card-main">{body}</div>}
+    {children}
+  </article>;
+}
+
+/** Pipeline QE and its probability-weighted value in one card split by a thin divider. */
+function PipelineQeKpi({ pipelineQe, weightedPipeline }) {
+  const pipelineValue = formatCurrency(pipelineQe);
+  const hasWeighted = weightedPipeline !== null && weightedPipeline !== undefined;
+  const weightedValue = hasWeighted ? formatCurrency(weightedPipeline) : '—';
+  const weightedDetail = hasWeighted ? 'Importe QE × probabilidad' : 'Sin probabilidad registrada';
+  return <article className="kpi-card kpi-card-split" aria-label={`Pipeline QE: ${pipelineValue}. Ponderado por probabilidad: ${weightedValue}`}>
+    <div className="kpi-card-main">
+      <span className="kpi-icon green"><Icon name="chart" size={18} /></span>
+      <span className="kpi-content">
+        <span className="kpi-label" title="Pipeline QE">Pipeline QE</span>
+        <span className="kpi-value-row"><strong title={pipelineValue}>{pipelineValue}</strong></span>
+        <small title="Importe × participación QA">Importe × participación QA</small>
+      </span>
+    </div>
+    <div className="kpi-split-divider" aria-hidden="true" />
+    <div className="kpi-card-main kpi-split-bottom">
+      <span className="kpi-content">
+        <span className="kpi-label" title="Ponderado por probabilidad">Ponderado por probabilidad</span>
+        <span className="kpi-value-row"><strong title={weightedValue}>{weightedValue}</strong></span>
+        <small title={weightedDetail}>{weightedDetail}</small>
+      </span>
+    </div>
+  </article>;
+}
+
+const VIEW_SWITCH_OPTIONS = [['kanban', 'grid', 'Kanban'], ['list', 'list', 'Lista'], ['table', 'table', 'Tabla']];
+
+/** Kanban / Lista / Tabla selector shared by CRM QE and Iniciativas. */
+function ViewSwitch({ value, onChange }) {
+  return <div className="view-switch" role="group" aria-label="Tipo de vista">{VIEW_SWITCH_OPTIONS.map(([id, icon, label]) => <button type="button" key={id} title={label} aria-label={`Vista ${label}`} aria-pressed={value === id} className={value === id ? 'active' : ''} onClick={() => onChange(id)}><Icon name={icon} size={16} /></button>)}</div>;
 }
 
 function AdvancedFilters({ filters, people, users = [], services = [], currentServiceYear, lobs = [], towers = [], hidden, onChange }) {
@@ -998,22 +1077,7 @@ const typeSortLabel = (item) => {
   return described.missing ? '' : described.label;
 };
 
-function OpportunityRows({ opportunities, view, onEdit }) {
-  if (view === 'table') {
-    const columns = [
-      { id: 'title', label: 'ID / Oportunidad', value: (item) => item.title, render: (item) => <><span className="table-id">ID interno: {item.id}{item.number && ` · N.º externo: ${item.number}`}</span><button className="table-title" onClick={() => onEdit(item)}>{item.title}</button></> },
-      { id: 'registryId', label: 'ID registro', value: (item) => item.registryId },
-      { id: 'account', label: 'Cliente', value: (item) => item.account, render: (item) => item.account },
-      { id: 'stage', label: 'Etapa', type: 'number', value: stageOrder, render: (item) => <span className={`status-pill ${stages.find((stage) => stage.id === item.stage).tone}`}>{stages.find((stage) => stage.id === item.stage).label}</span> },
-      { id: 'outcome', label: 'Resultado', value: outcomeSortLabel, render: (item) => <OutcomeCell outcome={item.outcome} /> },
-      { id: 'opportunityType', label: 'Tipo', value: typeSortLabel, render: (item) => <OpportunityTypePill type={item.opportunityType} /> },
-      { id: 'tower', label: 'Tower', value: (item) => item.tower, render: (item) => item.tower },
-      { id: 'amount', label: 'Importe estimado', type: 'amount', value: (item) => item.amount, render: (item) => item.amount, cellClassName: 'table-amount' },
-      { id: 'owner', label: 'Responsable', value: (item) => item.owner, render: (item) => <span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span> },
-      { id: 'due', label: 'Próximo hito', type: 'date', value: (item) => item.due, render: (item) => item.due },
-    ];
-    return <div className="table-wrap"><DataTable tableId="pipeline" columns={columns} rows={opportunities} actions={{ label: 'Acciones', srOnly: true, render: (item) => <button className="icon-button row-edit" onClick={() => onEdit(item)} aria-label={`Editar ${item.title}`}><Icon name="dots" size={17} /></button> }} />{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
-  }
+function OpportunityRows({ opportunities, onEdit }) {
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
@@ -1045,7 +1109,7 @@ function DataPanel({ tableId, title, description, headers, types = [], rows }) {
   }))} /></div><div className="panel-footnote"><span className="info-mark">i</span> Los datos de propuestas y estimaciones se conservan como referencia mientras se define su gestión persistente.</div></section>;
 }
 
-function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, searchQuery, onClearSearch, archivedView, onToggleArchived, onRestore, onArchive, onDelete }) {
+function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onRetry, filtersActive, onClearFilters, archivedView, onToggleArchived, onRestore, onArchive, onDelete }) {
   return <section className="secondary-panel opportunity-management-panel">
     <div className="secondary-panel-heading">
       <div><h2>{archivedView ? 'Oportunidades archivadas' : 'Oportunidades'}</h2><p>{archivedView ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.' : 'Registros comerciales independientes de las iniciativas.'}</p></div>
@@ -1071,56 +1135,78 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
       { id: 'due', label: 'Próximo hito', type: 'date', value: (item) => item.due },
       { id: 'closureReason', label: 'Motivo de cierre', value: (item) => item.closureReason },
     ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />
-    {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{searchQuery ? `No hay oportunidades archivadas que coincidan con la búsqueda.` : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{searchQuery && <button className="button button-secondary" onClick={onClearSearch}>Limpiar búsqueda</button>}</div>}
+    {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{filtersActive ? (archivedView ? 'No hay oportunidades archivadas que coincidan con los filtros.' : 'No hay oportunidades que coincidan con los filtros.') : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{filtersActive && <button className="button button-secondary" onClick={onClearFilters}>Limpiar filtros</button>}</div>}
     </div>}
   </section>;
 }
 
 function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView, archivedLoading, onToggleArchived, onRestore, query, expandedColumns, onToggleColumn, onEdit, onMove, onArchive, onDelete }) {
   const [statusFilter, setStatusFilter] = useState('all');
-  // The board shows the four stages; completed initiatives live in the Completada column.
+  // Cross-Selling is always a table; Iniciativas offers Kanban / Lista / Tabla, persisted per page.
+  const tableOnly = page === 'crossSelling';
+  const [selectedView, setSelectedView] = useState(() => loadViewMode('initiatives'));
+  const view = tableOnly ? 'table' : selectedView;
+  const changeView = (next) => {
+    setSelectedView(next);
+    saveViewMode('initiatives', next);
+  };
   const records = archivedView ? archivedInitiatives : initiatives;
-  const scoped = filterInitiativesByStatus(scopeInitiativesToPage(records, page), statusFilter);
-  const normalizedQuery = query.trim().toLowerCase();
-  const matched = normalizedQuery
-    ? scoped.filter((item) => `${item.id} ${item.title} ${item.clientName || ''} ${initiativeCategory(item.category)} ${item.priority || ''}`.toLowerCase().includes(normalizedQuery))
-    : scoped;
-  const cards = matched.map((item) => ({
-    ...item,
-    account: item.clientName || 'Sin cliente',
-    categoryLabel: initiativeCategory(item.category),
-    stage: mapInitiativeStage(item.stage),
-    statusLabel: initiativeStatusLabel(item.operationalStatus),
-    initiativeDue: item.nextActionDate || '',
-    entityType: 'initiative',
-    cardKey: `initiative:${item.id}`,
-    sourceRecord: item,
-  }));
-  const heading = page === 'crossSelling' ? 'Iniciativas de Cross-Selling' : 'Iniciativas de desarrollo';
+  const rows = filterInitiativeRecords(records, { page, statusFilter, query }).map(toInitiativeRecord);
+  const searching = Boolean(query.trim());
+  const heading = tableOnly ? 'Iniciativas de Cross-Selling' : 'Iniciativas de desarrollo';
   const title = archivedView ? `${heading} · archivadas` : heading;
   const description = archivedView
     ? 'Registros ocultos del tablero activo. Permanecen íntegros y se pueden restaurar.'
     : 'Registro independiente de las oportunidades, con su propio ciclo de vida. Las completadas no cuentan como activas.';
-  const emptyMessage = (label) => (normalizedQuery ? `No hay iniciativas ${label} que coincidan con la búsqueda.` : `Todavía no hay iniciativas ${label}.`);
-  // Archived records are never active; the board count separates active from completed.
-  const countLabel = archivedView ? `${cards.length} registros` : initiativeCountLabel(cards);
+  const emptyMessage = archivedView
+    ? (searching ? 'No hay iniciativas archivadas que coincidan con la búsqueda.' : 'Todavía no hay iniciativas archivadas.')
+    : (searching ? 'No hay iniciativas que coincidan con la búsqueda.' : 'Todavía no hay iniciativas.');
+  // Archived records are never active; the count separates active from completed otherwise.
+  const countLabel = archivedView ? `${rows.length} registros` : initiativeCountLabel(rows);
+  const editRecord = (record) => onEdit(record.sourceRecord);
+  let content;
+  // Archived records always render as a table with Restaurar / Eliminar, whatever the view.
+  if (archivedView || view === 'table') {
+    content = <InitiativeTable tableId={`${tableOnly ? 'cross-selling' : 'initiatives'}${archivedView ? '-archived' : '-table'}`} rows={rows} archived={archivedView} emptyMessage={emptyMessage} onEdit={editRecord} onArchive={onArchive} onDelete={onDelete} onRestore={(record) => onRestore(record.sourceRecord)} />;
+  } else if (view === 'list') {
+    content = <InitiativeList rows={rows} emptyMessage={emptyMessage} onEdit={editRecord} />;
+  } else {
+    content = <Kanban cards={rows} allCards={rows} stageList={initiativeStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={editRecord} onMove={onMove} onArchive={onArchive} onDelete={onDelete} />;
+  }
   return <section className="secondary-panel initiative-board-panel">
     <div className="secondary-panel-heading">
       <div><h2>{title}</h2><p>{description}</p></div>
-      <div className="heading-actions"><span className="record-count">{countLabel}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por estado operativo">{INITIATIVE_STATUS_FILTERS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button button-secondary" onClick={onToggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver tablero' : 'Ver archivadas'}</button></div>
+      <div className="heading-actions"><span className="record-count">{countLabel}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filtrar por estado operativo">{INITIATIVE_STATUS_FILTERS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select><button className="button button-secondary" onClick={onToggleArchived} aria-pressed={archivedView}>{archivedView ? 'Ver activas' : 'Ver archivadas'}</button>{!tableOnly && <ViewSwitch value={view} onChange={changeView} />}</div>
     </div>
     {archivedLoading && <div className="board-state"><p>Cargando iniciativas archivadas…</p></div>}
-    {archivedView
-      ? <div className="table-wrap"><DataTable tableId="initiatives-archived" rows={cards} columns={[
-        { id: 'title', label: 'Iniciativa', value: (item) => item.title, render: (item) => item.title },
-        { id: 'category', label: 'Categoría', value: (item) => item.categoryLabel, render: (item) => item.categoryLabel },
-        { id: 'account', label: 'Cliente', value: (item) => item.account, render: (item) => item.account },
-        { id: 'priority', label: 'Prioridad', type: 'number', value: (item) => priorityOrder(item.priority || 'Media'), render: (item) => item.priority || 'Media' },
-        { id: 'status', label: 'Estado', value: (item) => item.statusLabel, render: (item) => item.statusLabel },
-        { id: 'archivedBy', label: 'Archivada por', value: (item) => item.archivedByName },
-      ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <><button className="button button-secondary" onClick={() => onRestore(item.sourceRecord)}>Restaurar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{cards.length === 0 && <p className="empty-state">{emptyMessage('archivadas')}</p>}</div>
-      : <Kanban cards={cards} allCards={cards} stageList={initiativeStages} expandedColumns={expandedColumns} onToggleColumn={onToggleColumn} onEdit={(record) => onEdit(record.sourceRecord)} onMove={onMove} onArchive={onArchive} onDelete={onDelete} />}
+    {content}
   </section>;
+}
+
+/** Compact initiative rows, mirroring the CRM QE list view. */
+function InitiativeList({ rows, emptyMessage, onEdit }) {
+  return <div className="list-view">{rows.map((item) => <button type="button" className="list-row initiative-list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={item.stageTone} />{item.stageLabel}</span><span className={`priority-text ${String(item.priority).toLowerCase()}`}>{item.priority}</span><span className="list-date"><Icon name="calendar" size={14} />{item.nextActionDate || 'Sin próxima acción'}</span><span className="table-owner">{item.assignedUserName ? <><Avatar name={item.assignedUserName} compact />{item.assignedUserName}</> : 'Sin asignar'}</span><Icon name="chevron" size={16} /></button>)}{rows.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div>;
+}
+
+/** Initiative table shared by Iniciativas (Tabla view and archived) and Cross-Selling. */
+function InitiativeTable({ tableId, rows, archived, emptyMessage, onEdit, onArchive, onDelete, onRestore }) {
+  const columns = [
+    { id: 'id', label: 'ID', value: (item) => item.id },
+    { id: 'title', label: 'Iniciativa', value: (item) => item.title, render: (item) => (archived ? item.title : <button className="table-title" onClick={() => onEdit(item)}>{item.title}</button>) },
+    { id: 'category', label: 'Categoría', value: (item) => item.categoryLabel },
+    { id: 'account', label: 'Cliente', value: (item) => item.clientName },
+    { id: 'stage', label: 'Etapa', type: 'number', value: (item) => initiativeStages.findIndex((stage) => stage.id === item.stage), render: (item) => <span className={`status-pill ${item.stageTone}`}>{item.stageLabel}</span> },
+    { id: 'status', label: 'Estado operativo', value: (item) => item.statusLabel },
+    { id: 'priority', label: 'Prioridad', type: 'number', value: (item) => priorityOrder(item.priority), render: (item) => item.priority },
+    { id: 'nextActionDate', label: 'Fecha próxima acción', type: 'date', value: (item) => item.nextActionDate },
+    { id: 'services', label: 'Servicios', value: (item) => item.servicesLabel },
+    { id: 'assignedUserName', label: 'Asignado a', value: (item) => item.assignedUserName },
+    { id: 'links', label: 'Enlaces', type: 'number', value: (item) => item.linkCount, render: (item) => <WorkspaceLinkList links={item.links} /> },
+    { id: 'generatedOpportunities', label: 'Oportunidades generadas', type: 'number', value: (item) => item.generatedOpportunityCount, render: (item) => String(item.generatedOpportunityCount) },
+    { id: 'createdAt', label: 'Creada', type: 'date', value: (item) => item.createdAt, render: (item) => (item.createdAt ? new Date(item.createdAt).toLocaleDateString('es-ES') : '—') },
+    ...(archived ? [{ id: 'archivedBy', label: 'Archivada por', value: (item) => item.archivedByName }] : []),
+  ];
+  return <div className="table-wrap"><DataTable tableId={tableId} className="data-table initiative-table" rows={rows} columns={columns} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archived ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{rows.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div>;
 }
 
 function Analytics({ opportunities, grouped }) {
@@ -1307,11 +1393,6 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
       <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose} disabled={saving}>Cancelar</button><button className="button button-primary" type="submit" disabled={saving}>{saving ? 'Guardando…' : (isEditing ? 'Guardar cambios' : 'Crear oportunidad')}</button></div>
     </form>
   </dialog>;
-}
-
-function initiativeCategory(value) {
-  const legacy = { internal: 'Desarrollo de negocio interno (Seidor/Towers)', cross_selling: 'Cross-selling', external: 'Prospección externa' };
-  return legacy[value] || (initiativeCategories.includes(value) ? value : (value || 'Otros'));
 }
 
 function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDelete }) {

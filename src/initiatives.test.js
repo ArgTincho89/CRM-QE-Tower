@@ -6,7 +6,10 @@ import {
   INITIATIVE_STATUS_FILTERS,
   addInitiative,
   buildOpportunityPrefill,
+  filterInitiativeRecords,
   filterInitiativesByStatus,
+  initiativeCategoryLabel,
+  isCrossSellingInitiative,
   isInitiativeCompleted,
   initiativeCountLabel,
   initiativeStatusLabel,
@@ -15,6 +18,7 @@ import {
   removeInitiative,
   scopeInitiativesToPage,
   summarizeInitiatives,
+  toInitiativeRecord,
 } from './initiatives.js';
 
 test('the initiative board shows the four stages, Completada included', () => {
@@ -133,4 +137,73 @@ test('archive and restore move records between lists without duplicating them', 
   assert.deepEqual(restored.map((item) => item.id), ['IN-0001', 'IN-0002']);
   assert.equal(addInitiative(restored, { id: 'IN-0001' }).length, 2);
   assert.equal(removeInitiative(active, 'IN-9999').length, 2);
+});
+
+test('cross-selling scope keeps the current and the legacy category only', () => {
+  const list = [
+    { id: 'IN-1', category: 'Cross-selling' },
+    { id: 'IN-2', category: 'cross_selling' },
+    { id: 'IN-3', category: 'Prospección externa' },
+  ];
+  assert.equal(isCrossSellingInitiative(list[0]), true);
+  assert.equal(isCrossSellingInitiative(list[2]), false);
+  assert.deepEqual(scopeInitiativesToPage(list, 'crossSelling').map((item) => item.id), ['IN-1', 'IN-2']);
+  assert.equal(scopeInitiativesToPage(list, 'initiatives').length, 3);
+});
+
+test('initiative category labels resolve legacy ids and fall back to Otros', () => {
+  assert.equal(initiativeCategoryLabel('cross_selling'), 'Cross-selling');
+  assert.equal(initiativeCategoryLabel('Prospección externa'), 'Prospección externa');
+  assert.equal(initiativeCategoryLabel(''), 'Otros');
+});
+
+test('one search, status filter and page scope serve every initiative view', () => {
+  const list = [
+    { id: 'IN-1', title: 'Auditoría QA', category: 'Cross-selling', clientName: 'Acme', operationalStatus: 'active', assignedUserName: 'Ana Ruiz' },
+    { id: 'IN-2', title: 'Automatización', category: 'cross_selling', clientName: 'Globex', operationalStatus: 'paused' },
+    { id: 'IN-3', title: 'Nuevo servicio', category: 'Otros', clientName: 'Acme', operationalStatus: 'active' },
+  ];
+  assert.deepEqual(filterInitiativeRecords(list, { query: 'acme' }).map((item) => item.id), ['IN-1', 'IN-3']);
+  assert.deepEqual(filterInitiativeRecords(list, { query: 'ana ruiz' }).map((item) => item.id), ['IN-1']);
+  assert.deepEqual(filterInitiativeRecords(list, { page: 'crossSelling' }).map((item) => item.id), ['IN-1', 'IN-2']);
+  assert.deepEqual(filterInitiativeRecords(list, { page: 'crossSelling', statusFilter: 'paused' }).map((item) => item.id), ['IN-2']);
+  assert.deepEqual(filterInitiativeRecords(undefined), []);
+});
+
+test('initiative display records carry the list and table fields', () => {
+  const source = {
+    id: 'IN-000123',
+    title: 'Auditoría',
+    category: 'cross_selling',
+    clientName: '',
+    stage: 'won',
+    operationalStatus: 'paused',
+    priority: '',
+    nextActionDate: '2026-12-01',
+    services: [{ id: 'S1', name: 'Testing' }, { id: 'S2', name: 'Performance' }],
+    links: [{ id: 'L1', title: 'Drive', url: 'https://example.com' }],
+    opportunities: [{ id: 'OP-1' }, { id: 'OP-2' }],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const record = toInitiativeRecord(source);
+  assert.equal(record.account, 'Sin cliente');
+  assert.equal(record.categoryLabel, 'Cross-selling');
+  assert.equal(record.stage, 'completed');
+  assert.equal(record.stageLabel, 'Completada');
+  assert.equal(record.statusLabel, 'Pausada');
+  assert.equal(record.priority, 'Media');
+  assert.equal(record.initiativeDue, '2026-12-01');
+  assert.equal(record.servicesLabel, 'Testing, Performance');
+  assert.equal(record.linkCount, 1);
+  assert.equal(record.generatedOpportunityCount, 2);
+  assert.equal(record.entityType, 'initiative');
+  assert.equal(record.cardKey, 'initiative:IN-000123');
+  assert.equal(record.sourceRecord, source);
+});
+
+test('initiative display records tolerate missing relations', () => {
+  const record = toInitiativeRecord({ id: 'IN-1', title: 'X', stage: 'pending', linkedOpportunityCount: 3 });
+  assert.equal(record.servicesLabel, '');
+  assert.equal(record.linkCount, 0);
+  assert.equal(record.generatedOpportunityCount, 3);
 });

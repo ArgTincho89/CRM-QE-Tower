@@ -11,8 +11,9 @@ const ENTITY_NOUNS = {
 };
 
 // Page that lists each entity type, used to open the related record from a notification.
+// Opportunities are managed in the CRM QE page (its "Tabla" view).
 const ENTITY_PAGES = {
-  opportunity: 'opportunities',
+  opportunity: 'pipeline',
   initiative: 'initiatives',
   agreement: 'agreements',
 };

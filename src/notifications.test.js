@@ -16,7 +16,7 @@ describe('notifications', () => {
   test('entity nouns and target pages', () => {
     assert.equal(notificationEntityNoun('agreement'), 'el Acuerdo Marco');
     assert.equal(notificationEntityNoun('x'), '');
-    assert.equal(notificationTargetPage('opportunity'), 'opportunities');
+    assert.equal(notificationTargetPage('opportunity'), 'pipeline');
     assert.equal(notificationTargetPage('initiative'), 'initiatives');
     assert.equal(notificationTargetPage('agreement'), 'agreements');
     assert.equal(notificationTargetPage('x'), null);

@@ -1,4 +1,4 @@
-import { COMPLETED_INITIATIVE_STAGE, initiativeStages, initiativeStatuses } from './data.js';
+import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativeStages, initiativeStatuses } from './data.js';
 import { isAssignableService } from './serviceYears.js';
 
 // Legacy commercial stages mapped to the four permanent initiative columns.
@@ -66,9 +66,70 @@ export function filterInitiativesByStatus(list, statusFilter = 'all') {
   return list.filter((item) => (item.operationalStatus || 'active') === statusFilter);
 }
 
+/** Cross-selling category, including the legacy `cross_selling` id. */
+export function isCrossSellingInitiative(item) {
+  return item?.category === 'Cross-selling' || item?.category === 'cross_selling';
+}
+
 export function scopeInitiativesToPage(list, page) {
   if (page !== 'crossSelling') return list;
-  return list.filter((item) => item.category === 'Cross-selling' || item.category === 'cross_selling');
+  return list.filter(isCrossSellingInitiative);
+}
+
+const LEGACY_INITIATIVE_CATEGORIES = {
+  internal: 'Desarrollo de negocio interno (Seidor/Towers)',
+  cross_selling: 'Cross-selling',
+  external: 'Prospección externa',
+};
+
+/** Display label of an initiative category; legacy ids map to their current label. */
+export function initiativeCategoryLabel(value) {
+  return LEGACY_INITIATIVE_CATEGORIES[value] || (initiativeCategories.includes(value) ? value : (value || 'Otros'));
+}
+
+/** Free-text search shared by every initiative view (board, list and table). */
+export function matchesInitiativeQuery(item, query) {
+  const normalized = String(query || '').trim().toLowerCase();
+  if (!normalized) return true;
+  return `${item.id} ${item.title} ${item.clientName || ''} ${initiativeCategoryLabel(item.category)} ${item.priority || ''} ${item.assignedUserName || ''}`
+    .toLowerCase()
+    .includes(normalized);
+}
+
+/** Page scope, operational-status filter and search, in that order. */
+export function filterInitiativeRecords(list, { page = 'initiatives', statusFilter = 'all', query = '' } = {}) {
+  return filterInitiativesByStatus(scopeInitiativesToPage(list || [], page), statusFilter)
+    .filter((item) => matchesInitiativeQuery(item, query));
+}
+
+/**
+ * One display record per initiative, shared by the board cards, the list rows and the table:
+ * resolved labels plus the counts the table shows. `sourceRecord` keeps the API object for
+ * edit and restore.
+ */
+export function toInitiativeRecord(item) {
+  const stage = mapInitiativeStage(item.stage);
+  const stageInfo = initiativeStages.find((entry) => entry.id === stage);
+  const services = Array.isArray(item.services) ? item.services : [];
+  const links = Array.isArray(item.links) ? item.links : [];
+  const generated = Array.isArray(item.opportunities) ? item.opportunities.length : Number(item.linkedOpportunityCount) || 0;
+  return {
+    ...item,
+    account: item.clientName || 'Sin cliente',
+    categoryLabel: initiativeCategoryLabel(item.category),
+    stage,
+    stageLabel: stageInfo?.label || stage,
+    stageTone: stageInfo?.tone || '',
+    statusLabel: initiativeStatusLabel(item.operationalStatus),
+    priority: item.priority || 'Media',
+    initiativeDue: item.nextActionDate || '',
+    servicesLabel: services.map((service) => service.name).filter(Boolean).join(', '),
+    linkCount: links.length,
+    generatedOpportunityCount: generated,
+    entityType: 'initiative',
+    cardKey: `initiative:${item.id}`,
+    sourceRecord: item,
+  };
 }
 
 // Prefill for "Crear oportunidad": client and the services that are still assignable (active
