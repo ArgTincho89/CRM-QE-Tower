@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  buildAssignmentMessage, countUnread, formatNotificationTime, markNotificationsRead, notificationEntityNoun, notificationTargetPage, unreadBadgeLabel,
+  buildAssignmentMessage, buildMentionMessage, countUnread, formatNotificationTime, markNotificationsRead, notificationEntityNoun, notificationTargetPage, unreadBadgeLabel,
 } from './notifications.js';
 
 describe('notifications', () => {
@@ -11,6 +11,14 @@ describe('notifications', () => {
     assert.equal(buildAssignmentMessage({ ...base, entityType: 'opportunity', entityId: 'OP-000002' }), 'Ada Lovelace te ha asignado la Oportunidad OP-000002: Plataforma QA');
     assert.equal(buildAssignmentMessage({ ...base, entityType: 'agreement', entityId: 'AM-000003' }), 'Ada Lovelace te ha asignado el Acuerdo Marco AM-000003: Plataforma QA');
     assert.throws(() => buildAssignmentMessage({ ...base, entityType: 'clients', entityId: 'c-1' }), /Unknown notification entity type/);
+  });
+
+  test('mention messages use the right article per entity type', () => {
+    const base = { actorName: 'Ada Lovelace', entityTitle: 'Plataforma QA' };
+    assert.equal(buildMentionMessage({ ...base, entityType: 'initiative', entityId: 'IN-000001' }), 'Ada Lovelace te mencionó en la Iniciativa IN-000001: Plataforma QA');
+    assert.equal(buildMentionMessage({ ...base, entityType: 'opportunity', entityId: 'OP-000002' }), 'Ada Lovelace te mencionó en la Oportunidad OP-000002: Plataforma QA');
+    assert.equal(buildMentionMessage({ ...base, entityType: 'agreement', entityId: 'AM-000003' }), 'Ada Lovelace te mencionó en el Acuerdo Marco AM-000003: Plataforma QA');
+    assert.throws(() => buildMentionMessage({ ...base, entityType: 'clients', entityId: 'c-1' }), /Unknown notification entity type/);
   });
 
   test('entity nouns and target pages', () => {

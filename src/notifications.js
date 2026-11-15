@@ -35,6 +35,14 @@ export function buildAssignmentMessage({ actorName, entityType, entityId, entity
   return `${actorName} te ha asignado ${noun} ${entityId}: ${entityTitle}`;
 }
 
+// "en la Iniciativa" / "en el Acuerdo Marco": the article is reused from the noun.
+/** "{actorName} te mencionó en la Iniciativa {ID}: {Título}" and its siblings per entity type. */
+export function buildMentionMessage({ actorName, entityType, entityId, entityTitle }) {
+  const noun = notificationEntityNoun(entityType);
+  if (!noun) throw new Error(`Unknown notification entity type: ${entityType}`);
+  return `${actorName} te mencionó en ${noun} ${entityId}: ${entityTitle}`;
+}
+
 /** Number of unread notifications in a list. */
 export function countUnread(notifications) {
   return (notifications || []).filter((item) => !item.readAt).length;

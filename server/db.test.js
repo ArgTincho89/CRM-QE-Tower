@@ -392,7 +392,7 @@ test('registry_id is added idempotently to agreements and opportunities with an 
 const SIX_DIGIT_REFERENCE_TABLES = [
   'opportunities', 'initiatives', 'framework_agreements', 'card_events', 'opportunity_towers', 'opportunity_lobs',
   'opportunity_services', 'initiative_services', 'initiative_lobs', 'initiative_towers', 'record_actions', 'record_action_comments', 'workspace_links', 'entity_events',
-  'notifications',
+  'notifications', 'entity_comments',
 ];
 
 /** Builds a database with pre-six-digit ids by opening it, inserting legacy rows and dropping the marker. */
@@ -436,6 +436,10 @@ function createLegacyIdDatabase(dbPath, extraSql = '') {
     INSERT INTO notifications (id,user_id,actor_user_id,actor_name,kind,entity_type,entity_id,entity_title,message,created_at) VALUES
       ('n-1','u-1',NULL,'Bob','assignment','opportunity','O-0001','Legacy O','Bob te ha asignado la Oportunidad O-0001: Legacy O','2026-03-03'),
       ('n-2','u-1',NULL,'Bob','assignment','agreement','3f2b8c1e-0000-4000-8000-000000000001','Acuerdo','Bob te ha asignado el Acuerdo Marco 3f2b8c1e-0000-4000-8000-000000000001: Acuerdo','2026-03-03');
+    INSERT INTO entity_comments (id,entity_type,entity_id,user_id,user_name,body,mentions,created_at,updated_at) VALUES
+      ('ec-1','opportunity','O-0001','u-1','Ada','Hola','[]','2026-03-04','2026-03-04'),
+      ('ec-2','initiative','IN-0001','u-1','Ada','Hola','[]','2026-03-04','2026-03-04'),
+      ('ec-3','agreement','3f2b8c1e-0000-4000-8000-000000000001','u-1','Ada','Hola','[]','2026-03-04','2026-03-04');
     DELETE FROM schema_meta WHERE key = 'six_digit_ids_v1';
   `);
   if (extraSql) {
@@ -502,6 +506,11 @@ test('commercial ids migrate to six-digit prefixes with every reference rewritte
     assert.deepEqual(db.prepare('SELECT id, entity_type, entity_id, message FROM notifications ORDER BY id').all().map((row) => [row.id, row.entity_type, row.entity_id, row.message]), [
       ['n-1', 'opportunity', 'OP-000002', 'Bob te ha asignado la Oportunidad OP-000002: Legacy O'],
       ['n-2', 'agreement', 'AM-000001', 'Bob te ha asignado el Acuerdo Marco AM-000001: Acuerdo'],
+    ]);
+    assert.deepEqual(db.prepare('SELECT id, entity_type, entity_id FROM entity_comments ORDER BY id').all().map((row) => [row.id, row.entity_type, row.entity_id]), [
+      ['ec-1', 'opportunity', 'OP-000002'],
+      ['ec-2', 'initiative', 'IN-000001'],
+      ['ec-3', 'agreement', 'AM-000001'],
     ]);
     assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
     assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
@@ -613,6 +622,79 @@ test('opportunity next_action_date and the initiative LoB and Tower join tables 
     applySchema(reopened);
     assert.equal(reopened.prepare('PRAGMA table_info(opportunities)').all().filter((row) => row.name === 'next_action_date').length, 1);
     assert.equal(count(reopened, 'initiative_lobs'), 1);
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('the entity_comments table and its index are created idempotently', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-entity-comments-'));
+  const dbPath = path.join(dir, 'app.db');
+  try {
+    const db = openDatabase(dbPath);
+    applySchema(db);
+    const columns = db.prepare('PRAGMA table_info(entity_comments)').all().map((row) => row.name);
+    assert.deepEqual(columns, ['id', 'entity_type', 'entity_id', 'user_id', 'user_name', 'body', 'mentions', 'edited', 'created_at', 'updated_at']);
+    assert.deepEqual(db.prepare('PRAGMA index_info(idx_entity_comments_entity)').all().map((row) => row.name), ['entity_type', 'entity_id', 'created_at']);
+    const userKey = db.prepare('PRAGMA foreign_key_list(entity_comments)').all().find((row) => row.from === 'user_id');
+    assert.equal(userKey?.table, 'users');
+    assert.equal(userKey?.on_delete, 'SET NULL');
+    db.exec("INSERT INTO users VALUES ('u-1','ada@example.com','Ada','hash','admin','2026-01-01')");
+    db.exec("INSERT INTO entity_comments (id,entity_type,entity_id,user_id,user_name,body,created_at,updated_at) VALUES ('c-1','agreement','AM-000001','u-1','Ada','Hola','x','x')");
+    const row = db.prepare("SELECT mentions, edited FROM entity_comments WHERE id = 'c-1'").get();
+    assert.deepEqual([row.mentions, row.edited], ['[]', 0]);
+    assert.throws(() => db.exec("INSERT INTO entity_comments (id,entity_type,entity_id,user_name,body,created_at,updated_at) VALUES ('c-2','clients','c-1','Ada','x','x','x')"), /CHECK constraint failed/);
+    // Deleting the author keeps the comment with its name snapshot.
+    db.exec("DELETE FROM users WHERE id = 'u-1'");
+    assert.deepEqual({ ...db.prepare("SELECT user_id, user_name FROM entity_comments WHERE id = 'c-1'").get() }, { user_id: null, user_name: 'Ada' });
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    applySchema(reopened);
+    assert.equal(count(reopened, 'entity_comments'), 1);
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('a legacy notifications table is rebuilt once to allow the mention kind, keeping its rows', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-notification-kind-'));
+  const dbPath = path.join(dir, 'app.db');
+  try {
+    const seeded = openDatabase(dbPath);
+    seeded.exec(`
+      PRAGMA foreign_keys = OFF;
+      DROP TABLE notifications;
+      CREATE TABLE notifications (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL, actor_name TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL CHECK(kind IN ('assignment')),
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
+        entity_id TEXT NOT NULL, entity_title TEXT NOT NULL DEFAULT '', message TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
+      );
+      INSERT INTO users VALUES ('u-1','ada@example.com','Ada','hash','admin','2026-01-01');
+      INSERT INTO notifications (id,user_id,actor_name,kind,entity_type,entity_id,entity_title,message,created_at,read_at) VALUES
+        ('n-b','u-1','Bob','assignment','initiative','IN-000001','A','Bob te ha asignado la Iniciativa IN-000001: A','2026-01-01',NULL),
+        ('n-a','u-1','Bob','assignment','agreement','AM-000001','B','Bob te ha asignado el Acuerdo Marco AM-000001: B','2026-01-01','2026-01-02');
+      DELETE FROM schema_meta WHERE key = 'notification_mention_kind_v1';
+    `);
+    closeDatabase(seeded);
+
+    const db = openDatabase(dbPath);
+    assert.deepEqual(db.prepare('SELECT rowid, id, read_at FROM notifications ORDER BY rowid').all().map((row) => [row.rowid, row.id, row.read_at]), [[1, 'n-b', null], [2, 'n-a', '2026-01-02']]);
+    db.exec("INSERT INTO notifications (id,user_id,kind,entity_type,entity_id,message,created_at) VALUES ('n-m','u-1','mention','initiative','IN-000001','x','x')");
+    assert.throws(() => db.exec("INSERT INTO notifications (id,user_id,kind,entity_type,entity_id,message,created_at) VALUES ('n-x','u-1','other','initiative','IN-000001','x','x')"), /CHECK constraint failed/);
+    for (const index of ['idx_notifications_recipient', 'idx_notifications_entity']) {
+      assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(index), index);
+    }
+    assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
+    // The recipient foreign key still cascades.
+    db.exec("DELETE FROM users WHERE id = 'u-1'");
+    assert.equal(count(db, 'notifications'), 0);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'notification_mention_kind_v1'").get().count, 1);
     closeDatabase(reopened);
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

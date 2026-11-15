@@ -118,6 +118,11 @@ export const createAction = (type, id, body) => request(`/${type}/${encodeURICom
 export const updateAction = (id, body) => request(`/actions/${encodeURIComponent(id)}`, { method: 'PATCH', body });
 export const createActionComment = (id, body) => request(`/actions/${encodeURIComponent(id)}/comments`, { method: 'POST', body });
 // Minimal user directory ({ id, name }) for the "Asignado a" selector.
+// Record comments: kind is 'opportunities', 'initiatives' or 'agreements'.
+export const listComments = (kind, id) => request(`/${kind}/${encodeURIComponent(id)}/comments`);
+export const createComment = (kind, id, body) => request(`/${kind}/${encodeURIComponent(id)}/comments`, { method: 'POST', body: { body } });
+export const updateComment = (id, body) => request(`/comments/${encodeURIComponent(id)}`, { method: 'PATCH', body: { body } });
+export const deleteComment = (id) => request(`/comments/${encodeURIComponent(id)}`, { method: 'DELETE' });
 export const listUsers = () => request('/users');
 export const listNotifications = () => request('/notifications');
 export const markNotificationRead = (id) => request(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' });

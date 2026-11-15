@@ -18,6 +18,20 @@ const WORKSPACE_LINK_COLUMNS = `id TEXT PRIMARY KEY,
       created_by_name TEXT NOT NULL DEFAULT ''`;
 const WORKSPACE_LINKS_INDEX = 'CREATE INDEX IF NOT EXISTS idx_workspace_links_entity ON workspace_links(entity_type, entity_id, created_at)';
 
+// Shared by the CREATE statement and the rebuild that widens the `kind` CHECK.
+const NOTIFICATION_COLUMNS = `id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      actor_name TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL CHECK(kind IN ('assignment','mention')),
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
+      entity_id TEXT NOT NULL, entity_title TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT`;
+const NOTIFICATION_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(user_id, read_at, created_at)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id)',
+];
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
      id TEXT PRIMARY KEY,
@@ -136,18 +150,23 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS workspace_links (${WORKSPACE_LINK_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // In-app notifications. Title and message are snapshots taken when the notification is created.
-  `CREATE TABLE IF NOT EXISTS notifications (
+  `CREATE TABLE IF NOT EXISTS notifications (${NOTIFICATION_COLUMNS})`,
+  ...NOTIFICATION_INDEXES,
+  // "Comentarios" of opportunities, initiatives and framework agreements. `mentions` is a JSON
+  // array of the user ids mentioned in `body`; `user_name` is a snapshot of the author's name.
+  `CREATE TABLE IF NOT EXISTS entity_comments (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-      actor_name TEXT NOT NULL DEFAULT '',
-      kind TEXT NOT NULL CHECK(kind IN ('assignment')),
       entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
-      entity_id TEXT NOT NULL, entity_title TEXT NOT NULL DEFAULT '',
-      message TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT
+      entity_id TEXT NOT NULL,
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      user_name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      mentions TEXT NOT NULL DEFAULT '[]',
+      edited INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )`,
-  'CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(user_id, read_at, created_at)',
-  'CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_comments_entity ON entity_comments(entity_type, entity_id, created_at)',
 ];
 
 /** Nullable "Asignado a" column: a system user account, separate from the people-master owner. */
@@ -169,6 +188,7 @@ const MIGRATION_MARKER = 'legacy_evolution_v1';
 const SERVICE_YEARS_MARKER = 'service_years_v1';
 const WORKSPACE_LINKS_AGREEMENTS_MARKER = 'workspace_links_agreements_v1';
 const SIX_DIGIT_IDS_MARKER = 'six_digit_ids_v1';
+const NOTIFICATION_MENTION_KIND_MARKER = 'notification_mention_kind_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -296,6 +316,7 @@ export function runMigrations(db) {
   // Runs first: the legacy migration below seeds services, which needs the per-year shape.
   migrateServiceYears(db);
   migrateWorkspaceLinkAgreements(db);
+  migrateNotificationMentionKind(db);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_year_name ON services(year, name COLLATE NOCASE)');
   migrateLegacyEvolution(db);
   // Last: it renames ids that the migrations above may have copied into join tables.
@@ -422,6 +443,39 @@ export function migrateWorkspaceLinkAgreements(db) {
 }
 
 /**
+ * Lets notifications have the 'mention' kind. Guarded by `schema_meta`, so it runs once per
+ * database. When `notifications` still has the CHECK that only allows 'assignment', the table is
+ * rebuilt inside one transaction with the widened CHECK: same rowids, ids and column values (the
+ * list order relies on rowid), and its indexes are recreated. A fresh database already has the
+ * new CHECK, so only the marker is written.
+ */
+export function migrateNotificationMentionKind(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(NOTIFICATION_MENTION_KIND_MARKER)) return;
+  const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'").get()?.sql ?? '';
+  const needsRebuild = !tableSql.includes("'mention'");
+  // SQLite ignores this pragma inside a transaction, so it is switched around the rebuild.
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  if (needsRebuild) db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    withTransaction(db, () => {
+      if (needsRebuild) {
+        const columns = 'id, user_id, actor_user_id, actor_name, kind, entity_type, entity_id, entity_title, message, created_at, read_at';
+        db.exec(`CREATE TABLE notifications_next (${NOTIFICATION_COLUMNS})`);
+        db.exec(`INSERT INTO notifications_next (rowid, ${columns}) SELECT rowid, ${columns} FROM notifications`);
+        db.exec('DROP TABLE notifications');
+        db.exec('ALTER TABLE notifications_next RENAME TO notifications');
+        for (const statement of NOTIFICATION_INDEXES) db.exec(statement);
+        const broken = db.prepare('PRAGMA foreign_key_check(notifications)').all();
+        if (broken.length > 0) throw new Error(`Notification kind migration left ${broken.length} broken foreign key reference(s).`);
+      }
+      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(NOTIFICATION_MENTION_KIND_MARKER, new Date().toISOString());
+    });
+  } finally {
+    if (needsRebuild && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+/**
  * Commercial entities renamed by `migrateSixDigitIds`: their table, id prefix, the entity_type
  * strings that reference them in polymorphic tables (plural aliases cover any older writer), the
  * foreign key columns that hold their ids, and the event detail JSON keys that carry their ids.
@@ -454,7 +508,7 @@ const COMMERCIAL_ID_RENAMES = [
     detailKeys: ['agreementId'],
   },
 ];
-const POLYMORPHIC_ID_TABLES = ['record_actions', 'workspace_links', 'entity_events', 'notifications'];
+const POLYMORPHIC_ID_TABLES = ['record_actions', 'workspace_links', 'entity_events', 'notifications', 'entity_comments'];
 const EVENT_DETAIL_TABLES = ['entity_events', 'card_events'];
 
 /**

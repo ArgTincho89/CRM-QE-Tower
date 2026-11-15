@@ -2261,3 +2261,162 @@ describe('assignees and notifications', () => {
     assert.equal((await notificationsOf(eve)).notifications.some((item) => item.entityId === id), false);
   });
 });
+
+describe('record comments with mentions', () => {
+  /** @type {Awaited<ReturnType<typeof startTestServer>>} */
+  let app;
+  let ada;
+  let bob;
+  let eve;
+
+  before(async () => {
+    app = await startTestServer();
+    ada = await app.register({ email: 'comments-ada@example.com', name: 'Ada Lovelace' });
+    bob = await app.register({ email: 'comments-bob@example.com', name: 'Bob Builder' });
+    eve = await app.register({ email: 'comments-eve@example.com', name: 'Eve Tester' });
+  });
+
+  after(async () => {
+    await app.cleanup();
+  });
+
+  const mention = (user) => `@[${user.body.user.name}](${user.body.user.id})`;
+  const mentionsOf = async (user) => (await app.json('GET', '/api/notifications', { cookie: user.cookie })).body.notifications.filter((item) => item.kind === 'mention');
+
+  async function createRecords() {
+    const opportunity = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Oportunidad comentada' }, cookie: ada.cookie });
+    const initiative = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa comentada' }, cookie: ada.cookie });
+    const agreement = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo comentado' }, cookie: ada.cookie });
+    return {
+      opportunities: opportunity.body.opportunity,
+      initiatives: initiative.body.initiative,
+      agreements: agreement.body.agreement,
+    };
+  }
+
+  test('comments require a session and an existing record', async () => {
+    const records = await createRecords();
+    assert.equal((await app.json('GET', `/api/initiatives/${records.initiatives.id}/comments`)).status, 401);
+    assert.equal((await app.json('POST', `/api/initiatives/${records.initiatives.id}/comments`, { body: { body: 'x' } })).status, 401);
+    for (const kind of ['opportunities', 'initiatives', 'agreements']) {
+      assert.equal((await app.json('GET', `/api/${kind}/missing/comments`, { cookie: ada.cookie })).status, 404, kind);
+      assert.equal((await app.json('POST', `/api/${kind}/missing/comments`, { body: { body: 'Hola' }, cookie: ada.cookie })).status, 404, kind);
+    }
+    assert.equal((await app.json('PUT', `/api/agreements/${records.agreements.id}/comments`, { body: {}, cookie: ada.cookie })).status, 405);
+    assert.equal((await app.json('PATCH', '/api/comments/missing', { body: { body: 'x' }, cookie: ada.cookie })).status, 404);
+    assert.equal((await app.json('DELETE', '/api/comments/missing', { cookie: ada.cookie })).status, 404);
+  });
+
+  test('creates, lists oldest first, edits and deletes comments on the three entity types', async () => {
+    const records = await createRecords();
+    for (const [kind, record] of Object.entries(records)) {
+      const first = await app.json('POST', `/api/${kind}/${record.id}/comments`, { body: { body: '  Primer comentario  ' }, cookie: ada.cookie });
+      assert.equal(first.status, 201, kind);
+      assert.equal(first.body.comment.body, 'Primer comentario');
+      assert.equal(first.body.comment.userName, 'Ada Lovelace');
+      assert.equal(first.body.comment.userId, ada.body.user.id);
+      assert.equal(first.body.comment.edited, false);
+      assert.deepEqual(first.body.comment.mentions, []);
+      const second = await app.json('POST', `/api/${kind}/${record.id}/comments`, { body: { body: 'Segundo' }, cookie: bob.cookie });
+      assert.equal(second.status, 201);
+
+      const listed = await app.json('GET', `/api/${kind}/${record.id}/comments`, { cookie: eve.cookie });
+      assert.equal(listed.status, 200);
+      assert.deepEqual(listed.body.comments.map((item) => item.body), ['Primer comentario', 'Segundo']);
+
+      const edited = await app.json('PATCH', `/api/comments/${first.body.comment.id}`, { body: { body: 'Primer comentario editado' }, cookie: ada.cookie });
+      assert.equal(edited.status, 200);
+      assert.equal(edited.body.comment.body, 'Primer comentario editado');
+      assert.equal(edited.body.comment.edited, true);
+
+      assert.equal((await app.json('DELETE', `/api/comments/${second.body.comment.id}`, { cookie: bob.cookie })).status, 200);
+      const after = await app.json('GET', `/api/${kind}/${record.id}/comments`, { cookie: ada.cookie });
+      assert.deepEqual(after.body.comments.map((item) => [item.body, item.edited]), [['Primer comentario editado', true]]);
+    }
+  });
+
+  test('only the author can edit or delete a comment', async () => {
+    const { initiatives: initiative } = await createRecords();
+    const created = await app.json('POST', `/api/initiatives/${initiative.id}/comments`, { body: { body: 'De Ada' }, cookie: ada.cookie });
+    const id = created.body.comment.id;
+    const foreignEdit = await app.json('PATCH', `/api/comments/${id}`, { body: { body: 'De Bob' }, cookie: bob.cookie });
+    assert.equal(foreignEdit.status, 403);
+    assert.equal(foreignEdit.body.error.code, 'forbidden');
+    assert.equal((await app.json('DELETE', `/api/comments/${id}`, { cookie: bob.cookie })).status, 403);
+    assert.equal((await app.json('PATCH', `/api/comments/${id}`, { body: { body: 'x' } })).status, 401);
+    const listed = await app.json('GET', `/api/initiatives/${initiative.id}/comments`, { cookie: ada.cookie });
+    assert.deepEqual(listed.body.comments.map((item) => [item.body, item.edited]), [['De Ada', false]]);
+  });
+
+  test('validates the body: required, trimmed, at most 4000 characters', async () => {
+    const { agreements: agreement } = await createRecords();
+    const url = `/api/agreements/${agreement.id}/comments`;
+    for (const body of [{}, { body: '' }, { body: '   ' }, { body: 42 }, { body: 'x'.repeat(4001) }]) {
+      const response = await app.json('POST', url, { body, cookie: ada.cookie });
+      assert.equal(response.status, 400, JSON.stringify(body).slice(0, 40));
+    }
+    const longest = await app.json('POST', url, { body: { body: `  ${'x'.repeat(4000)}  ` }, cookie: ada.cookie });
+    assert.equal(longest.status, 201);
+    assert.equal(longest.body.comment.body.length, 4000);
+    assert.equal((await app.json('PATCH', `/api/comments/${longest.body.comment.id}`, { body: { body: ' ' }, cookie: ada.cookie })).status, 400);
+    assert.equal((await app.json('GET', url, { cookie: ada.cookie })).body.comments[0].body.length, 4000);
+  });
+
+  test('mentions keep only existing users and notify them, never the author', async () => {
+    const { initiatives: initiative, opportunities: opportunity, agreements: agreement } = await createRecords();
+    const bobBefore = (await mentionsOf(bob)).length;
+    const adaBefore = (await mentionsOf(ada)).length;
+    const body = `Hola ${mention(bob)}, ${mention(ada)} y @[Fantasma](ghost-user) ${mention(bob)}`;
+    const created = await app.json('POST', `/api/initiatives/${initiative.id}/comments`, { body: { body }, cookie: ada.cookie });
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body.comment.mentions, [bob.body.user.id, ada.body.user.id]);
+    assert.equal(created.body.comment.body, body);
+
+    const bobMentions = await mentionsOf(bob);
+    assert.equal(bobMentions.length, bobBefore + 1);
+    assert.equal(bobMentions[0].message, `Ada Lovelace te mencionó en la Iniciativa ${initiative.id}: Iniciativa comentada`);
+    assert.equal(bobMentions[0].entityType, 'initiative');
+    assert.equal(bobMentions[0].entityId, initiative.id);
+    assert.equal(bobMentions[0].readAt, null);
+    assert.equal((await mentionsOf(ada)).length, adaBefore);
+
+    await app.json('POST', `/api/opportunities/${opportunity.id}/comments`, { body: { body: `Mira ${mention(eve)}` }, cookie: ada.cookie });
+    await app.json('POST', `/api/agreements/${agreement.id}/comments`, { body: { body: `Mira ${mention(eve)}` }, cookie: bob.cookie });
+    const eveMessages = (await mentionsOf(eve)).map((item) => item.message);
+    assert.ok(eveMessages.includes(`Ada Lovelace te mencionó en la Oportunidad ${opportunity.id}: Oportunidad comentada`));
+    assert.ok(eveMessages.includes(`Bob Builder te mencionó en el Acuerdo Marco ${agreement.id}: Acuerdo comentado`));
+  });
+
+  test('editing notifies only newly mentioned users', async () => {
+    const { opportunities: opportunity } = await createRecords();
+    const created = await app.json('POST', `/api/opportunities/${opportunity.id}/comments`, { body: { body: `Hola ${mention(bob)}` }, cookie: ada.cookie });
+    const id = created.body.comment.id;
+    const bobBefore = (await mentionsOf(bob)).length;
+    const eveBefore = (await mentionsOf(eve)).length;
+
+    const edited = await app.json('PATCH', `/api/comments/${id}`, { body: { body: `Hola ${mention(bob)} y ${mention(eve)}` }, cookie: ada.cookie });
+    assert.equal(edited.status, 200);
+    assert.deepEqual(edited.body.comment.mentions, [bob.body.user.id, eve.body.user.id]);
+    assert.equal((await mentionsOf(bob)).length, bobBefore);
+    assert.equal((await mentionsOf(eve)).length, eveBefore + 1);
+
+    // Editing the text again without new mentions notifies nobody.
+    await app.json('PATCH', `/api/comments/${id}`, { body: { body: `Adiós ${mention(bob)} y ${mention(eve)}` }, cookie: ada.cookie });
+    assert.equal((await mentionsOf(bob)).length, bobBefore);
+    assert.equal((await mentionsOf(eve)).length, eveBefore + 1);
+  });
+
+  test('deleting a record deletes its comments and their mention notifications', async () => {
+    const records = await createRecords();
+    for (const [kind, record] of Object.entries(records)) {
+      const created = await app.json('POST', `/api/${kind}/${record.id}/comments`, { body: { body: `Para ${mention(eve)}` }, cookie: ada.cookie });
+      assert.equal(created.status, 201);
+      assert.ok((await mentionsOf(eve)).some((item) => item.entityId === record.id), kind);
+      assert.equal((await app.json('DELETE', `/api/${kind}/${record.id}`, { cookie: ada.cookie })).status, 200, kind);
+      assert.equal((await mentionsOf(eve)).some((item) => item.entityId === record.id), false, kind);
+      assert.equal((await app.json('PATCH', `/api/comments/${created.body.comment.id}`, { body: { body: 'x' }, cookie: ada.cookie })).status, 404, kind);
+      const orphans = app.db.prepare('SELECT COUNT(*) AS count FROM entity_comments WHERE entity_id = ?').get(record.id);
+      assert.equal(Number(orphans.count), 0, kind);
+    }
+  });
+});

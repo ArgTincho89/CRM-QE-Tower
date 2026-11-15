@@ -20,7 +20,8 @@ import { withTransaction } from './db.js';
 import { AGREEMENT_ID_PREFIX, IdSpaceExhaustedError, INITIATIVE_ID_PREFIX, nextPrefixedId, OPPORTUNITY_ID_PREFIX } from './ids.js';
 import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
-import { buildAssignmentMessage } from '../src/notifications.js';
+import { extractMentionIds, newMentionIds } from '../src/mentions.js';
+import { buildAssignmentMessage, buildMentionMessage } from '../src/notifications.js';
 import {
   HttpError,
   assertSameOrigin,
@@ -129,12 +130,13 @@ function assertNoReferences(db, id, { code, subject, checks }) {
   }
 }
 
-/** Actions, their comments, workspace links, entity events and notifications belong only to their record. */
+/** Actions, their comments, record comments, workspace links, entity events and notifications belong only to their record. */
 function deleteOwnedRecordRows(db, type, id) {
   db.prepare(
     'DELETE FROM record_action_comments WHERE action_id IN (SELECT id FROM record_actions WHERE entity_type = ? AND entity_id = ?)',
   ).run(type, id);
   db.prepare('DELETE FROM record_actions WHERE entity_type = ? AND entity_id = ?').run(type, id);
+  db.prepare('DELETE FROM entity_comments WHERE entity_type = ? AND entity_id = ?').run(type, id);
   db.prepare('DELETE FROM workspace_links WHERE entity_type = ? AND entity_id = ?').run(type, id);
   db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(type, id);
   // Notifications point at the record; once it is gone they would only lead to a dead end.
@@ -2025,6 +2027,144 @@ async function createActionComment(ctx, req, res, rawActionId) {
   sendJson(res, 201, { comment });
 }
 
+// ---------------------------------------------------------------------------
+// Record comments ("Comentarios") with @mentions
+// ---------------------------------------------------------------------------
+
+const COMMENT_MAX_LENGTH = 4000;
+
+/** Table and "missing" message of each entity type that has comments. */
+const COMMENT_ENTITIES = {
+  opportunity: { table: 'opportunities', missing: 'La oportunidad no existe.' },
+  initiative: { table: 'initiatives', missing: 'La iniciativa no existe.' },
+  agreement: { table: 'framework_agreements', missing: 'El acuerdo marco no existe.' },
+};
+
+/** The commented record (`{ id, title }`) or a 404 for its entity type. */
+function requireCommentEntity(db, type, id) {
+  const entity = COMMENT_ENTITIES[type];
+  const row = db.prepare(`SELECT id, title FROM ${entity.table} WHERE id = ?`).get(id);
+  if (!row) throw new HttpError(404, 'not_found', entity.missing);
+  return row;
+}
+
+/** Comment text: trimmed, 1..4000 characters. */
+function parseCommentBody(value) {
+  return parseTextField(value, 'comentario', COMMENT_MAX_LENGTH);
+}
+
+/** Mentioned user ids from the body tokens, keeping only existing users (unknown ids are ignored). */
+function resolveMentions(db, body) {
+  const exists = db.prepare('SELECT id FROM users WHERE id = ?');
+  return extractMentionIds(body).filter((id) => exists.get(id));
+}
+
+function mapComment(row) {
+  return {
+    id: row.id,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    userId: row.user_id || '',
+    userName: row.user_name,
+    body: row.body,
+    mentions: safeParseJson(row.mentions, []),
+    edited: Boolean(row.edited),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Notifies each mentioned user except the author. Callers run it inside the comment write
+ * transaction, passing only the mentions that are new for this comment.
+ */
+function notifyMentions(db, { recipientIds, actor, entityType, entity, now }) {
+  const actorName = actor?.name || 'Sistema';
+  const message = buildMentionMessage({ actorName, entityType, entityId: entity.id, entityTitle: entity.title });
+  const insert = db.prepare(
+    `INSERT INTO notifications (id, user_id, actor_user_id, actor_name, kind, entity_type, entity_id, entity_title, message, created_at, read_at)
+     VALUES (?, ?, ?, ?, 'mention', ?, ?, ?, ?, ?, NULL)`,
+  );
+  for (const recipientId of recipientIds) {
+    if (!recipientId || recipientId === actor?.id) continue;
+    insert.run(randomUUID(), recipientId, actor?.id ?? null, actorName, entityType, entity.id, entity.title, message, now);
+  }
+}
+
+/** Comments of a record, oldest first. */
+function listComments(ctx, req, res, type, rawId) {
+  requireUser(ctx, req);
+  const id = decodeId(rawId);
+  requireCommentEntity(ctx.db, type, id);
+  const rows = ctx.db
+    .prepare('SELECT * FROM entity_comments WHERE entity_type = ? AND entity_id = ? ORDER BY created_at, rowid')
+    .all(type, id);
+  sendJson(res, 200, { comments: rows.map(mapComment) });
+}
+
+async function createComment(ctx, req, res, type, rawId) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const body = parseCommentBody((await readJson(req)).body);
+  const now = ctx.now().toISOString();
+  const commentId = randomUUID();
+  const comment = withTransaction(ctx.db, () => {
+    const entity = requireCommentEntity(ctx.db, type, id);
+    const mentions = resolveMentions(ctx.db, body);
+    ctx.db.prepare(
+      `INSERT INTO entity_comments (id, entity_type, entity_id, user_id, user_name, body, mentions, edited, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    ).run(commentId, type, id, user.id, user.name, body, JSON.stringify(mentions), now, now);
+    notifyMentions(ctx.db, { recipientIds: mentions, actor: user, entityType: type, entity, now });
+    return mapComment(ctx.db.prepare('SELECT * FROM entity_comments WHERE id = ?').get(commentId));
+  });
+  sendJson(res, 201, { comment });
+}
+
+/** The comment row, a 404 when missing or a 403 when the current user is not its author. */
+function requireOwnComment(db, user, id) {
+  const existing = db.prepare('SELECT * FROM entity_comments WHERE id = ?').get(id);
+  if (!existing) throw new HttpError(404, 'not_found', 'El comentario no existe.');
+  if (!existing.user_id || existing.user_id !== user.id) {
+    throw new HttpError(403, 'forbidden', 'Solo el autor puede modificar este comentario.');
+  }
+  return existing;
+}
+
+/** Edits the body; only mentions that are new for this comment notify. */
+async function updateComment(ctx, req, res, rawId) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  const payload = await readJson(req);
+  const now = ctx.now().toISOString();
+  const comment = withTransaction(ctx.db, () => {
+    const existing = requireOwnComment(ctx.db, user, id);
+    const body = parseCommentBody(payload.body);
+    const mentions = resolveMentions(ctx.db, body);
+    const added = newMentionIds(safeParseJson(existing.mentions, []), mentions);
+    if (body !== existing.body) {
+      ctx.db.prepare('UPDATE entity_comments SET body = ?, mentions = ?, edited = 1, updated_at = ? WHERE id = ?')
+        .run(body, JSON.stringify(mentions), now, id);
+    }
+    if (added.length > 0) {
+      const entity = requireCommentEntity(ctx.db, existing.entity_type, existing.entity_id);
+      notifyMentions(ctx.db, { recipientIds: added, actor: user, entityType: existing.entity_type, entity, now });
+    }
+    return mapComment(ctx.db.prepare('SELECT * FROM entity_comments WHERE id = ?').get(id));
+  });
+  sendJson(res, 200, { comment });
+}
+
+function deleteComment(ctx, req, res, rawId) {
+  const user = requireUser(ctx, req);
+  const id = decodeId(rawId);
+  withTransaction(ctx.db, () => {
+    requireOwnComment(ctx.db, user, id);
+    ctx.db.prepare('DELETE FROM entity_comments WHERE id = ?').run(id);
+  });
+  sendJson(res, 200, { deleted: true });
+}
+
 function parseEventLimit(rawLimit) {
   if (rawLimit === null || rawLimit.trim() === '') return 50;
   const parsed = Number(rawLimit);
@@ -2135,6 +2275,9 @@ const INITIATIVE_CONVERT_PATTERN = /^\/api\/initiatives\/([^/]+)\/convert$/;
 const INITIATIVE_EVENTS_PATTERN = /^\/api\/initiatives\/([^/]+)\/events$/;
 const AGREEMENT_ITEM_PATTERN = /^\/api\/agreements\/([^/]+)$/;
 const NOTIFICATION_READ_PATTERN = /^\/api\/notifications\/([^/]+)\/read$/;
+const ENTITY_COMMENTS_PATTERN = /^\/api\/(opportunities|initiatives|agreements)\/([^/]+)\/comments$/;
+const COMMENT_ITEM_PATTERN = /^\/api\/comments\/([^/]+)$/;
+const COMMENT_ENTITY_TYPES = { opportunities: 'opportunity', initiatives: 'initiative', agreements: 'agreement' };
 
 async function handleApi(ctx, req, res, pathname, query) {
   // CSRF guard runs before any handler, including the auth routes.
@@ -2187,6 +2330,20 @@ async function handleApi(ctx, req, res, pathname, query) {
   if (notificationRead) {
     if (req.method !== 'POST') return rejectMethod(res, 'POST');
     return markNotificationRead(ctx, req, res, notificationRead[1]);
+  }
+
+  const entityComments = ENTITY_COMMENTS_PATTERN.exec(pathname);
+  if (entityComments) {
+    const type = COMMENT_ENTITY_TYPES[entityComments[1]];
+    if (req.method === 'GET') return listComments(ctx, req, res, type, entityComments[2]);
+    if (req.method === 'POST') return createComment(ctx, req, res, type, entityComments[2]);
+    return rejectMethod(res, 'GET', 'POST');
+  }
+  const commentItem = COMMENT_ITEM_PATTERN.exec(pathname);
+  if (commentItem) {
+    if (req.method === 'PATCH') return updateComment(ctx, req, res, commentItem[1]);
+    if (req.method === 'DELETE') return deleteComment(ctx, req, res, commentItem[1]);
+    return rejectMethod(res, 'PATCH', 'DELETE');
   }
 
   if (pathname === '/api/service-years') {
