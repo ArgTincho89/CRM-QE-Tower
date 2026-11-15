@@ -132,3 +132,11 @@ export const getMonthlyAggregates = (year) => request(`/reports/monthly?year=${e
 export const listMonthlySnapshots = () => request('/reports/monthly-snapshots');
 export const getMonthlySnapshot = (period) => request(`/reports/monthly-snapshots/${encodeURIComponent(period)}`);
 export const getLiveMonthlyReport = () => request('/reports/monthly-live');
+// "People" and "Proyectos": generic CRUD per resource ('talents', 'talent-skills', 'assignments',
+// 'training-catalog', 'training-plan', 'projects'); the activity catalog is read-only.
+export const listActivityCatalog = () => request('/activity-catalog');
+export const listOperationRecords = (resource) => request(`/${resource}`);
+export const createOperationRecord = (resource, body) => request(`/${resource}`, { method: 'POST', body });
+export const updateOperationRecord = (resource, id, body) => request(`/${resource}/${encodeURIComponent(id)}`, { method: 'PATCH', body });
+// Talents and catalog courses answer 409 while something still references them.
+export const deleteOperationRecord = (resource, id) => request(`/${resource}/${encodeURIComponent(id)}`, { method: 'DELETE' });

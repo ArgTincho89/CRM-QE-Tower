@@ -43,6 +43,8 @@ export function loadConfig(env = process.env) {
     distDir: path.resolve((env.DIST_DIR ?? '').trim() || './dist'),
     // Private documents served only to signed-in users under /resources/ (never part of dist/).
     resourcesDir: path.resolve((env.RESOURCES_DIR ?? '').trim() || './content/resources'),
+    // Private seed CSVs imported once into empty tables at boot (server/seed.js).
+    seedDir: path.resolve((env.SEED_DIR ?? '').trim() || './content/seed'),
     sessionSecret,
     // Empty string means "registration closed".
     inviteCode: (env.INVITE_CODE ?? '').trim(),

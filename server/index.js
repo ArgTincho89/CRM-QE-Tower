@@ -3,6 +3,7 @@ import { createServer } from './app.js';
 import { loadConfig } from './config.js';
 import { closeDatabase, openDatabase } from './db.js';
 import { ensureMonthlyReports } from './reports.js';
+import { seedFromContent } from './seed.js';
 
 /**
  * Boots the CRM backend: resolves config, opens/seeds the database and starts listening.
@@ -11,6 +12,12 @@ import { ensureMonthlyReports } from './reports.js';
 export function start(env = process.env) {
   const config = loadConfig(env);
   const db = openDatabase(config.dbPath);
+  // Imports the private seed CSVs into empty tables once; a failure must not keep the app down.
+  try {
+    seedFromContent(db, config.seedDir);
+  } catch (error) {
+    console.error(`[crm] seed import failed: ${error?.stack ?? error}`);
+  }
   const server = createServer({ db, config });
 
   // The machine auto-stops (no cron), so missing monthly report snapshots are stored at boot and

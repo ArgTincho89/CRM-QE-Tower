@@ -11,6 +11,8 @@ FROM node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
+# Seed CSVs imported once into empty tables at boot (server/seed.js).
+ENV SEED_DIR=/app/content/seed
 
 # Runtime uses only Node built-ins (node:http, node:sqlite, node:crypto), so no
 # node_modules are needed. Keep the image small and the supply chain empty.
@@ -28,6 +30,7 @@ COPY --from=build /app/src/data.js ./src/data.js
 COPY --from=build /app/src/money.js ./src/money.js
 COPY --from=build /app/src/mentions.js ./src/mentions.js
 COPY --from=build /app/src/notifications.js ./src/notifications.js
+COPY --from=build /app/src/people.js ./src/people.js
 
 EXPOSE 8080
 CMD ["node", "server/index.js"]

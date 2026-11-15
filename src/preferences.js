@@ -1,5 +1,5 @@
 import { ALL_YEARS, normalizeYearSelection } from './pipelineMetrics.js';
-import { DEFAULT_MASTER_DATA_TAB, isMasterDataTab } from './navigation.js';
+import { DEFAULT_MASTER_DATA_TAB, DEFAULT_PEOPLE_TAB, DEFAULT_TRAINING_TAB, isMasterDataTab, isPeopleTab, isTrainingTab } from './navigation.js';
 
 // Per-browser UI preferences. Storage can be missing or throw (private mode, blocked site
 // data), so every read falls back to a default and every write reports success as a boolean.
@@ -75,4 +75,29 @@ export function loadMasterDataTab(storage = defaultPreferenceStorage()) {
 export function saveMasterDataTab(tabId, storage = defaultPreferenceStorage()) {
   if (!isMasterDataTab(tabId)) return false;
   return writeItem(MASTER_DATA_TAB_STORAGE_KEY, tabId, storage);
+}
+
+export const PEOPLE_TAB_STORAGE_KEY = 'crm.people.tab';
+export const TRAINING_TAB_STORAGE_KEY = 'crm.people.trainingTab';
+
+/** Last tab opened in "People"; unknown or missing values fall back to the first tab. */
+export function loadPeopleTab(storage = defaultPreferenceStorage()) {
+  const saved = readItem(PEOPLE_TAB_STORAGE_KEY, storage);
+  return isPeopleTab(saved) ? saved : DEFAULT_PEOPLE_TAB;
+}
+
+export function savePeopleTab(tabId, storage = defaultPreferenceStorage()) {
+  if (!isPeopleTab(tabId)) return false;
+  return writeItem(PEOPLE_TAB_STORAGE_KEY, tabId, storage);
+}
+
+/** Last sub-tab opened in People > Formación. */
+export function loadTrainingTab(storage = defaultPreferenceStorage()) {
+  const saved = readItem(TRAINING_TAB_STORAGE_KEY, storage);
+  return isTrainingTab(saved) ? saved : DEFAULT_TRAINING_TAB;
+}
+
+export function saveTrainingTab(tabId, storage = defaultPreferenceStorage()) {
+  if (!isTrainingTab(tabId)) return false;
+  return writeItem(TRAINING_TAB_STORAGE_KEY, tabId, storage);
 }

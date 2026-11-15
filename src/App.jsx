@@ -19,6 +19,8 @@ import AuthScreen from './AuthScreen.jsx';
 import CalendarPage from './Calendar.jsx';
 import CardHistory from './CardHistory.jsx';
 import ReportsPage from './Reports.jsx';
+import PeoplePage from './PeoplePage.jsx';
+import ProjectsPage from './ProjectsPage.jsx';
 import RecordComments from './RecordComments.jsx';
 import { fieldLabel } from './history.js';
 import DataTable from './DataTable.jsx';
@@ -39,6 +41,8 @@ const pageTitles = {
   lobs: ['LoB', 'Líneas de negocio a las que se asocian las towers y las oportunidades.'],
   people: ['Responsables', 'Personas asignables a clientes, iniciativas y oportunidades.'],
   calendar: ['Calendario', 'Próximas acciones de iniciativas y oportunidades y fin de vigencia de los acuerdos marco.'],
+  talents: ['People', 'Talentos del equipo QE: skills, catálogo de actividades, asignaciones y formación.'],
+  projects: ['Proyectos', 'Portfolio de aplicaciones NAQ con servicio QA.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
   settings: ['Configuración', 'Preferencias de tu cuenta.'],
   masterData: ['Datos Maestros', 'Clientes, LoB, towers, responsables y servicios compartidos por todo el equipo.'],
@@ -844,6 +848,10 @@ function App() {
                 : <OpportunityRows opportunities={filteredPipelineOpportunities} onEdit={setEditing} />}
           </> : page === 'calendar'
             ? <CalendarPage initiatives={initiatives} opportunities={opportunities} agreements={agreements} onOpenEvent={openCalendarEvent} />
+          : page === 'talents'
+            ? <PeoplePage towers={towers} lobs={lobs} clients={clients} onNotice={showNotice} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
+          : page === 'projects'
+            ? <ProjectsPage onNotice={showNotice} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
           : page === 'analytics'
             ? <ReportsPage opportunities={opportunities} initiatives={initiatives} agreements={agreements} towers={towers} currentYear={serviceYears.currentYear} onNavigate={navigate} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
           : (page === 'initiatives' || page === 'crossSelling')

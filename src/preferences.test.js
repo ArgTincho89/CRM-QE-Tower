@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { ALL_YEARS } from './pipelineMetrics.js';
-import { MASTER_DATA_TAB_STORAGE_KEY, PIPELINE_YEAR_STORAGE_KEY, loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePipelineYear, saveViewMode, viewStorageKey } from './preferences.js';
+import { PEOPLE_TAB_STORAGE_KEY, TRAINING_TAB_STORAGE_KEY, loadPeopleTab, loadTrainingTab, savePeopleTab, saveTrainingTab, MASTER_DATA_TAB_STORAGE_KEY, PIPELINE_YEAR_STORAGE_KEY, loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePipelineYear, saveViewMode, viewStorageKey } from './preferences.js';
 
 function memoryStorage(initial = {}) {
   const data = new Map(Object.entries(initial));
@@ -65,5 +65,28 @@ describe('Datos Maestros tab preference', () => {
     assert.equal(loadMasterDataTab(null), 'clients');
     assert.equal(loadMasterDataTab(failingStorage), 'clients');
     assert.equal(saveMasterDataTab('lobs', failingStorage), false);
+  });
+});
+
+describe('People tabs', () => {
+  test('remembers the People tab and the Formación sub-tab', () => {
+    const storage = memoryStorage();
+    assert.equal(loadPeopleTab(storage), 'talentList');
+    assert.equal(savePeopleTab('assignments', storage), true);
+    assert.equal(storage.data.get(PEOPLE_TAB_STORAGE_KEY), 'assignments');
+    assert.equal(loadPeopleTab(storage), 'assignments');
+    assert.equal(loadTrainingTab(storage), 'trainingCatalog');
+    assert.equal(saveTrainingTab('trainingPlan', storage), true);
+    assert.equal(storage.data.get(TRAINING_TAB_STORAGE_KEY), 'trainingPlan');
+    assert.equal(loadTrainingTab(storage), 'trainingPlan');
+  });
+
+  test('rejects unknown tabs and survives missing storage', () => {
+    const storage = memoryStorage({ [PEOPLE_TAB_STORAGE_KEY]: 'clients', [TRAINING_TAB_STORAGE_KEY]: 'bogus' });
+    assert.equal(loadPeopleTab(storage), 'talentList');
+    assert.equal(loadTrainingTab(storage), 'trainingCatalog');
+    assert.equal(savePeopleTab('trainingPlan', storage), false);
+    assert.equal(saveTrainingTab('talentList', storage), false);
+    assert.equal(loadPeopleTab(null), 'talentList');
   });
 });

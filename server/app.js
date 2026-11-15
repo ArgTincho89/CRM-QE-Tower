@@ -33,6 +33,7 @@ import {
   serveStatic,
 } from './http.js';
 import { RESOURCES_PREFIX, serveResource } from './resources.js';
+import { routeOperationsApi } from './operationsApi.js';
 
 const STAGES = new Set(stages.map(({ id }) => id));
 const OPPORTUNITY_ORIGINS = new Set(opportunityOrigins);
@@ -193,6 +194,7 @@ const MASTER_DELETE_RULES = {
       ['SELECT COUNT(*) AS count FROM opportunities WHERE client_id = $id', 'oportunidad', 'oportunidades'],
       ['SELECT COUNT(*) AS count FROM initiatives WHERE client_id = $id', 'iniciativa', 'iniciativas'],
       ['SELECT COUNT(*) AS count FROM framework_agreements WHERE client_id = $id', 'acuerdo marco', 'acuerdos marco'],
+      ['SELECT COUNT(*) AS count FROM assignments WHERE client_id = $id', 'asignación de talento', 'asignaciones de talento'],
     ],
   },
   towers: {
@@ -211,6 +213,7 @@ const MASTER_DELETE_RULES = {
         'iniciativa',
         'iniciativas',
       ],
+      ['SELECT COUNT(*) AS count FROM assignments WHERE tower_id = $id', 'asignación de talento', 'asignaciones de talento'],
     ],
   },
   lobs: {
@@ -220,6 +223,7 @@ const MASTER_DELETE_RULES = {
       ['SELECT COUNT(*) AS count FROM towers WHERE lob_id = $id', 'tower', 'towers'],
       ['SELECT COUNT(*) AS count FROM opportunity_lobs WHERE lob_id = $id', 'oportunidad', 'oportunidades'],
       ['SELECT COUNT(*) AS count FROM initiative_lobs WHERE lob_id = $id', 'iniciativa', 'iniciativas'],
+      ['SELECT COUNT(*) AS count FROM assignments WHERE lob_id = $id', 'asignación de talento', 'asignaciones de talento'],
     ],
   },
   services: {
@@ -2517,6 +2521,9 @@ async function handleApi(ctx, req, res, pathname, query) {
     if (req.method !== 'PATCH') return rejectMethod(res, 'PATCH', 'DELETE');
     return patchOpportunity(ctx, req, res, itemMatch[1]);
   }
+
+  const operations = routeOperationsApi(ctx, req, res, pathname);
+  if (operations) return operations;
 
   throw new HttpError(404, 'not_found', 'Recurso no encontrado.');
 }

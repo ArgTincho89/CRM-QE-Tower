@@ -12,6 +12,9 @@ export const NAV_GROUPS = [
       { id: 'crossSelling', label: 'Cross-Selling', icon: 'share' },
       { id: 'agreements', label: 'Acuerdos Marco', icon: 'layers' },
       { id: 'calendar', label: 'Calendario', icon: 'calendar' },
+      // "People" uses the `talents` id: `people` is the former "Responsables" page (a Datos Maestros tab).
+      { id: 'talents', label: 'People', icon: 'users' },
+      { id: 'projects', label: 'Proyectos', icon: 'layers' },
       { id: 'analytics', label: 'Informes', icon: 'chart' },
       { id: 'settings', label: 'Configuración', icon: 'settings' },
       { id: 'proposals', label: 'Propuestas / Estimaciones', icon: 'file' },
@@ -57,6 +60,31 @@ export const DEFAULT_MASTER_DATA_TAB = MASTER_DATA_TABS[0].id;
 
 export function isMasterDataTab(tabId) {
   return MASTER_DATA_TABS.some((tab) => tab.id === tabId);
+}
+
+/** Tabs of the "People" page, in display order. */
+export const PEOPLE_TABS = [
+  { id: 'talentList', label: 'Listado de personas' },
+  { id: 'talentSkills', label: 'Skills x talento' },
+  { id: 'activityCatalog', label: 'QE - Catálogo de actividades por niveles' },
+  { id: 'assignments', label: 'Asignaciones' },
+  { id: 'training', label: 'Formación' },
+];
+export const DEFAULT_PEOPLE_TAB = PEOPLE_TABS[0].id;
+
+/** Sub-tabs of People > Formación. */
+export const TRAINING_TABS = [
+  { id: 'trainingCatalog', label: 'QE - Catálogo de formación' },
+  { id: 'trainingPlan', label: 'QE - Plan de formación' },
+];
+export const DEFAULT_TRAINING_TAB = TRAINING_TABS[0].id;
+
+export function isPeopleTab(tabId) {
+  return PEOPLE_TABS.some((tab) => tab.id === tabId);
+}
+
+export function isTrainingTab(tabId) {
+  return TRAINING_TABS.some((tab) => tab.id === tabId);
 }
 
 // Retired page ids and where they live now. The Oportunidades page became the "Tabla" view of

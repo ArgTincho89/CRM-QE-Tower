@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { DEFAULT_MASTER_DATA_TAB, MASTER_DATA_TABS, NAV_GROUPS, NAV_ITEMS, PAGE_ITEMS, PAGE_REDIRECTS, RESOURCE_PAGES, buildPipelineNavigationFilters, isMasterDataTab, resolveNavigationTarget } from './navigation.js';
+import { PEOPLE_TABS, TRAINING_TABS, DEFAULT_MASTER_DATA_TAB, MASTER_DATA_TABS, NAV_GROUPS, NAV_ITEMS, PAGE_ITEMS, PAGE_REDIRECTS, RESOURCE_PAGES, buildPipelineNavigationFilters, isMasterDataTab, resolveNavigationTarget } from './navigation.js';
 import { createDefaultAdvancedFilters } from './pipelineFilters.js';
 
 describe('sidebar navigation', () => {
@@ -19,7 +19,7 @@ describe('sidebar navigation', () => {
 
   test('every page id is in the menu exactly once', () => {
     const ids = NAV_ITEMS.map((item) => item.id);
-    const expectedPages = ['home', 'pipeline', 'initiatives', 'proposals', 'agreements', 'calendar', 'crossSelling', 'analytics', 'settings', 'masterData', 'resource-quality-gates', 'resource-normativa-calidad', 'resource-agentic-quality-engineering'];
+    const expectedPages = ['home', 'pipeline', 'initiatives', 'proposals', 'agreements', 'calendar', 'crossSelling', 'analytics', 'settings', 'masterData', 'talents', 'projects', 'resource-quality-gates', 'resource-normativa-calidad', 'resource-agentic-quality-engineering'];
     assert.equal(new Set(ids).size, ids.length);
     assert.deepEqual(PAGE_ITEMS.map((item) => item.id).sort(), [...expectedPages].sort());
   });
@@ -136,5 +136,26 @@ describe('navigation with filters', () => {
   test('the calendar sits right after Acuerdos Marco in the operational group', () => {
     const ids = NAV_GROUPS.find((group) => group.id === 'operations').items.map((item) => item.id);
     assert.equal(ids[ids.indexOf('agreements') + 1], 'calendar');
+  });
+});
+
+describe('People and Proyectos pages', () => {
+  const operations = NAV_GROUPS.find((group) => group.id === 'operations');
+
+  test('People and Proyectos follow Calendario in the operational group', () => {
+    const ids = operations.items.map((item) => item.id);
+    assert.deepEqual(ids.slice(ids.indexOf('calendar'), ids.indexOf('calendar') + 3), ['calendar', 'talents', 'projects']);
+    assert.equal(operations.items.find((item) => item.id === 'talents').label, 'People');
+    assert.equal(operations.items.find((item) => item.id === 'projects').label, 'Proyectos');
+  });
+
+  test('the former "people" page id still opens the Responsables master data tab', () => {
+    assert.deepEqual(resolveNavigationTarget('people'), { page: 'masterData', view: null, tab: 'people' });
+    assert.deepEqual(resolveNavigationTarget('talents'), { page: 'talents', view: null });
+  });
+
+  test('People tabs and Formación sub-tabs keep their order', () => {
+    assert.deepEqual(PEOPLE_TABS.map((tab) => tab.label), ['Listado de personas', 'Skills x talento', 'QE - Catálogo de actividades por niveles', 'Asignaciones', 'Formación']);
+    assert.deepEqual(TRAINING_TABS.map((tab) => tab.label), ['QE - Catálogo de formación', 'QE - Plan de formación']);
   });
 });

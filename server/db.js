@@ -174,6 +174,78 @@ const SCHEMA_STATEMENTS = [
       generated_at TEXT NOT NULL,
       data TEXT NOT NULL
     )`,
+  // "People": talents (QA staff), their skills, assignments and training. Seeded once from the
+  // private CSVs in content/seed (server/seed.js); afterwards maintained only through the API.
+  `CREATE TABLE IF NOT EXISTS talents (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
+      location TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', profile TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_talents_name ON talents(name COLLATE NOCASE)',
+  // Read-only activity catalog: one row per activity, l1..l7 keep the raw cell text (✅, ⚪, text or '').
+  `CREATE TABLE IF NOT EXISTS activity_catalog (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '',
+      l1 TEXT NOT NULL DEFAULT '', l2 TEXT NOT NULL DEFAULT '', l3 TEXT NOT NULL DEFAULT '', l4 TEXT NOT NULL DEFAULT '',
+      l5 TEXT NOT NULL DEFAULT '', l6 TEXT NOT NULL DEFAULT '', l7 TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    )`,
+  `CREATE TABLE IF NOT EXISTS talent_skills (
+      id TEXT PRIMARY KEY,
+      talent_id TEXT NOT NULL REFERENCES talents(id),
+      activity_id TEXT NOT NULL REFERENCES activity_catalog(id),
+      current_level INTEGER CHECK(current_level IS NULL OR current_level BETWEEN 1 AND 4),
+      target_level INTEGER CHECK(target_level IS NULL OR target_level BETWEEN 1 AND 4),
+      certificate TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '',
+      career_level TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_talent_skills_talent ON talent_skills(talent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_talent_skills_activity ON talent_skills(activity_id)',
+  `CREATE TABLE IF NOT EXISTS assignments (
+      id TEXT PRIMARY KEY,
+      talent_id TEXT NOT NULL REFERENCES talents(id),
+      tower_id TEXT REFERENCES towers(id), lob_id TEXT REFERENCES lobs(id), client_id TEXT REFERENCES clients(id),
+      percentage REAL NOT NULL CHECK(percentage >= 0 AND percentage <= 100),
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_assignments_talent ON assignments(talent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_assignments_tower ON assignments(tower_id)',
+  'CREATE INDEX IF NOT EXISTS idx_assignments_lob ON assignments(lob_id)',
+  'CREATE INDEX IF NOT EXISTS idx_assignments_client ON assignments(client_id)',
+  `CREATE TABLE IF NOT EXISTS training_catalog (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, family TEXT NOT NULL DEFAULT '',
+      istqb_category TEXT NOT NULL DEFAULT '', types TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT '',
+      level TEXT NOT NULL DEFAULT '', estimated_hours REAL, url TEXT NOT NULL DEFAULT '', validity_months INTEGER,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  // course_id links a catalog course; course_name is the free-text course when it is not in the
+  // catalog (and a snapshot of the catalog name otherwise).
+  `CREATE TABLE IF NOT EXISTS training_plan (
+      id TEXT PRIMARY KEY,
+      talent_id TEXT NOT NULL REFERENCES talents(id),
+      task TEXT NOT NULL DEFAULT '',
+      course_id TEXT REFERENCES training_catalog(id),
+      course_name TEXT NOT NULL DEFAULT '', family TEXT NOT NULL DEFAULT '',
+      estimated_hours REAL, dedicated_hours REAL, progress REAL,
+      status TEXT NOT NULL DEFAULT '',
+      start_date TEXT NOT NULL DEFAULT '', planned_end_date TEXT NOT NULL DEFAULT '', actual_end_date TEXT NOT NULL DEFAULT '',
+      evidence TEXT NOT NULL DEFAULT '', next_step TEXT NOT NULL DEFAULT '', expiry_date TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_training_plan_talent ON training_plan(talent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_training_plan_course ON training_plan(course_id)',
+  // "Proyectos": NAQ application portfolio. testing_scope is a JSON array of strings.
+  `CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY, code TEXT NOT NULL DEFAULT '', application_name TEXT NOT NULL,
+      version TEXT NOT NULL DEFAULT '', client TEXT NOT NULL DEFAULT '', naq TEXT NOT NULL DEFAULT '',
+      project_type TEXT NOT NULL DEFAULT '', delivery_target TEXT NOT NULL DEFAULT '',
+      testing_scope TEXT NOT NULL DEFAULT '[]', qa_service_type TEXT NOT NULL DEFAULT '',
+      phase TEXT NOT NULL DEFAULT '', risk_level TEXT NOT NULL DEFAULT '', automation TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '', project_url TEXT NOT NULL DEFAULT '', qa_owner TEXT NOT NULL DEFAULT '',
+      qa_entry_date TEXT NOT NULL DEFAULT '', target_release_date TEXT NOT NULL DEFAULT '',
+      comments TEXT NOT NULL DEFAULT '', created_date TEXT NOT NULL DEFAULT '', attachments TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
 ];
 
 /** Nullable "Asignado a" column: a system user account, separate from the people-master owner. */
