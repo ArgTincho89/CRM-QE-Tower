@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { createServer } from './app.js';
 import { loadConfig } from './config.js';
 import { closeDatabase, openDatabase } from './db.js';
+import { ensureMonthlyReports } from './reports.js';
 
 /**
  * Boots the CRM backend: resolves config, opens/seeds the database and starts listening.
@@ -11,6 +12,15 @@ export function start(env = process.env) {
   const config = loadConfig(env);
   const db = openDatabase(config.dbPath);
   const server = createServer({ db, config });
+
+  // The machine auto-stops (no cron), so missing monthly report snapshots are stored at boot and
+  // again before the report endpoints answer. A failure here must not keep the app down.
+  try {
+    const generated = ensureMonthlyReports(db, new Date());
+    if (generated.length > 0) console.log(`[crm] stored monthly report snapshots: ${generated.join(', ')}`);
+  } catch (error) {
+    console.error(`[crm] monthly report snapshots failed: ${error?.stack ?? error}`);
+  }
 
   if (config.usesDevSessionSecret) {
     console.warn('[crm] SESSION_SECRET is not set; using the insecure development secret.');

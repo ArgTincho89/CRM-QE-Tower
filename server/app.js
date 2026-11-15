@@ -17,6 +17,7 @@ import {
   verifyLoginPassword,
 } from './auth.js';
 import { withTransaction } from './db.js';
+import { buildMonthlyReport, buildYearAggregates, currentPeriod, ensureMonthlyReports, getMonthlyReport, isValidPeriod, listMonthlyReports, loadReportDataset } from './reports.js';
 import { AGREEMENT_ID_PREFIX, IdSpaceExhaustedError, INITIATIVE_ID_PREFIX, nextPrefixedId, OPPORTUNITY_ID_PREFIX } from './ids.js';
 import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
@@ -2256,6 +2257,49 @@ function markAllNotificationsRead(ctx, req, res) {
   sendJson(res, 200, { updated: Number(result.changes), unreadCount: 0 });
 }
 
+const MIN_REPORT_YEAR = 2000;
+const MAX_REPORT_YEAR = 2100;
+
+/** Snapshots are generated lazily: every report endpoint first stores any missing elapsed month. */
+function prepareReports(ctx, req) {
+  requireUser(ctx, req);
+  const now = ctx.now();
+  ensureMonthlyReports(ctx.db, now);
+  return now;
+}
+
+function monthlyAggregates(ctx, req, res, query) {
+  const now = prepareReports(ctx, req);
+  const raw = query?.get('year');
+  const year = raw === null || raw === undefined || raw === '' ? now.getUTCFullYear() : Number(raw);
+  if (!Number.isInteger(year) || year < MIN_REPORT_YEAR || year > MAX_REPORT_YEAR) {
+    throw validationError(`El año debe estar entre ${MIN_REPORT_YEAR} y ${MAX_REPORT_YEAR}.`, 'year');
+  }
+  sendJson(res, 200, buildYearAggregates(loadReportDataset(ctx.db), year));
+}
+
+function listReportSnapshots(ctx, req, res) {
+  const now = prepareReports(ctx, req);
+  sendJson(res, 200, { snapshots: listMonthlyReports(ctx.db), currentPeriod: currentPeriod(now) });
+}
+
+function getReportSnapshot(ctx, req, res, rawPeriod) {
+  prepareReports(ctx, req);
+  const period = decodeId(rawPeriod);
+  if (!isValidPeriod(period)) throw validationError('El periodo debe tener el formato AAAA-MM.', 'period');
+  const snapshot = getMonthlyReport(ctx.db, period);
+  if (!snapshot) throw new HttpError(404, 'not_found', 'No hay informe guardado para ese mes.');
+  sendJson(res, 200, snapshot);
+}
+
+/** The month in progress ("en vivo"): built by the same builder on every request, never stored. */
+function liveMonthlyReport(ctx, req, res) {
+  const now = prepareReports(ctx, req);
+  const period = currentPeriod(now);
+  const generatedAt = now.toISOString();
+  sendJson(res, 200, { period, generatedAt, live: true, report: buildMonthlyReport(loadReportDataset(ctx.db), period, { generatedAt, live: true }) });
+}
+
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -2277,7 +2321,8 @@ const AGREEMENT_ITEM_PATTERN = /^\/api\/agreements\/([^/]+)$/;
 const NOTIFICATION_READ_PATTERN = /^\/api\/notifications\/([^/]+)\/read$/;
 const ENTITY_COMMENTS_PATTERN = /^\/api\/(opportunities|initiatives|agreements)\/([^/]+)\/comments$/;
 const COMMENT_ITEM_PATTERN = /^\/api\/comments\/([^/]+)$/;
-const COMMENT_ENTITY_TYPES = { opportunities: 'opportunity', initiatives: 'initiative', agreements: 'agreement' };
+const REPORT_SNAPSHOT_PATTERN = /^\/api\/reports\/monthly-snapshots\/([^/]+)$/;
+const COMMENT_ENTITY_TYPES ={ opportunities: 'opportunity', initiatives: 'initiative', agreements: 'agreement' };
 
 async function handleApi(ctx, req, res, pathname, query) {
   // CSRF guard runs before any handler, including the auth routes.
@@ -2344,6 +2389,24 @@ async function handleApi(ctx, req, res, pathname, query) {
     if (req.method === 'PATCH') return updateComment(ctx, req, res, commentItem[1]);
     if (req.method === 'DELETE') return deleteComment(ctx, req, res, commentItem[1]);
     return rejectMethod(res, 'PATCH', 'DELETE');
+  }
+
+  if (pathname === '/api/reports/monthly') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return monthlyAggregates(ctx, req, res, query);
+  }
+  if (pathname === '/api/reports/monthly-snapshots') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return listReportSnapshots(ctx, req, res);
+  }
+  if (pathname === '/api/reports/monthly-live') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return liveMonthlyReport(ctx, req, res);
+  }
+  const reportSnapshot = REPORT_SNAPSHOT_PATTERN.exec(pathname);
+  if (reportSnapshot) {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return getReportSnapshot(ctx, req, res, reportSnapshot[1]);
   }
 
   if (pathname === '/api/service-years') {

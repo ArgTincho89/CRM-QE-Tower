@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar, matchesAssignee,
+  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, OPEN_OUTCOME_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar, matchesAssignee, matchesOutcome,
 } from './pipelineFilters.js';
 
 const records = [
@@ -111,5 +111,33 @@ describe('pipeline toolbar filters', () => {
     assert.deepEqual(filterPipelineToolbar(records, { tower: 'Testing', owner: 'Luis' }), []);
     assert.equal(filterPipelineToolbar(records).length, 2);
     assert.deepEqual(filterPipelineToolbar(undefined), []);
+  });
+});
+
+describe('outcome and close-date filters', () => {
+  const closed = [
+    { id: 'OP-1', outcome: 'won', expectedCloseDate: '2026-03-10' },
+    { id: 'OP-2', outcome: 'lost', expectedCloseDate: '2026-04-02' },
+    { id: 'OP-3', outcome: '', expectedCloseDate: '' },
+    { id: 'OP-4', outcome: 'discarded', expectedCloseDate: '2026-03-31' },
+  ];
+  const pick = (filters) => filterPipelineCards(closed, { ...createDefaultAdvancedFilters(), ...filters }).map((item) => item.id);
+
+  test('defaults keep every outcome and ignore missing close dates', () => {
+    assert.equal(createDefaultAdvancedFilters().outcome, 'all');
+    assert.deepEqual(pick({}), ['OP-1', 'OP-2', 'OP-3', 'OP-4']);
+  });
+
+  test('the Resultado filter selects one outcome or the open opportunities', () => {
+    assert.deepEqual(pick({ outcome: 'won' }), ['OP-1']);
+    assert.deepEqual(pick({ outcome: 'discarded' }), ['OP-4']);
+    assert.deepEqual(pick({ outcome: OPEN_OUTCOME_FILTER }), ['OP-3']);
+    assert.equal(matchesOutcome({ outcome: 'won' }, undefined), true);
+  });
+
+  test('a close-date range is inclusive and skips opportunities without a close date', () => {
+    assert.deepEqual(pick({ closeFrom: '2026-03-01', closeTo: '2026-03-31' }), ['OP-1', 'OP-4']);
+    assert.deepEqual(pick({ closeFrom: '2026-04-01' }), ['OP-2']);
+    assert.deepEqual(pick({ outcome: 'won', closeFrom: '2026-04-01' }), []);
   });
 });

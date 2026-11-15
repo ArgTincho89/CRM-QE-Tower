@@ -700,3 +700,19 @@ test('a legacy notifications table is rebuilt once to allow the mention kind, ke
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test('the monthly_reports table is created idempotently and keeps stored snapshots', () => {
+  const temp = createTempDatabase();
+  try {
+    const columns = temp.db.prepare('PRAGMA table_info(monthly_reports)').all().map((row) => row.name);
+    assert.deepEqual(columns, ['period', 'generated_at', 'data']);
+    temp.db.prepare('INSERT INTO monthly_reports (period, generated_at, data) VALUES (?, ?, ?)').run('2026-03', '2026-04-01T00:00:00.000Z', '{}');
+    applySchema(temp.db);
+    applySchema(temp.db);
+    assert.equal(count(temp.db, 'monthly_reports'), 1);
+    assert.throws(() => temp.db.prepare('INSERT INTO monthly_reports (period, generated_at, data) VALUES (?, ?, ?)').run('2026-03', 'x', '{}'), /UNIQUE|PRIMARY/);
+    assert.throws(() => temp.db.prepare('INSERT INTO monthly_reports (period, generated_at, data) VALUES (?, ?, ?)').run('March', 'x', '{}'), /CHECK/);
+  } finally {
+    temp.cleanup();
+  }
+});

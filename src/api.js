@@ -127,3 +127,8 @@ export const listUsers = () => request('/users');
 export const listNotifications = () => request('/notifications');
 export const markNotificationRead = (id) => request(`/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' });
 export const markAllNotificationsRead = () => request('/notifications/read-all', { method: 'POST' });
+// "Informes": per-month aggregates of a year, stored monthly snapshots and the live current month.
+export const getMonthlyAggregates = (year) => request(`/reports/monthly?year=${encodeURIComponent(year)}`);
+export const listMonthlySnapshots = () => request('/reports/monthly-snapshots');
+export const getMonthlySnapshot = (period) => request(`/reports/monthly-snapshots/${encodeURIComponent(period)}`);
+export const getLiveMonthlyReport = () => request('/reports/monthly-live');

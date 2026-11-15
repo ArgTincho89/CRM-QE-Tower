@@ -167,6 +167,13 @@ const SCHEMA_STATEMENTS = [
       updated_at TEXT NOT NULL
     )`,
   'CREATE INDEX IF NOT EXISTS idx_entity_comments_entity ON entity_comments(entity_type, entity_id, created_at)',
+  // Immutable monthly report snapshots ("Informe mensual"): one row per elapsed month 'YYYY-MM',
+  // written once by ensureMonthlyReports (server/reports.js) and never updated.
+  `CREATE TABLE IF NOT EXISTS monthly_reports (
+      period TEXT PRIMARY KEY CHECK(period GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+      generated_at TEXT NOT NULL,
+      data TEXT NOT NULL
+    )`,
 ];
 
 /** Nullable "Asignado a" column: a system user account, separate from the people-master owner. */

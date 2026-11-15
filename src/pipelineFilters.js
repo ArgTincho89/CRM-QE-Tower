@@ -23,6 +23,9 @@ export function createDefaultAdvancedFilters() {
     createdTo: '',
     updatedFrom: '',
     updatedTo: '',
+    outcome: 'all',
+    closeFrom: '',
+    closeTo: '',
   };
 }
 
@@ -48,6 +51,16 @@ function matchesOpportunityType(value, filter = 'all') {
   if (filter === 'all') return true;
   if (filter === MISSING_OPPORTUNITY_TYPE_FILTER) return !value;
   return value === filter;
+}
+
+/** "Resultado" filter value that selects opportunities without an outcome (still open). */
+export const OPEN_OUTCOME_FILTER = 'open';
+
+/** "Resultado" filter: 'all', 'open' (no outcome yet) or an outcome id (won/lost/discarded). */
+export function matchesOutcome(record, filter = 'all') {
+  if (!filter || filter === 'all') return true;
+  if (filter === OPEN_OUTCOME_FILTER) return !record.outcome;
+  return record.outcome === filter;
 }
 
 /** Assignee filter values besides a concrete user id. */
@@ -109,6 +122,10 @@ export function filterPipelineCards(cards, filters, { currentUserId = '' } = {})
     if (!includesText(record.closureReason, filters.closureReason)) return false;
     if (!withinDateRange(record.createdAt, filters.createdFrom, filters.createdTo)) return false;
     if (!withinDateRange(record.updatedAt, filters.updatedFrom, filters.updatedTo)) return false;
+    if (!matchesOutcome(record, filters.outcome)) return false;
+    // A close-date range only matches opportunities that have an expected close date.
+    if ((filters.closeFrom || filters.closeTo) && !record.expectedCloseDate) return false;
+    if (!withinDateRange(record.expectedCloseDate, filters.closeFrom, filters.closeTo)) return false;
 
     if (!includesText(record.number, filters.externalNumber)) return false;
     if (!includesText(record.registryId, filters.registryId ?? '')) return false;

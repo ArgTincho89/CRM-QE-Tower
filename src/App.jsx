@@ -12,11 +12,13 @@ import { computeWeightedAmount } from './pipelineSummary.js';
 import { ALL_YEARS, availableYears, computePipelineKpis } from './pipelineMetrics.js';
 import { loadPipelineYear, loadViewMode, savePipelineYear, saveViewMode } from './preferences.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
-import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
+import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, OPEN_OUTCOME_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
 import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
+import CalendarPage from './Calendar.jsx';
 import CardHistory from './CardHistory.jsx';
+import ReportsPage from './Reports.jsx';
 import RecordComments from './RecordComments.jsx';
 import { fieldLabel } from './history.js';
 import DataTable from './DataTable.jsx';
@@ -36,6 +38,7 @@ const pageTitles = {
   services: ['Servicios', 'Catálogo de servicios QE asignables a iniciativas y oportunidades.'],
   lobs: ['LoB', 'Líneas de negocio a las que se asocian las towers y las oportunidades.'],
   people: ['Responsables', 'Personas asignables a clientes, iniciativas y oportunidades.'],
+  calendar: ['Calendario', 'Próximas acciones de iniciativas y oportunidades y fin de vigencia de los acuerdos marco.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
   settings: ['Configuración', 'Preferencias de tu cuenta.'],
 };
@@ -284,9 +287,19 @@ function App() {
   };
 
   // Retired page ids (e.g. the old Oportunidades page) resolve to their new home and view.
-  const navigate = (nextPage, { view: requestedView = null } = {}) => {
-    const target = resolveNavigationTarget(nextPage);
+  // A `filters` payload (e.g. from a report metric) replaces every CRM QE filter with it.
+  const navigate = (nextPage, { view: requestedView = null, filters = null } = {}) => {
+    const target = resolveNavigationTarget(nextPage, filters);
     setPage(target.page);
+    if (target.filters) {
+      setQuery('');
+      setStageFilter(target.filters.toolbar.stage);
+      setTowerFilter(target.filters.toolbar.tower);
+      setOwnerFilter(target.filters.toolbar.owner);
+      setAdvancedFilters(target.filters.advanced);
+      setAdvancedFiltersOpen(JSON.stringify(target.filters.advanced) !== JSON.stringify(createDefaultAdvancedFilters()));
+      setArchivedView(false);
+    }
     const nextView = requestedView || target.view;
     if (target.page === 'pipeline' && nextView) setView(nextView);
     setMobileNav(false);
@@ -644,38 +657,50 @@ function App() {
       }));
       markNotificationRead(notification.id).catch(() => refreshNotifications());
     }
-    const targetPage = notificationTargetPage(notification.entityType);
-    if (!targetPage) return;
+    if (!notificationTargetPage(notification.entityType)) return;
     setCommentsFocus(notification.kind === 'mention' ? `${notification.entityType}:${notification.entityId}` : '');
-    const missing = () => showNotice('El registro de esta notificación ya no existe o está archivado.', 'error');
+    await openRecord(notification.entityType, notification.entityId, { missingMessage: 'El registro de esta notificación ya no existe o está archivado.' });
+  };
+
+  // Opens a record's dialog with fresh data. By default it also goes to the page that lists it;
+  // the calendar keeps its own page (`stay: true`) and only opens the dialog on top.
+  const openRecord = async (entityType, entityId, { stay = false, missingMessage = 'El registro ya no existe o está archivado.' } = {}) => {
+    const targetPage = notificationTargetPage(entityType);
+    if (!targetPage) return;
+    const missing = () => showNotice(missingMessage, 'error');
     try {
-      if (notification.entityType === 'opportunity') {
+      if (entityType === 'opportunity') {
         const { opportunities: list } = await listOpportunities();
         setOpportunities(Array.isArray(list) ? list : []);
-        const record = (list || []).find((item) => item.id === notification.entityId);
+        const record = (list || []).find((item) => item.id === entityId);
         if (!record) { missing(); return; }
         // Opportunities are managed in the CRM QE table view.
-        navigate(targetPage, { view: 'table' });
+        if (!stay) navigate(targetPage, { view: 'table' });
         setEditing(record);
-      } else if (notification.entityType === 'initiative') {
+      } else if (entityType === 'initiative') {
         const { initiatives: list } = await listInitiatives();
         setInitiatives(Array.isArray(list) ? list : []);
-        const record = (list || []).find((item) => item.id === notification.entityId);
+        const record = (list || []).find((item) => item.id === entityId);
         if (!record) { missing(); return; }
-        navigate(targetPage);
+        if (!stay) navigate(targetPage);
         setEditingInitiative(record);
       } else {
         const { agreements: list } = await listAgreements();
         setAgreements(Array.isArray(list) ? list : []);
-        const record = (list || []).find((item) => item.id === notification.entityId);
+        const record = (list || []).find((item) => item.id === entityId);
         if (!record) { missing(); return; }
-        navigate(targetPage);
+        if (!stay) navigate(targetPage);
         setEditingAgreement(record);
       }
     } catch (err) {
       if (err?.status === 401) setSession({ status: 'anonymous', user: null });
       else showNotice(err?.message || 'No se pudo abrir el registro.', 'error');
     }
+  };
+
+  const openCalendarEvent = (event) => {
+    setCommentsFocus('');
+    openRecord(event.type, event.recordId, { stay: true });
   };
 
   const handleAuthenticated = (user) => {
@@ -720,7 +745,7 @@ function App() {
     : showingArchivedOpportunities ? filteredArchivedOpportunities.length : filteredPipelineOpportunities.length;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell page-${page}`}>
       <aside className={`sidebar${mobileNav ? ' sidebar-open' : ''}`} aria-label="Navegación principal">
         <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /></div>
         <div className="workspace-label">GESTIÓN COMERCIAL</div>
@@ -791,7 +816,11 @@ function App() {
               : view === 'table'
                 ? <OpportunityManagementPanel opportunities={showingArchivedOpportunities ? filteredArchivedOpportunities : filteredPipelineOpportunities} onEdit={setEditing} loading={archivedView ? archivedLoading : oppState === 'loading'} error={archivedView ? false : oppState === 'error'} onRetry={archivedView ? loadArchivedOpportunities : reloadOpportunities} filtersActive={pipelineFiltersActive} onClearFilters={clearFilters} archivedView={archivedView} onToggleArchived={toggleArchivedView} onRestore={restoreArchivedOpportunity} onArchive={archiveRecord} onDelete={deleteRecord} />
                 : <OpportunityRows opportunities={filteredPipelineOpportunities} onEdit={setEditing} />}
-          </> : (page === 'initiatives' || page === 'crossSelling')
+          </> : page === 'calendar'
+            ? <CalendarPage initiatives={initiatives} opportunities={opportunities} agreements={agreements} onOpenEvent={openCalendarEvent} />
+          : page === 'analytics'
+            ? <ReportsPage opportunities={opportunities} initiatives={initiatives} agreements={agreements} towers={towers} currentYear={serviceYears.currentYear} onNavigate={navigate} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
+          : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
             : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
           <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
@@ -942,6 +971,9 @@ function AdvancedFilters({ filters, people, users = [], services = [], currentSe
     {field('createdTo', 'Creado hasta', 'date')}
     {field('updatedFrom', 'Actualizado desde', 'date')}
     {field('updatedTo', 'Actualizado hasta', 'date')}
+    {field('outcome', 'Resultado', 'text', [['all', 'Todos'], [OPEN_OUTCOME_FILTER, 'Sin resultado (abiertas)'], ...opportunityOutcomes.map((item) => [item.id, item.label])])}
+    {field('closeFrom', 'Cierre desde', 'date')}
+    {field('closeTo', 'Cierre hasta', 'date')}
   </section>;
 }
 
@@ -1093,7 +1125,6 @@ function OpportunityRows({ opportunities, onEdit }) {
 }
 
 function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
-  const grouped = towers.map((tower) => ({ tower: tower.name, count: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).length, amount: opportunities.filter((item) => item.towerId === tower.id || item.tower === tower.name).reduce((sum, item) => sum + parseAmount(item.amount), 0) }));
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios autenticados, que tienen los mismos permisos para consultar y modificar sus registros. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
   if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
@@ -1103,7 +1134,7 @@ function SecondaryPage({ page, opportunities, clients, towers, services, service
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'proposals') return <DataPanel tableId="proposals" types={['text', 'text', 'text', 'text', 'amount', 'text', 'text']} title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
   if (page === 'agreements') return <AgreementPanel agreements={agreements} query={query} clients={clients} people={people} onEdit={onEditAgreement} onDelete={onDeleteAgreement} />;
-  return <Analytics opportunities={opportunities} grouped={grouped} />;
+  return null;
 }
 
 function SummaryCard({ title, action, onAction, children }) {
@@ -1221,12 +1252,6 @@ function InitiativeTable({ tableId, rows, archived, emptyMessage, onEdit, onArch
     ...(archived ? [{ id: 'archivedBy', label: 'Archivada por', value: (item) => item.archivedByName }] : []),
   ];
   return <div className="table-wrap"><DataTable tableId={tableId} className="data-table initiative-table" rows={rows} columns={columns} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archived ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{rows.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div>;
-}
-
-function Analytics({ opportunities, grouped }) {
-  const totalAmount = opportunities.reduce((sum, item) => sum + parseAmount(item.amount), 0);
-  const max = Math.max(...grouped.map((item) => item.count), 1);
-  return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros del pipeline actual</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatCurrency(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En propuesta</span><strong>{opportunities.filter((item) => item.stage === 'proposal').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
 }
 
 /**

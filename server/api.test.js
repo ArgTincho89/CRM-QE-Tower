@@ -2420,3 +2420,100 @@ describe('record comments with mentions', () => {
     }
   });
 });
+
+describe('monthly reports', () => {
+  /** @type {Awaited<ReturnType<typeof startTestServer>>} */
+  let app;
+  let cookie;
+  // A settable clock: report periods follow it, and moving it simulates the passing months.
+  const clock = { value: '2026-03-10T10:00:00.000Z', now: () => new Date(clock.value) };
+
+  before(async () => {
+    app = await startTestServer({ now: clock.now });
+    const registered = await app.register({ email: 'reports@example.com', name: 'Rita Reports' });
+    assert.equal(registered.status, 201);
+    cookie = registered.cookie;
+    const created = [
+      await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Staffing marzo', amount: '1.000', qaPercent: 50 }, cookie }),
+      await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Ganada marzo', amount: '4.000', qaPercent: 25, stage: 'result', outcome: 'won', expectedCloseDate: '2026-03-20' }, cookie }),
+      await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa marzo' }, cookie }),
+    ];
+    assert.deepEqual(created.map((response) => response.status), [201, 201, 201]);
+  });
+
+  after(async () => {
+    await app.cleanup();
+  });
+
+  test('every report endpoint requires a session and only answers GET', async () => {
+    for (const path of ['/api/reports/monthly?year=2026', '/api/reports/monthly-snapshots', '/api/reports/monthly-snapshots/2026-02', '/api/reports/monthly-live']) {
+      assert.equal((await app.json('GET', path)).status, 401, path);
+      assert.equal((await app.json('POST', path, { body: {}, cookie })).status, 405, path);
+    }
+  });
+
+  test('monthly aggregates of a year: twelve months with types, results and Pipeline QE', async () => {
+    const response = await app.json('GET', '/api/reports/monthly?year=2026', { cookie });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.year, 2026);
+    assert.equal(response.body.months.length, 12);
+    const march = response.body.months[2];
+    assert.equal(march.period, '2026-03');
+    assert.deepEqual(march.opportunities, { total: 2, byType: { tender: 0, offer: 0, staffing: 2, none: 0 } });
+    assert.deepEqual(march.won, { count: 1, amount: 4000, qeAmount: 1000 });
+    assert.equal(march.initiativesWorked, 1);
+    assert.equal(march.pipelineQeGenerated, 1500);
+    assert.equal(response.body.totals.opportunities.total, 2);
+    // Without a year it uses the current one; a bad year is rejected.
+    assert.equal((await app.json('GET', '/api/reports/monthly', { cookie })).body.year, 2026);
+    assert.equal((await app.json('GET', '/api/reports/monthly?year=abc', { cookie })).status, 400);
+    assert.equal((await app.json('GET', '/api/reports/monthly?year=1999', { cookie })).status, 400);
+  });
+
+  test('the month in progress is live and nothing is stored before it ends', async () => {
+    const live = await app.json('GET', '/api/reports/monthly-live', { cookie });
+    assert.equal(live.status, 200);
+    assert.equal(live.body.period, '2026-03');
+    assert.equal(live.body.live, true);
+    assert.equal(live.body.report.opportunities.created.count, 2);
+    const list = await app.json('GET', '/api/reports/monthly-snapshots', { cookie });
+    assert.deepEqual(list.body, { snapshots: [], currentPeriod: '2026-03' });
+    assert.equal((await app.json('GET', '/api/reports/monthly-snapshots/2026-03', { cookie })).status, 404);
+  });
+
+  test('snapshots are generated lazily once the month ends and never change afterwards', async () => {
+    clock.value = '2026-04-01T08:00:00.000Z';
+    // Sessions last a week, so the jump in time needs a fresh login.
+    const login = await app.login({ email: 'reports@example.com', password: 'password123' });
+    assert.equal(login.status, 200);
+    cookie = login.cookie;
+    const list = await app.json('GET', '/api/reports/monthly-snapshots', { cookie });
+    assert.equal(list.status, 200);
+    assert.deepEqual(list.body.snapshots.map((item) => item.period), ['2026-03']);
+    assert.equal(list.body.snapshots[0].generatedAt, '2026-04-01T08:00:00.000Z');
+    assert.equal(list.body.currentPeriod, '2026-04');
+
+    const first = await app.json('GET', '/api/reports/monthly-snapshots/2026-03', { cookie });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.report.opportunities.created.count, 2);
+    assert.equal(first.body.report.live, false);
+
+    // Later data changes, and later requests, leave the stored snapshot untouched.
+    clock.value = '2026-04-02T09:00:00.000Z';
+    const march = (await app.json('GET', '/api/opportunities', { cookie })).body.opportunities.find((item) => item.title === 'Staffing marzo');
+    assert.equal((await app.json('PATCH', `/api/opportunities/${march.id}`, { body: { amount: '9.999' }, cookie })).status, 200);
+    assert.equal((await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Abril' }, cookie })).status, 201);
+    const again = await app.json('GET', '/api/reports/monthly-snapshots/2026-03', { cookie });
+    assert.deepEqual(again.body, first.body);
+    assert.equal(Number(app.db.prepare('SELECT COUNT(*) AS count FROM monthly_reports').get().count), 1);
+
+    const live = await app.json('GET', '/api/reports/monthly-live', { cookie });
+    assert.equal(live.body.period, '2026-04');
+    assert.equal(live.body.report.opportunities.created.count, 1);
+  });
+
+  test('a malformed period is rejected', async () => {
+    assert.equal((await app.json('GET', '/api/reports/monthly-snapshots/2026-13', { cookie })).status, 400);
+    assert.equal((await app.json('GET', '/api/reports/monthly-snapshots/marzo', { cookie })).status, 400);
+  });
+});
