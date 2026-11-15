@@ -24,8 +24,12 @@ export function createDefaultAdvancedFilters() {
     updatedFrom: '',
     updatedTo: '',
     outcome: 'all',
-    closeFrom: '',
-    closeTo: '',
+    resolutionFrom: '',
+    resolutionTo: '',
+    marketScope: 'all',
+    contractType: 'all',
+    serviceType: 'all',
+    reusable: 'all',
   };
 }
 
@@ -51,6 +55,27 @@ function matchesOpportunityType(value, filter = 'all') {
   if (filter === 'all') return true;
   if (filter === MISSING_OPPORTUNITY_TYPE_FILTER) return !value;
   return value === filter;
+}
+
+/** Option-select filter value that selects opportunities without a value (Ámbito, contract and service types). */
+export const MISSING_OPTION_FILTER = 'none';
+
+/** 'all', 'none' (unset) or a concrete option id. */
+export function matchesOptionFilter(value, filter = 'all') {
+  if (!filter || filter === 'all') return true;
+  if (filter === MISSING_OPTION_FILTER) return !value;
+  return value === filter;
+}
+
+/** "Reutilizable" filter values besides 'all'. */
+export const REUSABLE_FILTER = 'yes';
+export const NOT_REUSABLE_FILTER = 'no';
+
+/** "Reutilizable" filter: 'all', 'yes' or 'no'. */
+export function matchesReusable(record, filter = 'all') {
+  if (filter === REUSABLE_FILTER) return Boolean(record.reusable);
+  if (filter === NOT_REUSABLE_FILTER) return !record.reusable;
+  return true;
 }
 
 /** "Resultado" filter value that selects opportunities without an outcome (still open). */
@@ -123,9 +148,13 @@ export function filterPipelineCards(cards, filters, { currentUserId = '' } = {})
     if (!withinDateRange(record.createdAt, filters.createdFrom, filters.createdTo)) return false;
     if (!withinDateRange(record.updatedAt, filters.updatedFrom, filters.updatedTo)) return false;
     if (!matchesOutcome(record, filters.outcome)) return false;
-    // A close-date range only matches opportunities that have an expected close date.
-    if ((filters.closeFrom || filters.closeTo) && !record.expectedCloseDate) return false;
-    if (!withinDateRange(record.expectedCloseDate, filters.closeFrom, filters.closeTo)) return false;
+    // A resolution-date range only matches opportunities that have a resolution date.
+    if ((filters.resolutionFrom || filters.resolutionTo) && !record.resolutionDate) return false;
+    if (!withinDateRange(record.resolutionDate, filters.resolutionFrom, filters.resolutionTo)) return false;
+    if (!matchesOptionFilter(record.marketScope, filters.marketScope)) return false;
+    if (!matchesOptionFilter(record.contractType, filters.contractType)) return false;
+    if (!matchesOptionFilter(record.serviceType, filters.serviceType)) return false;
+    if (!matchesReusable(record, filters.reusable)) return false;
 
     if (!includesText(record.number, filters.externalNumber)) return false;
     if (!includesText(record.registryId, filters.registryId ?? '')) return false;

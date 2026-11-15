@@ -58,3 +58,16 @@ test('describeEvent malformed input never throws', () => {
   assert.equal(describeEvent(undefined), 'Acción registrada');
   assert.equal(describeEvent({}), 'Acción registrada');
 });
+
+test('describeEvent labels the opportunity date, classification and value fields', () => {
+  assert.equal(
+    describeEvent({ action: 'updated', detail: { fields: ['resolution_date', 'delivery_deadline', 'start_date', 'end_date', 'next_milestone_date'] } }),
+    'Actualizó: fecha resolución, fecha límite de entrega, fecha inicio, fecha fin, fecha próximo hito',
+  );
+  assert.equal(
+    describeEvent({ action: 'updated', detail: { fields: ['ai_score', 'reusable', 'reusable_reason', 'market_scope', 'contract_type', 'service_type', 'added_value', 'services_added_value'] } }),
+    'Actualizó: scoring calificación IA, reutilizable, motivo de reutilización, ámbito, tipo de contrato, tipo de servicio, valor añadido, VA servicios',
+  );
+  // Older entries still name the retired close date.
+  assert.equal(describeEvent({ action: 'updated', detail: { fields: ['expected_close_date'] } }), 'Actualizó: fecha estimada de cierre');
+});

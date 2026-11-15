@@ -114,6 +114,11 @@ describe('navigation with filters', () => {
     assert.equal(filters.advanced.createdTo, '2026-03-31');
   });
 
+  test('report links filter by resolution date; the retired close-date keys are ignored', () => {
+    const { filters } = resolveNavigationTarget('pipeline', { outcome: 'won', resolutionFrom: '2026-03-01', resolutionTo: '2026-03-31', closeFrom: '2026-01-01' });
+    assert.deepEqual(filters.advanced, { ...createDefaultAdvancedFilters(), outcome: 'won', resolutionFrom: '2026-03-01', resolutionTo: '2026-03-31' });
+  });
+
   test('unknown keys, empty strings and non-string values are ignored', () => {
     const filters = buildPipelineNavigationFilters({ bogus: 'x', outcome: '', towerId: 7 });
     assert.deepEqual(filters.advanced, createDefaultAdvancedFilters());

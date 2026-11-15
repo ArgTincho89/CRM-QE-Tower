@@ -5,11 +5,13 @@
 // - A period is a calendar month 'YYYY-MM'. Timestamps (`created_at`, event times) are stored as
 //   ISO UTC strings and are attributed to the month of their literal 'YYYY-MM' prefix.
 // - Archived opportunities and initiatives are left out of every metric, as in the CRM QE KPIs.
-// - Won / lost / discarded are dated by the opportunity's `expected_close_date`: the Resultado
-//   stage cannot be saved without it, so every closed opportunity has one and the user keeps it
-//   aligned with the real close. History events only record which fields changed, never the
-//   outcome value, so they cannot date a result reliably. Legacy closed rows without the date fall
-//   back to `updated_at`.
+// - Won / lost / discarded are dated by the opportunity's `resolution_date` ("Fecha resolución",
+//   which replaced the retired `expected_close_date`; a one-time migration copied the old values):
+//   the Resultado stage cannot be saved without it, so every closed opportunity has one and the
+//   user keeps it aligned with the real resolution. History events only record which fields
+//   changed, never the outcome value, so they cannot date a result reliably. Legacy closed rows
+//   without the date fall back to `updated_at`. Report items keep the `closeDate` key so stored
+//   snapshots and live reports share one shape.
 // - An initiative is "worked" in a month when it was created, or has any history event, comment,
 //   record action (created or completed) or action comment in that month.
 import { initiativeStages, opportunityOutcomes, opportunityTypes } from '../src/data.js';
@@ -92,7 +94,7 @@ function parseDetail(raw) {
 export function loadReportDataset(db) {
   return {
     opportunities: db.prepare(
-      `SELECT o.id, o.title, o.amount, o.qa_percent, o.probability, o.stage, o.outcome, o.expected_close_date,
+      `SELECT o.id, o.title, o.amount, o.qa_percent, o.probability, o.stage, o.outcome, o.resolution_date,
               o.opportunity_type, o.created_at, o.updated_at, o.archived_at,
               COALESCE(c.name, NULLIF(o.account, '')) AS client_name
          FROM opportunities o LEFT JOIN clients c ON c.id = o.client_id`,
@@ -138,10 +140,10 @@ function weightedAmountOf(opportunity) {
   return (qeAmountOf(opportunity) * Number(opportunity.probability)) / 100;
 }
 
-/** Close date of a closed opportunity (see the period rules above), or '' when still open. */
-export function opportunityCloseDate(opportunity) {
+/** Resolution date of a closed opportunity (see the period rules above), or '' when still open. */
+export function opportunityResolutionDate(opportunity) {
   if (!opportunity.outcome) return '';
-  return (opportunity.expected_close_date || '').slice(0, 10) || (opportunity.updated_at || '').slice(0, 10);
+  return (opportunity.resolution_date || '').slice(0, 10) || (opportunity.updated_at || '').slice(0, 10);
 }
 
 function activeOpportunities(dataset) {
@@ -207,7 +209,7 @@ function opportunityItem(opportunity) {
     typeLabel: typeLabel(type),
     amount: round2(amountOf(opportunity)),
     qeAmount: round2(qeAmountOf(opportunity)),
-    closeDate: opportunityCloseDate(opportunity),
+    closeDate: opportunityResolutionDate(opportunity),
   };
 }
 
@@ -231,7 +233,7 @@ function resultsIn(dataset, period) {
   const results = {};
   for (const outcome of OUTCOME_IDS) {
     const items = activeOpportunities(dataset)
-      .filter((item) => item.outcome === outcome && periodOf(opportunityCloseDate(item)) === period)
+      .filter((item) => item.outcome === outcome && periodOf(opportunityResolutionDate(item)) === period)
       .map(opportunityItem);
     results[outcome] = { count: items.length, amount: sumBy(items, 'amount'), qeAmount: sumBy(items, 'qeAmount'), items };
   }
@@ -244,7 +246,7 @@ function pipelineAtPeriodEnd(dataset, period) {
   const open = activeOpportunities(dataset).filter((item) => {
     const created = periodOf(item.created_at);
     if (!created || created > period) return false;
-    const closed = opportunityCloseDate(item);
+    const closed = opportunityResolutionDate(item);
     return !closed || closed > end;
   });
   let weighted = null;

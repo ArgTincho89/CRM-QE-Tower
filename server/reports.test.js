@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   buildMonthlyReport, buildYearAggregates, ensureMonthlyReports, getMonthlyReport, initiativeActivityByPeriod, isValidPeriod,
-  listMonthlyReports, opportunityCloseDate, periodBounds, periodLabel, periodOf, periodRange, shiftPeriod,
+  listMonthlyReports, opportunityResolutionDate, periodBounds, periodLabel, periodOf, periodRange, shiftPeriod,
 } from './reports.js';
 import { createTempDatabase } from './testing.js';
 
 function opportunity(overrides) {
   return {
     title: 'Oportunidad', amount: '1.000', qa_percent: 50, probability: null, stage: 'proposal', outcome: '',
-    expected_close_date: '', opportunity_type: 'offer', created_at: '2026-03-05T10:00:00.000Z',
+    resolution_date: '', opportunity_type: 'offer', created_at: '2026-03-05T10:00:00.000Z',
     updated_at: '2026-03-05T10:00:00.000Z', archived_at: null, client_name: 'Acme', ...overrides,
   };
 }
@@ -26,10 +26,10 @@ function dataset() {
       opportunity({ id: 'OP-2', opportunity_type: 'staffing', amount: '2.000', qa_percent: 100, created_at: '2026-03-31T23:59:59.000Z', client_name: null }),
       opportunity({ id: 'OP-3', opportunity_type: null, created_at: '2026-03-15T00:00:00.000Z' }),
       // Created in February, won in March.
-      opportunity({ id: 'OP-4', amount: '5.000', qa_percent: 20, created_at: '2026-02-10T00:00:00.000Z', stage: 'result', outcome: 'won', expected_close_date: '2026-03-20' }),
-      opportunity({ id: 'OP-5', created_at: '2026-02-11T00:00:00.000Z', stage: 'result', outcome: 'lost', expected_close_date: '2026-04-02' }),
-      // Legacy closed row without a close date: dated by its last update.
-      opportunity({ id: 'OP-6', created_at: '2026-02-12T00:00:00.000Z', stage: 'result', outcome: 'discarded', expected_close_date: '', updated_at: '2026-03-03T08:00:00.000Z' }),
+      opportunity({ id: 'OP-4', amount: '5.000', qa_percent: 20, created_at: '2026-02-10T00:00:00.000Z', stage: 'result', outcome: 'won', resolution_date: '2026-03-20' }),
+      opportunity({ id: 'OP-5', created_at: '2026-02-11T00:00:00.000Z', stage: 'result', outcome: 'lost', resolution_date: '2026-04-02' }),
+      // Legacy closed row without a resolution date: dated by its last update.
+      opportunity({ id: 'OP-6', created_at: '2026-02-12T00:00:00.000Z', stage: 'result', outcome: 'discarded', resolution_date: '', updated_at: '2026-03-03T08:00:00.000Z' }),
       opportunity({ id: 'OP-7', created_at: '2026-03-02T00:00:00.000Z', archived_at: '2026-03-03T00:00:00.000Z' }),
       opportunity({ id: 'OP-8', created_at: '2026-04-01T00:00:00.000Z' }),
     ],
@@ -85,10 +85,13 @@ describe('report periods', () => {
     assert.equal(periodOf(''), '');
   });
 
-  test('closed opportunities are dated by the expected close date, falling back to the last update', () => {
-    assert.equal(opportunityCloseDate(opportunity({ outcome: 'won', expected_close_date: '2026-03-20' })), '2026-03-20');
-    assert.equal(opportunityCloseDate(opportunity({ outcome: 'lost', expected_close_date: '', updated_at: '2026-05-01T00:00:00.000Z' })), '2026-05-01');
-    assert.equal(opportunityCloseDate(opportunity({ outcome: '', expected_close_date: '2026-03-20' })), '');
+  test('closed opportunities are dated by the resolution date, falling back to the last update', () => {
+    assert.equal(opportunityResolutionDate(opportunity({ outcome: 'won', resolution_date: '2026-03-20' })), '2026-03-20');
+    assert.equal(opportunityResolutionDate(opportunity({ outcome: 'lost', resolution_date: '', updated_at: '2026-05-01T00:00:00.000Z' })), '2026-05-01');
+    assert.equal(opportunityResolutionDate(opportunity({ outcome: '', resolution_date: '2026-03-20' })), '');
+    // The retired close date no longer dates a result.
+    assert.equal(opportunityResolutionDate(opportunity({ outcome: 'won', resolution_date: '2026-06-10', expected_close_date: '2026-01-01' })), '2026-06-10');
+    assert.equal(opportunityResolutionDate(opportunity({ outcome: 'won', resolution_date: '', expected_close_date: '2026-01-01', updated_at: '2026-07-02T00:00:00.000Z' })), '2026-07-02');
   });
 });
 
@@ -118,7 +121,7 @@ describe('year aggregates', () => {
     assert.equal(year.months[3].opportunities.total, 1);
   });
 
-  test('won, lost and discarded fall in the month of their close date', () => {
+  test('won, lost and discarded fall in the month of their resolution date', () => {
     assert.deepEqual(march.won, { count: 1, amount: 5000, qeAmount: 1000 });
     assert.equal(march.discarded.count, 1);
     assert.equal(march.lost.count, 0);

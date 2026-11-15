@@ -33,15 +33,15 @@ describe('staffing opportunities', () => {
 });
 
 describe('opportunity result rules', () => {
-  const base = { stage: 'result', outcome: 'won', expectedCloseDate: '2026-06-01', closureReason: '' };
+  const base = { stage: 'result', outcome: 'won', resolutionDate: '2026-06-01', closureReason: '' };
 
   test('non-result stages have no outcome requirements', () => {
-    assert.equal(validateOpportunityResult({ stage: 'proposal', outcome: '', expectedCloseDate: '', closureReason: '' }), '');
+    assert.equal(validateOpportunityResult({ stage: 'proposal', outcome: '', resolutionDate: '', closureReason: '' }), '');
   });
 
-  test('result requires an outcome and an expected close date', () => {
+  test('result requires an outcome and a resolution date', () => {
     assert.match(validateOpportunityResult({ ...base, outcome: '' }), /resultado/);
-    assert.match(validateOpportunityResult({ ...base, expectedCloseDate: '' }), /fecha estimada/);
+    assert.match(validateOpportunityResult({ ...base, resolutionDate: '' }), /fecha de resolución/);
   });
 
   test('won needs no closure reason, lost and discarded do', () => {

@@ -96,7 +96,7 @@ function MonthlyReportView({ entry }) {
       <div className="report-figures">
         {opportunityOutcomes.map((outcome) => <div key={outcome.id}><span>{outcome.label}s</span><strong>{results[outcome.id].count}</strong><small>{formatCurrency(results[outcome.id].amount)} · QE {formatCurrency(results[outcome.id].qeAmount)}</small></div>)}
       </div>
-      {opportunityOutcomes.map((outcome) => <ReportTable key={outcome.id} caption={`Oportunidades ${outcomeLabel[outcome.id].toLowerCase()}s`} headers={[...opportunityHeaders, 'Cierre']} rows={results[outcome.id].items.map((item) => [...opportunityRows([item])[0], item.closeDate])} />)}
+      {opportunityOutcomes.map((outcome) => <ReportTable key={outcome.id} caption={`Oportunidades ${outcomeLabel[outcome.id].toLowerCase()}s`} headers={[...opportunityHeaders, 'Fecha resolución']} rows={results[outcome.id].items.map((item) => [...opportunityRows([item])[0], item.closeDate])} />)}
     </section>
 
     <section className="report-section">
@@ -230,7 +230,7 @@ export default function ReportsPage({ opportunities, initiatives, agreements, to
                 <td><CellLink value={month.initiativesWorked} label={`Iniciativas trabajadas en ${month.label}`} onClick={month.initiativesWorked ? () => onNavigate('initiatives') : null} /></td>
                 <td><div className="report-bar-cell"><CellLink value={month.opportunities.total} label={`Oportunidades generadas en ${month.label}`} onClick={pipeline({ createdFrom: range.from, createdTo: range.to })} /><span className="report-inline-bar" aria-hidden="true"><i style={{ width: `${(month.opportunities.total / maxMonthTotal) * 100}%` }} /></span></div></td>
                 {TYPE_COLUMNS.map(([id, label]) => <td key={id}><CellLink value={month.opportunities.byType[id]} label={`Oportunidades ${label} generadas en ${month.label}`} onClick={pipeline({ createdFrom: range.from, createdTo: range.to, opportunityType: typeFilterValue(id) })} /></td>)}
-                {reportOutcomeColumns.map(([outcome, label]) => <td key={outcome}><CellLink value={month[outcome].count} label={`${label} en ${month.label}`} onClick={pipeline({ outcome, closeFrom: range.from, closeTo: range.to })} />{month[outcome].count > 0 && <small className="report-cell-amount">{formatCurrency(month[outcome].amount)}</small>}</td>)}
+                {reportOutcomeColumns.map(([outcome, label]) => <td key={outcome}><CellLink value={month[outcome].count} label={`${label} en ${month.label}`} onClick={pipeline({ outcome, resolutionFrom: range.from, resolutionTo: range.to })} />{month[outcome].count > 0 && <small className="report-cell-amount">{formatCurrency(month[outcome].amount)}</small>}</td>)}
                 <td><CellLink value={formatCurrency(month.pipelineQeGenerated)} label={`Pipeline QE generado en ${month.label}`} onClick={pipeline({ createdFrom: range.from, createdTo: range.to })} /></td>
               </tr>;
             })}
@@ -240,7 +240,7 @@ export default function ReportsPage({ opportunities, initiatives, agreements, to
             <td><CellLink value={totals.initiativesWorked} label={`Iniciativas trabajadas en ${year}`} onClick={() => onNavigate('initiatives')} /></td>
             <td><CellLink value={totals.opportunities.total} label={`Oportunidades generadas en ${year}`} onClick={pipeline({ createdFrom: `${year}-01-01`, createdTo: `${year}-12-31` })} /></td>
             {TYPE_COLUMNS.map(([id, label]) => <td key={id}><CellLink value={totals.opportunities.byType[id]} label={`Oportunidades ${label} generadas en ${year}`} onClick={pipeline({ createdFrom: `${year}-01-01`, createdTo: `${year}-12-31`, opportunityType: typeFilterValue(id) })} /></td>)}
-            {reportOutcomeColumns.map(([outcome, label]) => <td key={outcome}><CellLink value={totals[outcome].count} label={`${label} en ${year}`} onClick={pipeline({ outcome, closeFrom: `${year}-01-01`, closeTo: `${year}-12-31` })} /></td>)}
+            {reportOutcomeColumns.map(([outcome, label]) => <td key={outcome}><CellLink value={totals[outcome].count} label={`${label} en ${year}`} onClick={pipeline({ outcome, resolutionFrom: `${year}-01-01`, resolutionTo: `${year}-12-31` })} /></td>)}
             <td><CellLink value={formatCurrency(totals.pipelineQeGenerated)} label={`Pipeline QE generado en ${year}`} onClick={pipeline({ createdFrom: `${year}-01-01`, createdTo: `${year}-12-31` })} /></td>
           </tr></tfoot>}
         </table>

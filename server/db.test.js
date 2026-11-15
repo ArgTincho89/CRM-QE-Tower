@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
+import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, migrateResolutionDate, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
 import { createTempDatabase } from './testing.js';
 
 function count(db, table) {
@@ -712,6 +712,57 @@ test('the monthly_reports table is created idempotently and keeps stored snapsho
     assert.equal(count(temp.db, 'monthly_reports'), 1);
     assert.throws(() => temp.db.prepare('INSERT INTO monthly_reports (period, generated_at, data) VALUES (?, ?, ?)').run('2026-03', 'x', '{}'), /UNIQUE|PRIMARY/);
     assert.throws(() => temp.db.prepare('INSERT INTO monthly_reports (period, generated_at, data) VALUES (?, ?, ?)').run('March', 'x', '{}'), /CHECK/);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('opportunity date, classification and value columns are added idempotently', () => {
+  const temp = createTempDatabase();
+  try {
+    applySchema(temp.db);
+    applySchema(temp.db);
+    const columns = temp.db.prepare('PRAGMA table_info(opportunities)').all();
+    const byName = new Map(columns.map((column) => [column.name, column]));
+    for (const name of ['delivery_deadline', 'resolution_date', 'start_date', 'end_date', 'ai_score', 'reusable', 'reusable_reason', 'market_scope', 'contract_type', 'service_type', 'added_value', 'services_added_value']) {
+      assert.ok(byName.has(name), `opportunities.${name} should exist`);
+      assert.equal(columns.filter((column) => column.name === name).length, 1);
+    }
+    // The retired close date stays in the table: it is never dropped.
+    assert.ok(byName.has('expected_close_date'));
+    assert.equal(byName.get('ai_score').type, 'REAL');
+    assert.equal(byName.get('reusable').dflt_value, '0');
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('the resolution date migration copies the close date once and never overwrites', () => {
+  const temp = createTempDatabase();
+  try {
+    const insert = temp.db.prepare(
+      `INSERT INTO opportunities (id, title, account, amount, stage, tower, owner, due, created_at, updated_at, expected_close_date, resolution_date)
+       VALUES (?, 'Fixture', '', '0', 'proposal', '', '', '', '2026-01-01', '2026-01-01', ?, ?)`,
+    );
+    insert.run('OP-000001', '2026-03-31', '');
+    insert.run('OP-000002', '2026-04-30', '2026-05-15');
+    insert.run('OP-000003', '', '');
+    // Simulate a database that predates the migration.
+    temp.db.prepare('DELETE FROM schema_meta WHERE key = ?').run('resolution_date_from_close_v1');
+    migrateResolutionDate(temp.db);
+
+    const resolution = (id) => temp.db.prepare('SELECT resolution_date FROM opportunities WHERE id = ?').get(id).resolution_date;
+    assert.equal(resolution('OP-000001'), '2026-03-31');
+    assert.equal(resolution('OP-000002'), '2026-05-15');
+    assert.equal(resolution('OP-000003'), '');
+    assert.ok(temp.db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('resolution_date_from_close_v1'));
+
+    // Guarded: later boots leave user edits alone, even an emptied resolution date.
+    temp.db.prepare("UPDATE opportunities SET resolution_date = '' WHERE id = 'OP-000001'").run();
+    migrateResolutionDate(temp.db);
+    applySchema(temp.db);
+    assert.equal(resolution('OP-000001'), '');
+    assert.equal(temp.db.prepare('SELECT expected_close_date FROM opportunities WHERE id = ?').get('OP-000001').expected_close_date, '2026-03-31');
   } finally {
     temp.cleanup();
   }

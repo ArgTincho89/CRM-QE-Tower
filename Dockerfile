@@ -28,6 +28,7 @@ COPY content/seed/*.csv ./content/seed/
 RUN mkdir -p src
 COPY --from=build /app/src/data.js ./src/data.js
 COPY --from=build /app/src/money.js ./src/money.js
+COPY --from=build /app/src/opportunityFields.js ./src/opportunityFields.js
 COPY --from=build /app/src/mentions.js ./src/mentions.js
 COPY --from=build /app/src/notifications.js ./src/notifications.js
 COPY --from=build /app/src/people.js ./src/people.js

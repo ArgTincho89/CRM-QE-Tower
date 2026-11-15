@@ -268,6 +268,7 @@ const SERVICE_YEARS_MARKER = 'service_years_v1';
 const WORKSPACE_LINKS_AGREEMENTS_MARKER = 'workspace_links_agreements_v1';
 const SIX_DIGIT_IDS_MARKER = 'six_digit_ids_v1';
 const NOTIFICATION_MENTION_KIND_MARKER = 'notification_mention_kind_v1';
+const RESOLUTION_DATE_MARKER = 'resolution_date_from_close_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -338,6 +339,23 @@ export function applySchema(db) {
     ASSIGNED_USER_COLUMN,
     // Optional "Fecha de próxima acción" (ISO date), distinct from the next milestone date.
     ['next_action_date', "TEXT NOT NULL DEFAULT ''"],
+    // Optional ISO dates. `resolution_date` replaces `expected_close_date`, which stays in the
+    // table (never dropped) but is no longer read or written; see migrateResolutionDate.
+    ['delivery_deadline', "TEXT NOT NULL DEFAULT ''"],
+    ['resolution_date', "TEXT NOT NULL DEFAULT ''"],
+    ['start_date', "TEXT NOT NULL DEFAULT ''"],
+    ['end_date', "TEXT NOT NULL DEFAULT ''"],
+    // "Scoring calificación IA": NULL or 1-10 with up to two decimals.
+    ['ai_score', 'REAL'],
+    ['reusable', 'INTEGER NOT NULL DEFAULT 0'],
+    ['reusable_reason', "TEXT NOT NULL DEFAULT ''"],
+    // Optional ids of the src/data.js enumerations ('' when unset).
+    ['market_scope', "TEXT NOT NULL DEFAULT ''"],
+    ['contract_type', "TEXT NOT NULL DEFAULT ''"],
+    ['service_type', "TEXT NOT NULL DEFAULT ''"],
+    // Optional euro values (NULL when unset): "Valor añadido" and its "VA Servicios" part.
+    ['added_value', 'REAL'],
+    ['services_added_value', 'REAL'],
   ];
   for (const [name, declaration] of opportunityAdditions) {
     if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
@@ -396,6 +414,7 @@ export function runMigrations(db) {
   migrateServiceYears(db);
   migrateWorkspaceLinkAgreements(db);
   migrateNotificationMentionKind(db);
+  migrateResolutionDate(db);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_year_name ON services(year, name COLLATE NOCASE)');
   migrateLegacyEvolution(db);
   // Last: it renames ids that the migrations above may have copied into join tables.
@@ -519,6 +538,21 @@ export function migrateWorkspaceLinkAgreements(db) {
   } finally {
     if (needsRebuild && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
   }
+}
+
+/**
+ * Copies the retired "Fecha estimada de cierre" (`expected_close_date`) into "Fecha resolución"
+ * (`resolution_date`) for rows whose resolution date is still empty. Guarded by `schema_meta`,
+ * so it runs once per database; it never overwrites a resolution date and keeps the old column.
+ */
+export function migrateResolutionDate(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(RESOLUTION_DATE_MARKER)) return;
+  withTransaction(db, () => {
+    db.exec(`UPDATE opportunities SET resolution_date = expected_close_date
+              WHERE (resolution_date IS NULL OR resolution_date = '')
+                AND expected_close_date IS NOT NULL AND expected_close_date <> ''`);
+    db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(RESOLUTION_DATE_MARKER, new Date().toISOString());
+  });
 }
 
 /**

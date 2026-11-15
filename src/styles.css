@@ -529,6 +529,9 @@ button.kpi-card-main:focus-visible { outline: 2px solid #1268d5; outline-offset:
 .service-year-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .service-year-tabs, .service-year-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .checkbox-field span:first-child { display: inline-flex; align-items: center; gap: 8px; }
+.checkbox-field input[type="checkbox"] { width: auto; height: auto; }
+/* Group heading inside a dialog .form-grid; spans every column so the field pairs stay aligned. */
+.form-section-title { grid-column: 1 / -1; margin: 6px 0 0; padding-top: 14px; border-top: 1px solid #edf0f4; color: #334157; font: 700 14px 'Manrope', sans-serif; }
 .compact-dialog { width: min(calc(100% - 36px), 470px); }
 .record-actions { margin-top: 16px; padding: 12px; border: 1px solid #e8edf2; border-radius: 8px; background: #fbfcfe; }
 .record-actions h3 { margin: 0 0 9px; color: #334157; font-size: 15px; }

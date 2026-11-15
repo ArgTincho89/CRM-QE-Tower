@@ -21,6 +21,32 @@ export const opportunityTypes = [
   { id: 'staffing', label: 'Staffing', tone: 'violet' },
 ];
 
+/** "Ámbito" of an opportunity (optional). */
+export const opportunityMarketScopes = [
+  { id: 'large', label: 'Large' },
+  { id: 'midmarket', label: 'MidMarket' },
+];
+
+/** "Tipo de contrato" of an opportunity (optional). */
+export const opportunityContractTypes = [
+  { id: 'tender', label: 'Licitación' },
+  { id: 'rfp', label: 'RFP' },
+  { id: 'sda', label: 'SDA' },
+  { id: 'am_sda_based', label: 'Contrato Basado de AM/SDA' },
+  { id: 'direct_offer', label: 'Oferta Directa' },
+];
+
+/** "Tipo de servicio" of an opportunity (optional). */
+export const opportunityServiceTypes = [
+  { id: 'closed_project', label: 'Closed project' },
+  { id: 'am_service', label: 'AM Service' },
+  { id: 'licenses', label: 'Licenses' },
+  { id: 'infrastructure', label: 'Infrastructure' },
+  { id: 'guards', label: 'Guards' },
+  { id: 'subco', label: 'Subco' },
+  { id: 'hardware_reselling', label: 'Hardware reselling' },
+];
+
 export const opportunityOrigins = [
   'Iniciativa interna',
   'Cliente existente',

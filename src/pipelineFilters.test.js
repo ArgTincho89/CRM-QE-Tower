@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, OPEN_OUTCOME_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar, matchesAssignee, matchesOutcome,
+  ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, MISSING_OPTION_FILTER, NOT_REUSABLE_FILTER, OPEN_OUTCOME_FILTER, REUSABLE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar, matchesAssignee, matchesOptionFilter, matchesOutcome, matchesReusable,
 } from './pipelineFilters.js';
 
 const records = [
@@ -114,16 +114,16 @@ describe('pipeline toolbar filters', () => {
   });
 });
 
-describe('outcome and close-date filters', () => {
+describe('outcome and resolution-date filters', () => {
   const closed = [
-    { id: 'OP-1', outcome: 'won', expectedCloseDate: '2026-03-10' },
-    { id: 'OP-2', outcome: 'lost', expectedCloseDate: '2026-04-02' },
-    { id: 'OP-3', outcome: '', expectedCloseDate: '' },
-    { id: 'OP-4', outcome: 'discarded', expectedCloseDate: '2026-03-31' },
+    { id: 'OP-1', outcome: 'won', resolutionDate: '2026-03-10' },
+    { id: 'OP-2', outcome: 'lost', resolutionDate: '2026-04-02' },
+    { id: 'OP-3', outcome: '', resolutionDate: '' },
+    { id: 'OP-4', outcome: 'discarded', resolutionDate: '2026-03-31' },
   ];
   const pick = (filters) => filterPipelineCards(closed, { ...createDefaultAdvancedFilters(), ...filters }).map((item) => item.id);
 
-  test('defaults keep every outcome and ignore missing close dates', () => {
+  test('defaults keep every outcome and ignore missing resolution dates', () => {
     assert.equal(createDefaultAdvancedFilters().outcome, 'all');
     assert.deepEqual(pick({}), ['OP-1', 'OP-2', 'OP-3', 'OP-4']);
   });
@@ -135,9 +135,38 @@ describe('outcome and close-date filters', () => {
     assert.equal(matchesOutcome({ outcome: 'won' }, undefined), true);
   });
 
-  test('a close-date range is inclusive and skips opportunities without a close date', () => {
-    assert.deepEqual(pick({ closeFrom: '2026-03-01', closeTo: '2026-03-31' }), ['OP-1', 'OP-4']);
-    assert.deepEqual(pick({ closeFrom: '2026-04-01' }), ['OP-2']);
-    assert.deepEqual(pick({ outcome: 'won', closeFrom: '2026-04-01' }), []);
+  test('a resolution-date range is inclusive and skips opportunities without a resolution date', () => {
+    assert.deepEqual(pick({ resolutionFrom: '2026-03-01', resolutionTo: '2026-03-31' }), ['OP-1', 'OP-4']);
+    assert.deepEqual(pick({ resolutionFrom: '2026-04-01' }), ['OP-2']);
+    assert.deepEqual(pick({ outcome: 'won', resolutionFrom: '2026-04-01' }), []);
+  });
+});
+
+describe('classification and reuse filters', () => {
+  const classified = [
+    { id: 'OP-1', marketScope: 'large', contractType: 'rfp', serviceType: 'am_service', reusable: true },
+    { id: 'OP-2', marketScope: 'midmarket', contractType: 'sda', serviceType: 'licenses', reusable: false },
+    { id: 'OP-3', marketScope: '', contractType: '', serviceType: '' },
+  ];
+  const pick = (filters) => filterPipelineCards(classified, { ...createDefaultAdvancedFilters(), ...filters }).map((item) => item.id);
+
+  test('defaults keep every opportunity', () => {
+    const defaults = createDefaultAdvancedFilters();
+    assert.deepEqual([defaults.marketScope, defaults.contractType, defaults.serviceType, defaults.reusable], ['all', 'all', 'all', 'all']);
+    assert.deepEqual(pick({}), ['OP-1', 'OP-2', 'OP-3']);
+  });
+
+  test('Ámbito, Tipo de contrato and Tipo de servicio match one id or the unset ones', () => {
+    assert.deepEqual(pick({ marketScope: 'large' }), ['OP-1']);
+    assert.deepEqual(pick({ contractType: 'sda' }), ['OP-2']);
+    assert.deepEqual(pick({ serviceType: MISSING_OPTION_FILTER }), ['OP-3']);
+    assert.deepEqual(pick({ marketScope: 'large', contractType: 'sda' }), []);
+    assert.equal(matchesOptionFilter('rfp', undefined), true);
+  });
+
+  test('Reutilizable matches yes or no; records without the flag are not reusable', () => {
+    assert.deepEqual(pick({ reusable: REUSABLE_FILTER }), ['OP-1']);
+    assert.deepEqual(pick({ reusable: NOT_REUSABLE_FILTER }), ['OP-2', 'OP-3']);
+    assert.equal(matchesReusable({ reusable: true }, 'all'), true);
   });
 });

@@ -1,12 +1,18 @@
 import { parseAmount } from './money.js';
 import { validateOpportunityClient, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { parseAiScore, validateOpportunityFields } from './opportunityFields.js';
 
 /**
  * Per-form validators. Each returns `{ fieldId: message }` in form order; an empty object
  * means the form is valid. Messages are Spanish UI copy shown under each field.
  */
 
-export const OPPORTUNITY_FORM_FIELDS = ['title', 'opportunityType', 'registryId', 'clientId', 'amount', 'initiativeId', 'probability', 'expectedCloseDate', 'nextActionDate', 'qaPercent', 'outcome', 'closureReason'];
+export const OPPORTUNITY_FORM_FIELDS = [
+  'title', 'opportunityType', 'registryId', 'clientId', 'initiativeId', 'outcome', 'closureReason',
+  'deliveryDeadline', 'resolutionDate', 'startDate', 'endDate', 'nextActionDate',
+  'marketScope', 'contractType', 'serviceType', 'aiScore', 'reusableReason',
+  'amount', 'addedValue', 'servicesAddedValue', 'qaPercent', 'probability',
+];
 export const INITIATIVE_FORM_FIELDS = ['title'];
 export const AGREEMENT_FORM_FIELDS = ['title', 'amount'];
 export const MASTER_FORM_FIELDS = ['name', 'responsibleId'];
@@ -19,26 +25,43 @@ function inRange(value, min, max) {
   return Number.isFinite(number) && number >= min && number <= max;
 }
 
-/** Opportunity dialog. `amountText` is the formatted amount input; `original` the edited record. */
-export function validateOpportunityForm(form, { amountText = '', original = {} } = {}) {
-  const errors = {};
-  if (isBlank(form.title)) errors.title = 'Completa el nombre de la oportunidad.';
+const hasDigit = (text) => /\d/.test(String(text ?? ''));
+
+/**
+ * Opportunity dialog. `amountText`, `addedValueText` and `servicesAddedValueText` are the
+ * formatted money inputs; `original` the edited record. Keys follow OPPORTUNITY_FORM_FIELDS.
+ */
+export function validateOpportunityForm(form, { amountText = '', addedValueText = '', servicesAddedValueText = '', original = {} } = {}) {
+  const found = {};
+  if (isBlank(form.title)) found.title = 'Completa el nombre de la oportunidad.';
   const typeError = validateOpportunityType(form.opportunityType);
-  if (typeError) errors.opportunityType = typeError;
+  if (typeError) found.opportunityType = typeError;
   const clientError = validateOpportunityClient(form, original);
-  if (clientError) errors.clientId = clientError;
-  if (!/\d/.test(String(amountText ?? ''))) errors.amount = 'Indica el importe estimado.';
-  else if (!(parseAmount(amountText) >= 0)) errors.amount = 'El importe debe ser igual o superior a cero.';
+  if (clientError) found.clientId = clientError;
   const originError = validateOriginInitiative(form, original);
-  if (originError) errors.initiativeId = originError;
-  if (!isBlank(form.probability) && !inRange(form.probability, 0, 100)) errors.probability = 'La probabilidad debe estar entre 0 y 100 %.';
-  if (form.stage === 'result' && !form.expectedCloseDate) errors.expectedCloseDate = 'La etapa Resultado requiere una fecha estimada de cierre.';
-  if (!inRange(isBlank(form.qaPercent) ? 0 : form.qaPercent, 0, 100)) errors.qaPercent = 'La participación QA debe estar entre 0 y 100 %.';
+  if (originError) found.initiativeId = originError;
   if (form.stage === 'result') {
-    if (!form.outcome) errors.outcome = 'Selecciona el resultado (Ganada, Perdida o Descartada).';
-    else if (form.outcome !== 'won' && isBlank(form.closureReason)) errors.closureReason = 'Indica el motivo de pérdida o descarte.';
+    if (!form.outcome) found.outcome = 'Selecciona el resultado (Ganada, Perdida o Descartada).';
+    else if (form.outcome !== 'won' && isBlank(form.closureReason)) found.closureReason = 'Indica el motivo de pérdida o descarte.';
+    if (!form.resolutionDate) found.resolutionDate = 'La etapa Resultado requiere una fecha de resolución.';
   }
-  return errors;
+  const amount = parseAmount(amountText);
+  if (!hasDigit(amountText)) found.amount = 'Indica el importe estimado.';
+  else if (!(amount >= 0)) found.amount = 'El importe debe ser igual o superior a cero.';
+  Object.assign(found, validateOpportunityFields({
+    startDate: form.startDate,
+    endDate: form.endDate,
+    aiScore: parseAiScore(form.aiScore),
+    reusable: Boolean(form.reusable),
+    reusableReason: form.reusableReason,
+    amount,
+    addedValue: hasDigit(addedValueText) ? parseAmount(addedValueText) : null,
+    servicesAddedValue: hasDigit(servicesAddedValueText) ? parseAmount(servicesAddedValueText) : null,
+  }));
+  if (!inRange(isBlank(form.qaPercent) ? 0 : form.qaPercent, 0, 100)) found.qaPercent = 'La participación QA debe estar entre 0 y 100 %.';
+  if (!isBlank(form.probability) && !inRange(form.probability, 0, 100)) found.probability = 'La probabilidad debe estar entre 0 y 100 %.';
+  // Form order, so the first error is the first invalid field of the dialog.
+  return Object.fromEntries(OPPORTUNITY_FORM_FIELDS.filter((field) => Object.hasOwn(found, field)).map((field) => [field, found[field]]));
 }
 
 export function validateInitiativeForm(form) {
@@ -86,7 +109,17 @@ const SERVER_FIELD_ALIASES = {
   next_action_date: 'nextActionDate',
   qa_percent: 'qaPercent',
   initiative_id: 'initiativeId',
-  expected_close_date: 'expectedCloseDate',
+  resolution_date: 'resolutionDate',
+  delivery_deadline: 'deliveryDeadline',
+  start_date: 'startDate',
+  end_date: 'endDate',
+  ai_score: 'aiScore',
+  reusable_reason: 'reusableReason',
+  market_scope: 'marketScope',
+  contract_type: 'contractType',
+  service_type: 'serviceType',
+  added_value: 'addedValue',
+  services_added_value: 'servicesAddedValue',
   closure_reason: 'closureReason',
   responsible_id: 'responsibleId',
 };

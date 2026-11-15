@@ -4,7 +4,7 @@ import { AGREEMENT_FORM_FIELDS, MASTER_FORM_FIELDS, OPPORTUNITY_FORM_FIELDS, cle
 
 const validOpportunity = {
   title: 'Modernización', opportunityType: 'offer', clientId: 'c1', stage: 'prospecting', qaPercent: 30, probability: '',
-  origin: '', initiativeId: '', outcome: '', expectedCloseDate: '', closureReason: '',
+  origin: '', initiativeId: '', outcome: '', resolutionDate: '', closureReason: '',
 };
 
 test('a complete opportunity form has no errors', () => {
@@ -49,13 +49,13 @@ test('opportunity form requires the source initiative for an internal-initiative
   assert.deepEqual(validateOpportunityForm({ ...validOpportunity, origin: 'Iniciativa interna' }, { amountText: '10', original: legacy }), {});
 });
 
-test('result stage requires outcome and close date, and a reason unless won', () => {
+test('result stage requires outcome and resolution date, and a reason unless won', () => {
   const result = { ...validOpportunity, stage: 'result' };
-  assert.deepEqual(Object.keys(validateOpportunityForm(result, { amountText: '10' })), ['expectedCloseDate', 'outcome']);
-  const lost = validateOpportunityForm({ ...result, outcome: 'lost', expectedCloseDate: '2026-01-31' }, { amountText: '10' });
+  assert.deepEqual(Object.keys(validateOpportunityForm(result, { amountText: '10' })), ['outcome', 'resolutionDate']);
+  const lost = validateOpportunityForm({ ...result, outcome: 'lost', resolutionDate: '2026-01-31' }, { amountText: '10' });
   assert.deepEqual(lost, { closureReason: 'Indica el motivo de pérdida o descarte.' });
-  assert.deepEqual(validateOpportunityForm({ ...result, outcome: 'won', expectedCloseDate: '2026-01-31' }, { amountText: '10' }), {});
-  assert.deepEqual(validateOpportunityForm({ ...result, outcome: 'discarded', expectedCloseDate: '2026-01-31', closureReason: 'Sin presupuesto' }, { amountText: '10' }), {});
+  assert.deepEqual(validateOpportunityForm({ ...result, outcome: 'won', resolutionDate: '2026-01-31' }, { amountText: '10' }), {});
+  assert.deepEqual(validateOpportunityForm({ ...result, outcome: 'discarded', resolutionDate: '2026-01-31', closureReason: 'Sin presupuesto' }, { amountText: '10' }), {});
 });
 
 test('initiative and agreement forms require a name', () => {
@@ -91,9 +91,33 @@ test('hasFieldErrors and clearFieldError manage the error map', () => {
   assert.equal(clearFieldError(errors, 'missing'), errors);
 });
 
+test('opportunity form checks dates, scoring, reuse and values like the API', () => {
+  const valid = {
+    ...validOpportunity, startDate: '2026-05-01', endDate: '2026-05-01', aiScore: '7,5', reusable: true, reusableReason: 'Plantilla',
+  };
+  assert.deepEqual(validateOpportunityForm(valid, { amountText: '1.000', addedValueText: '1.000', servicesAddedValueText: '999,99' }), {});
+  // Empty money inputs are optional.
+  assert.deepEqual(validateOpportunityForm(validOpportunity, { amountText: '10', addedValueText: '', servicesAddedValueText: '5' }), {});
+
+  const errors = validateOpportunityForm(
+    { ...valid, endDate: '2026-04-30', aiScore: '10,5', reusableReason: ' ' },
+    { amountText: '1.000', addedValueText: '1.000,01', servicesAddedValueText: '2.000' },
+  );
+  assert.deepEqual(Object.keys(errors), ['endDate', 'aiScore', 'reusableReason', 'addedValue', 'servicesAddedValue']);
+  assert.equal(errors.addedValue, 'El valor añadido no puede superar el importe.');
+  assert.match(validateOpportunityForm({ ...validOpportunity, aiScore: 'alto' }, { amountText: '10' }).aiScore, /entre 1 y 10/);
+  // Unchecked "Reutilizable" needs no reason.
+  assert.deepEqual(validateOpportunityForm({ ...validOpportunity, reusable: false, reusableReason: '' }, { amountText: '10' }), {});
+});
+
 test('mapServerFieldError maps API field errors that belong to the form', () => {
+  for (const [column, field] of [['delivery_deadline', 'deliveryDeadline'], ['start_date', 'startDate'], ['end_date', 'endDate'], ['ai_score', 'aiScore'], ['reusable_reason', 'reusableReason'], ['market_scope', 'marketScope'], ['contract_type', 'contractType'], ['service_type', 'serviceType'], ['added_value', 'addedValue'], ['services_added_value', 'servicesAddedValue']]) {
+    assert.deepEqual(mapServerFieldError({ field: column, message: 'Revisa.' }, OPPORTUNITY_FORM_FIELDS), { [field]: 'Revisa.' });
+    assert.deepEqual(mapServerFieldError({ field, message: 'Revisa.' }, OPPORTUNITY_FORM_FIELDS), { [field]: 'Revisa.' });
+  }
+  assert.equal(mapServerFieldError({ field: 'expectedCloseDate', message: 'Retirado.' }, OPPORTUNITY_FORM_FIELDS), null);
   assert.deepEqual(mapServerFieldError({ field: 'title', message: 'El campo "title" no puede estar vacío.' }, OPPORTUNITY_FORM_FIELDS), { title: 'El campo "title" no puede estar vacío.' });
-  assert.deepEqual(mapServerFieldError({ field: 'expected_close_date', message: 'Fecha no válida.' }, OPPORTUNITY_FORM_FIELDS), { expectedCloseDate: 'Fecha no válida.' });
+  assert.deepEqual(mapServerFieldError({ field: 'resolution_date', message: 'Fecha no válida.' }, OPPORTUNITY_FORM_FIELDS), { resolutionDate: 'Fecha no válida.' });
   assert.deepEqual(mapServerFieldError({ field: 'clientId', message: 'Selecciona el cliente.' }, OPPORTUNITY_FORM_FIELDS), { clientId: 'Selecciona el cliente.' });
   assert.deepEqual(mapServerFieldError({ field: 'next_action_date', message: 'Fecha no válida.' }, OPPORTUNITY_FORM_FIELDS), { nextActionDate: 'Fecha no válida.' });
   assert.deepEqual(mapServerFieldError({ field: 'responsibleId', message: 'Selecciona un responsable para la tower.' }, MASTER_FORM_FIELDS), { responsibleId: 'Selecciona un responsable para la tower.' });

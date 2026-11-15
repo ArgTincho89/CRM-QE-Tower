@@ -19,8 +19,9 @@ import {
 import { withTransaction } from './db.js';
 import { buildMonthlyReport, buildYearAggregates, currentPeriod, ensureMonthlyReports, getMonthlyReport, isValidPeriod, listMonthlyReports, loadReportDataset } from './reports.js';
 import { AGREEMENT_ID_PREFIX, IdSpaceExhaustedError, INITIATIVE_ID_PREFIX, nextPrefixedId, OPPORTUNITY_ID_PREFIX } from './ids.js';
-import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityTypes, stages } from '../src/data.js';
+import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityContractTypes, opportunityMarketScopes, opportunityOrigins, opportunityServiceTypes, opportunityTypes, stages } from '../src/data.js';
 import { formatCurrency } from '../src/money.js';
+import { isIsoDate, parseAiScore, validateOpportunityFields } from '../src/opportunityFields.js';
 import { extractMentionIds, newMentionIds } from '../src/mentions.js';
 import { buildAssignmentMessage, buildMentionMessage } from '../src/notifications.js';
 import {
@@ -58,10 +59,21 @@ const FIELD_LIMITS = {
 const EDITABLE_FIELDS = [
   'title', 'account', 'amount', 'stage', 'tower', 'owner', 'due', 'tags', 'number',
   'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason',
-  'origin', 'probability', 'expected_close_date', 'next_milestone', 'next_milestone_date',
+  'origin', 'probability', 'resolution_date', 'next_milestone', 'next_milestone_date',
   'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type', 'registry_id', 'assigned_user_id',
-  'next_action_date',
+  'next_action_date', 'delivery_deadline', 'start_date', 'end_date', 'ai_score', 'reusable',
+  'reusable_reason', 'market_scope', 'contract_type', 'service_type', 'added_value', 'services_added_value',
 ];
+
+/** Opportunity date columns added with "Fecha resolución", and the API name their errors report. */
+const OPPORTUNITY_DATE_FIELDS = {
+  resolution_date: 'resolutionDate', delivery_deadline: 'deliveryDeadline', start_date: 'startDate', end_date: 'endDate',
+};
+
+/** Columns whose change re-checks the cross-field rules of src/opportunityFields.js. */
+const OPPORTUNITY_FIELD_RULE_COLUMNS = new Set([
+  'start_date', 'end_date', 'ai_score', 'reusable', 'reusable_reason', 'amount', 'added_value', 'services_added_value',
+]);
 
 /** Optional external registry reference shared by opportunities and framework agreements. */
 const REGISTRY_ID_LIMIT = 120;
@@ -331,6 +343,11 @@ function replaceWorkspaceLinks(db, entityType, entityId, links, user, now) {
   }
 }
 
+/** Optional euro value as displayed by the API ('' when unset), like the formatted `amount`. */
+function formatOptionalCurrency(value) {
+  return value === null || value === undefined ? '' : formatCurrency(Number(value));
+}
+
 function mapOpportunity(row, db) {
   const towers = db ? loadJoinRows(db, 'opportunity_towers', 'towers', 'opportunity_id', 'tower_id', row.id) : [];
   const lobs = db ? loadJoinRows(db, 'opportunity_lobs', 'lobs', 'opportunity_id', 'lob_id', row.id) : [];
@@ -363,10 +380,21 @@ function mapOpportunity(row, db) {
     closureReason: row.closure_reason || '',
     origin: row.origin || '',
     probability,
-    expectedCloseDate: row.expected_close_date || '',
+    resolutionDate: row.resolution_date || '',
     nextMilestone: row.next_milestone || '',
     nextMilestoneDate: row.next_milestone_date || '',
     nextActionDate: row.next_action_date || '',
+    deliveryDeadline: row.delivery_deadline || '',
+    startDate: row.start_date || '',
+    endDate: row.end_date || '',
+    aiScore: row.ai_score === null || row.ai_score === undefined ? null : Number(row.ai_score),
+    reusable: Boolean(row.reusable),
+    reusableReason: row.reusable_reason || '',
+    marketScope: row.market_scope || '',
+    contractType: row.contract_type || '',
+    serviceType: row.service_type || '',
+    addedValue: formatOptionalCurrency(row.added_value),
+    servicesAddedValue: formatOptionalCurrency(row.services_added_value),
     need: row.need || '',
     initiativeId: row.initiative_id || '',
     initiativeTitle: initiative?.title || '',
@@ -430,7 +458,7 @@ function mapInitiative(row, db) {
   const opportunities = db
     ? db
         .prepare(
-          `SELECT id, title, stage, amount, owner, expected_close_date, outcome, archived_at
+          `SELECT id, title, stage, amount, owner, resolution_date, outcome, archived_at
              FROM opportunities WHERE initiative_id = ? ORDER BY created_at DESC, id DESC`,
         )
         .all(row.id)
@@ -440,7 +468,7 @@ function mapInitiative(row, db) {
           stage: item.stage,
           amount: formatCurrency(Number(parseAmount(item.amount))),
           owner: item.owner || '',
-          expectedCloseDate: item.expected_close_date || '',
+          resolutionDate: item.resolution_date || '',
           outcome: item.outcome || '',
           archived: Boolean(item.archived_at),
         }))
@@ -609,7 +637,7 @@ function parseOpportunityType(value) {
 
 function parseOptionalDate(value, field) {
   if (value === undefined || value === null || value === '') return '';
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+  if (typeof value !== 'string' || !isIsoDate(value.trim())) {
     throw validationError(`El campo "${field}" debe ser una fecha válida (AAAA-MM-DD).`, field);
   }
   return value.trim();
@@ -617,6 +645,65 @@ function parseOptionalDate(value, field) {
 
 function parseShortText(value, maxLength = 240) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+/** Optional select of a src/data.js enumeration: '' when empty, else one of its ids. */
+function parseOptionId(value, options, field, label) {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) return '';
+  const id = typeof value === 'string' ? value.trim() : '';
+  if (!options.some((option) => option.id === id)) {
+    throw validationError(`El campo "${label}" debe ser uno de: ${options.map((option) => option.label).join(', ')}.`, field);
+  }
+  return id;
+}
+
+/** "Scoring calificación IA": null when empty, else 1-10 (comma or dot decimals, two at most). */
+function parseAiScoreField(value) {
+  const score = parseAiScore(value);
+  const message = validateOpportunityFields({ aiScore: score }).aiScore;
+  if (message) throw validationError(message, 'aiScore');
+  return score;
+}
+
+/** "Reutilizable": a boolean (0/1 also accepted), stored as 0/1. Missing means false. */
+function parseReusable(value) {
+  if (value === undefined || value === null) return 0;
+  if (value === true || value === 1) return 1;
+  if (value === false || value === 0) return 0;
+  throw validationError('El campo "Reutilizable" debe ser verdadero o falso.', 'reusable');
+}
+
+/** "Motivo" of a reusable opportunity; the 2000-character limit is a cross-field rule. */
+function parseReusableReason(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Optional euro value ("Valor añadido", "VA Servicios"): null when empty, else a number >= 0. */
+function parseOptionalMoney(value, field, label) {
+  if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) return null;
+  let amount;
+  try {
+    amount = Number(parseAmount(value));
+  } catch {
+    throw validationError(`El campo "${label}" debe ser un importe igual o superior a cero.`, field);
+  }
+  return Math.round(amount * 100) / 100;
+}
+
+/** Throws the first broken cross-field rule of src/opportunityFields.js as a 400 with its field. */
+function assertOpportunityFields(values) {
+  const errors = validateOpportunityFields({
+    startDate: values.start_date,
+    endDate: values.end_date,
+    aiScore: values.ai_score,
+    reusable: Boolean(values.reusable),
+    reusableReason: values.reusable_reason,
+    amount: Number(values.amount) || 0,
+    addedValue: values.added_value,
+    servicesAddedValue: values.services_added_value,
+  });
+  const [field] = Object.keys(errors);
+  if (field) throw validationError(errors[field], field);
 }
 
 const INTERNAL_INITIATIVE_ORIGIN = 'Iniciativa interna';
@@ -813,7 +900,16 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'opportunity_type') return parseOpportunityType(value);
   if (field === 'registry_id') return parseRegistryId(value, OPPORTUNITY_REGISTRY_LABEL);
   if (field === 'probability') return parseProbability(value);
-  if (field === 'expected_close_date' || field === 'next_milestone_date' || field === 'next_action_date') return parseOptionalDate(value, field);
+  if (field === 'next_milestone_date' || field === 'next_action_date') return parseOptionalDate(value, field);
+  if (Object.hasOwn(OPPORTUNITY_DATE_FIELDS, field)) return parseOptionalDate(value, OPPORTUNITY_DATE_FIELDS[field]);
+  if (field === 'ai_score') return parseAiScoreField(value);
+  if (field === 'reusable') return parseReusable(value);
+  if (field === 'reusable_reason') return parseReusableReason(value);
+  if (field === 'market_scope') return parseOptionId(value, opportunityMarketScopes, 'marketScope', 'Ámbito');
+  if (field === 'contract_type') return parseOptionId(value, opportunityContractTypes, 'contractType', 'Tipo de contrato');
+  if (field === 'service_type') return parseOptionId(value, opportunityServiceTypes, 'serviceType', 'Tipo de servicio');
+  if (field === 'added_value') return parseOptionalMoney(value, 'addedValue', 'Valor añadido');
+  if (field === 'services_added_value') return parseOptionalMoney(value, 'servicesAddedValue', 'VA Servicios');
   if (field === 'next_milestone' || field === 'need' || field === 'pep') return parseShortText(value);
   if (field === 'initiative_id') return optionalInitiativeId(db, value);
   if (field === 'assigned_user_id') return parseAssignedUserId(db, value);
@@ -823,12 +919,12 @@ function normalizeFieldValue(db, field, value) {
 
 /**
  * Cross-field rules for the final state of an opportunity.
- * `result` needs an outcome and a close date; a non-won outcome needs a loss reason.
+ * `result` needs an outcome and a resolution date; a non-won outcome needs a loss reason.
  */
-function assertOpportunityState({ stage, outcome, expectedCloseDate, closureReason }) {
+function assertOpportunityState({ stage, outcome, resolutionDate, closureReason }) {
   if (stage === RESULT_STAGE) {
     if (!outcome) throw validationError('Selecciona el resultado (Ganada, Perdida o Descartada) para la etapa Resultado.', 'outcome');
-    if (!expectedCloseDate) throw validationError('La etapa Resultado requiere una fecha estimada de cierre.', 'expectedCloseDate');
+    if (!resolutionDate) throw validationError('La etapa Resultado requiere una fecha de resolución.', 'resolutionDate');
     if (outcome !== 'won' && !closureReason) {
       throw validationError('Indica el motivo de pérdida o descarte.', 'closureReason');
     }
@@ -1107,9 +1203,9 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
   const stage = parseStage(body.stage ?? 'prospecting');
   const opportunityType = parseOpportunityType(body.opportunityType);
   const outcome = parseOutcome(body.outcome);
-  const expectedCloseDate = parseOptionalDate(body.expectedCloseDate, 'expectedCloseDate');
+  const resolutionDate = parseOptionalDate(body.resolutionDate, 'resolutionDate');
   const closureReason = parseShortText(body.closureReason, 160);
-  assertOpportunityState({ stage, outcome, expectedCloseDate, closureReason });
+  assertOpportunityState({ stage, outcome, resolutionDate, closureReason });
 
   const initiativeId = optionalInitiativeId(ctx.db, body.initiativeId);
   const origin = parseOrigin(body.origin) || (initiativeId ? INTERNAL_INITIATIVE_ORIGIN : '');
@@ -1142,10 +1238,21 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
     closure_reason: closureReason,
     origin,
     probability: parseProbability(body.probability),
-    expected_close_date: expectedCloseDate,
+    resolution_date: resolutionDate,
     next_milestone: parseShortText(body.nextMilestone),
     next_milestone_date: parseOptionalDate(body.nextMilestoneDate, 'nextMilestoneDate'),
     next_action_date: parseOptionalDate(body.nextActionDate, 'nextActionDate'),
+    delivery_deadline: parseOptionalDate(body.deliveryDeadline, 'deliveryDeadline'),
+    start_date: parseOptionalDate(body.startDate, 'startDate'),
+    end_date: parseOptionalDate(body.endDate, 'endDate'),
+    ai_score: parseAiScoreField(body.aiScore),
+    reusable: parseReusable(body.reusable),
+    reusable_reason: parseReusableReason(body.reusableReason),
+    market_scope: parseOptionId(body.marketScope, opportunityMarketScopes, 'marketScope', 'Ámbito'),
+    contract_type: parseOptionId(body.contractType, opportunityContractTypes, 'contractType', 'Tipo de contrato'),
+    service_type: parseOptionId(body.serviceType, opportunityServiceTypes, 'serviceType', 'Tipo de servicio'),
+    added_value: parseOptionalMoney(body.addedValue, 'addedValue', 'Valor añadido'),
+    services_added_value: parseOptionalMoney(body.servicesAddedValue, 'servicesAddedValue', 'VA Servicios'),
     need: parseShortText(body.need, 2000),
     initiative_id: initiativeId,
     outcome,
@@ -1155,15 +1262,21 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
     assigned_user_id: parseAssignedUserId(ctx.db, body.assignedUserId),
   };
   assertOpportunityClient({ opportunityType, clientId: values.client_id });
+  // The reason only exists while "Reutilizable" is checked.
+  if (!values.reusable) values.reusable_reason = '';
+  assertOpportunityFields(values);
 
   const nowIso = ctx.now().toISOString();
   const insert = ctx.db.prepare(
     `INSERT INTO opportunities
        (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at,
         number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason,
-        origin, probability, expected_close_date, next_milestone, next_milestone_date, need,
-        initiative_id, outcome, pep, opportunity_type, registry_id, assigned_user_id, next_action_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        origin, probability, resolution_date, next_milestone, next_milestone_date, need,
+        initiative_id, outcome, pep, opportunity_type, registry_id, assigned_user_id, next_action_date,
+        delivery_deadline, start_date, end_date, ai_score, reusable, reusable_reason,
+        market_scope, contract_type, service_type, added_value, services_added_value)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -1192,7 +1305,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
           values.closure_reason,
           values.origin,
           values.probability,
-          values.expected_close_date,
+          values.resolution_date,
           values.next_milestone,
           values.next_milestone_date,
           values.need,
@@ -1203,6 +1316,17 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
           values.registry_id,
           values.assigned_user_id,
           values.next_action_date,
+          values.delivery_deadline,
+          values.start_date,
+          values.end_date,
+          values.ai_score,
+          values.reusable,
+          values.reusable_reason,
+          values.market_scope,
+          values.contract_type,
+          values.service_type,
+          values.added_value,
+          values.services_added_value,
         );
         replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
         replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
@@ -1272,10 +1396,14 @@ async function patchOpportunity(ctx, req, res, rawId) {
   const apiFields = {
     clientId: 'client_id', towerId: 'tower_id', ownerId: 'owner_id', bidManagerId: 'bid_manager_id',
     qaPercent: 'qa_percent', closureReason: 'closure_reason', origin: 'origin', probability: 'probability',
-    expectedCloseDate: 'expected_close_date', nextMilestone: 'next_milestone',
+    resolutionDate: 'resolution_date', nextMilestone: 'next_milestone',
     nextMilestoneDate: 'next_milestone_date', need: 'need', initiativeId: 'initiative_id',
     outcome: 'outcome', pep: 'pep', opportunityType: 'opportunity_type', registryId: 'registry_id',
     assignedUserId: 'assigned_user_id', nextActionDate: 'next_action_date',
+    deliveryDeadline: 'delivery_deadline', startDate: 'start_date', endDate: 'end_date', aiScore: 'ai_score',
+    reusable: 'reusable', reusableReason: 'reusable_reason', marketScope: 'market_scope',
+    contractType: 'contract_type', serviceType: 'service_type', addedValue: 'added_value',
+    servicesAddedValue: 'services_added_value',
   };
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
@@ -1315,9 +1443,26 @@ async function patchOpportunity(ctx, req, res, rawId) {
   assertOpportunityState({
     stage: finalStage,
     outcome: finalOutcome,
-    expectedCloseDate: changes.expected_close_date ?? existing.expected_close_date,
+    resolutionDate: changes.resolution_date ?? existing.resolution_date,
     closureReason: changes.closure_reason ?? existing.closure_reason,
   });
+
+  // Unchecking "Reutilizable" clears its reason; a reason sent for a non-reusable record is dropped.
+  const finalValue = (field) => (Object.hasOwn(changes, field) ? changes[field] : existing[field]);
+  if (!finalValue('reusable')) {
+    const reasonIndex = changedFields.indexOf('reusable_reason');
+    if (existing.reusable_reason) {
+      changes.reusable_reason = '';
+      if (reasonIndex === -1) changedFields.push('reusable_reason');
+    } else if (reasonIndex !== -1) {
+      delete changes.reusable_reason;
+      changedFields.splice(reasonIndex, 1);
+    }
+  }
+  // Only a change to a dated, scored, reusable or valued field re-checks those rules.
+  if (changedFields.some((field) => OPPORTUNITY_FIELD_RULE_COLUMNS.has(field))) {
+    assertOpportunityFields(Object.fromEntries([...OPPORTUNITY_FIELD_RULE_COLUMNS].map((field) => [field, finalValue(field)])));
+  }
 
   const hasTowerIds = hasAny(body, ['towerIds', 'tower_ids']);
   const hasLobIds = hasAny(body, ['lobIds', 'lob_ids']);

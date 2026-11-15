@@ -21,12 +21,12 @@ export function filterOpportunityRecords(active, archived, query, archivedView) 
 
 /**
  * Result-stage rules. Returns a Spanish error message, or '' when the form is valid.
- * Outcome and expected close date are required in `result`; non-won outcomes need a closure reason.
+ * Outcome and resolution date are required in `result`; non-won outcomes need a closure reason.
  */
-export function validateOpportunityResult({ stage, outcome, expectedCloseDate, closureReason }) {
+export function validateOpportunityResult({ stage, outcome, resolutionDate, closureReason }) {
   if (stage !== 'result') return '';
   if (!outcome) return 'Selecciona el resultado (Ganada, Perdida o Descartada).';
-  if (!expectedCloseDate) return 'La etapa Resultado requiere una fecha estimada de cierre.';
+  if (!resolutionDate) return 'La etapa Resultado requiere una fecha de resolución.';
   if (outcome !== 'won' && !String(closureReason || '').trim()) return 'Indica el motivo de pérdida o descarte.';
   return '';
 }

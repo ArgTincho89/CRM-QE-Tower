@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { after, before, describe, test } from 'node:test';
+import { migrateResolutionDate } from './db.js';
 import { startTestServer } from './testing.js';
 
 const OPPORTUNITY_PAYLOAD = {
@@ -444,7 +445,7 @@ describe('CRM API', () => {
     assert.equal(badQa.body.error.field, 'qaPercent');
     const noOutcome = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result' }, cookie: session });
     assert.equal(noOutcome.body.error.field, 'outcome');
-    const noReason = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'lost', expectedCloseDate: '2026-01-31' }, cookie: session });
+    const noReason = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'lost', resolutionDate: '2026-01-31' }, cookie: session });
     assert.equal(noReason.body.error.field, 'closureReason');
     const noInitiative = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, origin: 'Iniciativa interna' }, cookie: session });
     assert.equal(noInitiative.body.error.field, 'initiativeId');
@@ -646,7 +647,7 @@ describe('CRM API', () => {
         lobIds: [lobA.body.record.id, lobB.body.record.id],
         serviceIds: [serviceA.id, serviceB.id],
         probability: 40,
-        expectedCloseDate: '2026-12-31',
+        resolutionDate: '2026-12-31',
         nextMilestone: 'Enviar propuesta',
         nextMilestoneDate: '2026-11-30',
         need: 'Cubrir QA del core',
@@ -671,7 +672,7 @@ describe('CRM API', () => {
     assert.equal(opportunity.links.length, 2);
     assert.equal(opportunity.weightedAmount, 2000);
     assert.equal(opportunity.qaWeightedAmount, 5000);
-    assert.equal(opportunity.expectedCloseDate, '2026-12-31');
+    assert.equal(opportunity.resolutionDate, '2026-12-31');
     assert.equal(opportunity.nextMilestone, 'Enviar propuesta');
     assert.equal(opportunity.pep, 'PEP-42');
     assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM opportunity_towers WHERE opportunity_id = ?').get(opportunity.id).count, 2);
@@ -790,7 +791,7 @@ describe('CRM API', () => {
     assert.ok(typed.body.events.some((event) => event.action === 'updated' && event.detail.fields.includes('opportunity_type')));
   });
 
-  test('opportunity origin, outcome, close date, loss reason, and archived edits are validated', async () => {
+  test('opportunity origin, outcome, resolution date, loss reason, and archived edits are validated', async () => {
     const badOrigin = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, origin: 'Inventado' }, cookie: session });
     assert.equal(badOrigin.status, 400);
     const badProbability = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, probability: 140 }, cookie: session });
@@ -803,7 +804,7 @@ describe('CRM API', () => {
     const resultWithoutDate = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'won' }, cookie: session });
     assert.equal(resultWithoutDate.status, 400);
     const lostWithoutReason = await app.json('POST', '/api/opportunities', {
-      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'lost', expectedCloseDate: '2026-12-01' },
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'lost', resolutionDate: '2026-12-01' },
       cookie: session,
     });
     assert.equal(lostWithoutReason.status, 400);
@@ -811,7 +812,7 @@ describe('CRM API', () => {
     assert.equal(outcomeOutsideResult.status, 400);
 
     const won = await app.json('POST', '/api/opportunities', {
-      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'won', expectedCloseDate: '2026-12-01', pep: 'PEP-1' },
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'won', resolutionDate: '2026-12-01', pep: 'PEP-1' },
       cookie: session,
     });
     assert.equal(won.status, 201);
@@ -827,6 +828,161 @@ describe('CRM API', () => {
     const blockedEdit = await app.json('PATCH', `/api/opportunities/${won.body.opportunity.id}`, { body: { title: 'No permitido' }, cookie: session });
     assert.equal(blockedEdit.status, 409);
     assert.equal(blockedEdit.body.error.code, 'record_archived');
+  });
+
+  test('opportunity dates, classification, reuse and values persist and are edited', async () => {
+    const created = await app.json('POST', '/api/opportunities', {
+      body: {
+        ...OPPORTUNITY_PAYLOAD,
+        title: 'Campos ampliados',
+        amount: '100.000',
+        deliveryDeadline: '2026-05-10',
+        resolutionDate: '2026-06-30',
+        startDate: '2026-07-01',
+        endDate: '2026-12-31',
+        aiScore: '7,25',
+        reusable: true,
+        reusableReason: '  Plantilla de pruebas reutilizable  ',
+        marketScope: 'large',
+        contractType: 'am_sda_based',
+        serviceType: 'am_service',
+        addedValue: '40.000,50',
+        servicesAddedValue: 25000,
+      },
+      cookie: session,
+    });
+    assert.equal(created.status, 201);
+    const opportunity = created.body.opportunity;
+    assert.equal(opportunity.deliveryDeadline, '2026-05-10');
+    assert.equal(opportunity.resolutionDate, '2026-06-30');
+    assert.equal(opportunity.startDate, '2026-07-01');
+    assert.equal(opportunity.endDate, '2026-12-31');
+    assert.equal(opportunity.aiScore, 7.25);
+    assert.equal(opportunity.reusable, true);
+    assert.equal(opportunity.reusableReason, 'Plantilla de pruebas reutilizable');
+    assert.equal(opportunity.marketScope, 'large');
+    assert.equal(opportunity.contractType, 'am_sda_based');
+    assert.equal(opportunity.serviceType, 'am_service');
+    assert.equal(opportunity.addedValue, '40.000,50 €');
+    assert.equal(opportunity.servicesAddedValue, '25.000 €');
+    assert.equal(Object.hasOwn(opportunity, 'expectedCloseDate'), false);
+    const stored = app.db.prepare('SELECT ai_score, reusable, added_value, services_added_value, expected_close_date FROM opportunities WHERE id = ?').get(opportunity.id);
+    assert.deepEqual({ ...stored }, { ai_score: 7.25, reusable: 1, added_value: 40000.5, services_added_value: 25000, expected_close_date: '' });
+
+    // Defaults: everything optional, not reusable.
+    const plain = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Sin campos ampliados' }, cookie: session });
+    assert.equal(plain.status, 201);
+    assert.equal(plain.body.opportunity.aiScore, null);
+    assert.equal(plain.body.opportunity.reusable, false);
+    assert.equal(plain.body.opportunity.addedValue, '');
+    assert.equal(plain.body.opportunity.marketScope, '');
+
+    // Re-sending the same values (as the dialog does) changes nothing.
+    const { links, ...columns } = opportunity;
+    assert.deepEqual(links, []);
+    const resent = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, { body: columns, cookie: session });
+    assert.equal(resent.status, 200);
+    assert.deepEqual(resent.body.events, []);
+
+    const edited = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, {
+      body: { aiScore: 9.5, contractType: 'rfp', serviceType: '', endDate: '2027-01-31' },
+      cookie: session,
+    });
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body.opportunity.aiScore, 9.5);
+    assert.equal(edited.body.opportunity.contractType, 'rfp');
+    assert.equal(edited.body.opportunity.serviceType, '');
+    const fields = edited.body.events.find((event) => event.action === 'updated').detail.fields;
+    assert.deepEqual(fields, ['end_date', 'ai_score', 'contract_type', 'service_type']);
+
+    // Unchecking "Reutilizable" clears the reason, even when the client sends it.
+    const unchecked = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, { body: { reusable: false, reusableReason: 'Ignorado' }, cookie: session });
+    assert.equal(unchecked.status, 200);
+    assert.equal(unchecked.body.opportunity.reusable, false);
+    assert.equal(unchecked.body.opportunity.reusableReason, '');
+    const rechecked = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, { body: { reusable: true }, cookie: session });
+    assert.equal(rechecked.status, 400);
+    assert.equal(rechecked.body.error.field, 'reusableReason');
+
+    // Lowering the amount below the added value is rejected; clearing the values is allowed.
+    const lowered = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, { body: { amount: '30.000' }, cookie: session });
+    assert.equal(lowered.status, 400);
+    assert.equal(lowered.body.error.field, 'addedValue');
+    const cleared = await app.json('PATCH', `/api/opportunities/${opportunity.id}`, { body: { addedValue: '', servicesAddedValue: null, aiScore: '' }, cookie: session });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.opportunity.addedValue, '');
+    assert.equal(cleared.body.opportunity.servicesAddedValue, '');
+    assert.equal(cleared.body.opportunity.aiScore, null);
+  });
+
+  test('opportunity dates, scoring, reuse, selects and values are validated with their field', async () => {
+    const rejects = async (patch, field) => {
+      const response = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, amount: '1.000', ...patch }, cookie: session });
+      assert.equal(response.status, 400, JSON.stringify(patch));
+      assert.equal(response.body.error.field, field, JSON.stringify(patch));
+    };
+    await rejects({ startDate: '2026-05-02', endDate: '2026-05-01' }, 'endDate');
+    await rejects({ startDate: '2026-02-31' }, 'startDate');
+    await rejects({ deliveryDeadline: '10/05/2026' }, 'deliveryDeadline');
+    await rejects({ resolutionDate: '2026-13-01' }, 'resolutionDate');
+    await rejects({ aiScore: 0.99 }, 'aiScore');
+    await rejects({ aiScore: '10,01' }, 'aiScore');
+    await rejects({ aiScore: 'alto' }, 'aiScore');
+    await rejects({ reusable: true }, 'reusableReason');
+    await rejects({ reusable: true, reusableReason: 'x'.repeat(2001) }, 'reusableReason');
+    await rejects({ reusable: 'sí' }, 'reusable');
+    await rejects({ marketScope: 'enterprise' }, 'marketScope');
+    await rejects({ contractType: 'Licitación' }, 'contractType');
+    await rejects({ serviceType: 'support' }, 'serviceType');
+    await rejects({ addedValue: '1.000,01' }, 'addedValue');
+    await rejects({ addedValue: -1 }, 'addedValue');
+    await rejects({ addedValue: '500', servicesAddedValue: '600' }, 'servicesAddedValue');
+    await rejects({ servicesAddedValue: -5 }, 'servicesAddedValue');
+
+    const edges = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, amount: '1.000', aiScore: '1', startDate: '2026-05-01', endDate: '2026-05-01', addedValue: '1.000', servicesAddedValue: '1.000', reusable: false, reusableReason: 'Descartado' },
+      cookie: session,
+    });
+    assert.equal(edges.status, 201);
+    assert.equal(edges.body.opportunity.aiScore, 1);
+    assert.equal(edges.body.opportunity.reusableReason, '');
+    const top = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, aiScore: '10.0' }, cookie: session });
+    assert.equal(top.status, 201);
+    assert.equal(top.body.opportunity.aiScore, 10);
+  });
+
+  test('the Resultado stage requires the resolution date; the retired close date is ignored', async () => {
+    const closeDateOnly = await app.json('POST', '/api/opportunities', {
+      body: { ...OPPORTUNITY_PAYLOAD, stage: 'result', outcome: 'won', expectedCloseDate: '2026-03-01' },
+      cookie: session,
+    });
+    assert.equal(closeDateOnly.status, 400);
+    assert.equal(closeDateOnly.body.error.field, 'resolutionDate');
+
+    const open = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Pendiente de resolución' }, cookie: session });
+    const id = open.body.opportunity.id;
+    const moved = await app.json('PATCH', `/api/opportunities/${id}`, { body: { stage: 'result', outcome: 'won' }, cookie: session });
+    assert.equal(moved.status, 400);
+    assert.equal(moved.body.error.field, 'resolutionDate');
+    const resolved = await app.json('PATCH', `/api/opportunities/${id}`, { body: { stage: 'result', outcome: 'won', resolutionDate: '2026-03-01' }, cookie: session });
+    assert.equal(resolved.status, 200);
+    assert.equal(resolved.body.opportunity.resolutionDate, '2026-03-01');
+    const unresolved = await app.json('PATCH', `/api/opportunities/${id}`, { body: { resolutionDate: '' }, cookie: session });
+    assert.equal(unresolved.status, 400);
+    assert.equal(unresolved.body.error.field, 'resolutionDate');
+  });
+
+  test('the resolution date migration fills legacy close dates shown by the API', async () => {
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Fila heredada' }, cookie: session });
+    const kept = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Fila con resolución', resolutionDate: '2026-08-01' }, cookie: session });
+    app.db.prepare("UPDATE opportunities SET expected_close_date = '2026-07-15' WHERE id IN (?, ?)").run(created.body.opportunity.id, kept.body.opportunity.id);
+    app.db.prepare('DELETE FROM schema_meta WHERE key = ?').run('resolution_date_from_close_v1');
+    migrateResolutionDate(app.db);
+    migrateResolutionDate(app.db);
+    const list = await app.json('GET', '/api/opportunities', { cookie: session });
+    const byId = new Map(list.body.opportunities.map((item) => [item.id, item]));
+    assert.equal(byId.get(created.body.opportunity.id).resolutionDate, '2026-07-15');
+    assert.equal(byId.get(kept.body.opportunity.id).resolutionDate, '2026-08-01');
   });
 
   test('archiving hides opportunities from the active board and restore preserves data', async () => {
@@ -2435,7 +2591,7 @@ describe('monthly reports', () => {
     cookie = registered.cookie;
     const created = [
       await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Staffing marzo', amount: '1.000', qaPercent: 50 }, cookie }),
-      await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Ganada marzo', amount: '4.000', qaPercent: 25, stage: 'result', outcome: 'won', expectedCloseDate: '2026-03-20' }, cookie }),
+      await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Ganada marzo', amount: '4.000', qaPercent: 25, stage: 'result', outcome: 'won', resolutionDate: '2026-03-20' }, cookie }),
       await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa marzo' }, cookie }),
     ];
     assert.deepEqual(created.map((response) => response.status), [201, 201, 201]);

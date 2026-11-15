@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { clampActiveIndex, edgeEnabledIndex, filterOptions, isAssignable, reduceDropdownKey, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
-import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
+import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityContractTypes, opportunityMarketScopes, opportunityOrigins, opportunityOutcomes, opportunityServiceTypes, opportunityTypes, proposals, stages } from './data.js';
+import { REUSABLE_REASON_LIMIT, contractTypeLabel, formatAiScore, marketScopeLabel, parseAiScore, serviceTypeLabel } from './opportunityFields.js';
 import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
 import { MASTER_DATA_TABS, NAV_GROUPS, RESOURCE_PAGES, resolveNavigationTarget } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
@@ -12,7 +13,7 @@ import { computeWeightedAmount } from './pipelineSummary.js';
 import { ALL_YEARS, availableYears, computePipelineKpis } from './pipelineMetrics.js';
 import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePipelineYear, saveViewMode } from './preferences.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
-import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, OPEN_OUTCOME_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
+import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, MISSING_OPTION_FILTER, NOT_REUSABLE_FILTER, OPEN_OUTCOME_FILTER, REUSABLE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
 import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
@@ -487,10 +488,21 @@ function App() {
         closureReason: record.closureReason || '',
         origin: record.origin || '',
         probability: record.probability === '' || record.probability === null ? null : Number(record.probability),
-        expectedCloseDate: record.expectedCloseDate || '',
+        resolutionDate: record.resolutionDate || '',
         nextMilestone: record.nextMilestone || '',
         nextMilestoneDate: record.nextMilestoneDate || '',
         nextActionDate: record.nextActionDate || '',
+        deliveryDeadline: record.deliveryDeadline || '',
+        startDate: record.startDate || '',
+        endDate: record.endDate || '',
+        aiScore: record.aiScore ?? null,
+        reusable: Boolean(record.reusable),
+        reusableReason: record.reusable ? record.reusableReason || '' : '',
+        marketScope: record.marketScope || '',
+        contractType: record.contractType || '',
+        serviceType: record.serviceType || '',
+        addedValue: record.addedValue || '',
+        servicesAddedValue: record.servicesAddedValue || '',
         need: record.need || '',
         initiativeId: record.initiativeId || '',
         outcome: record.outcome || '',
@@ -1010,8 +1022,12 @@ function AdvancedFilters({ filters, people, users = [], services = [], currentSe
     {field('updatedFrom', 'Actualizado desde', 'date')}
     {field('updatedTo', 'Actualizado hasta', 'date')}
     {field('outcome', 'Resultado', 'text', [['all', 'Todos'], [OPEN_OUTCOME_FILTER, 'Sin resultado (abiertas)'], ...opportunityOutcomes.map((item) => [item.id, item.label])])}
-    {field('closeFrom', 'Cierre desde', 'date')}
-    {field('closeTo', 'Cierre hasta', 'date')}
+    {field('resolutionFrom', 'Resolución desde', 'date')}
+    {field('resolutionTo', 'Resolución hasta', 'date')}
+    {field('marketScope', 'Ámbito', 'text', [['all', 'Todos'], ...opportunityMarketScopes.map((item) => [item.id, item.label]), [MISSING_OPTION_FILTER, 'Sin ámbito']])}
+    {field('contractType', 'Tipo de contrato', 'text', [['all', 'Todos'], ...opportunityContractTypes.map((item) => [item.id, item.label]), [MISSING_OPTION_FILTER, 'Sin tipo de contrato']])}
+    {field('serviceType', 'Tipo de servicio', 'text', [['all', 'Todos'], ...opportunityServiceTypes.map((item) => [item.id, item.label]), [MISSING_OPTION_FILTER, 'Sin tipo de servicio']])}
+    {field('reusable', 'Reutilizable', 'text', [['all', 'Todas'], [REUSABLE_FILTER, 'Sí'], [NOT_REUSABLE_FILTER, 'No']])}
   </section>;
 }
 
@@ -1250,6 +1266,17 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
       { id: 'due', label: 'Próximo hito', type: 'date', value: (item) => item.due },
       { id: 'nextActionDate', label: 'Próxima acción', type: 'date', value: (item) => item.nextActionDate },
       { id: 'closureReason', label: 'Motivo de cierre', value: (item) => item.closureReason },
+      { id: 'deliveryDeadline', label: 'Fecha límite de entrega', type: 'date', value: (item) => item.deliveryDeadline },
+      { id: 'resolutionDate', label: 'Fecha resolución', type: 'date', value: (item) => item.resolutionDate },
+      { id: 'startDate', label: 'Fecha inicio', type: 'date', value: (item) => item.startDate },
+      { id: 'endDate', label: 'Fecha fin', type: 'date', value: (item) => item.endDate },
+      { id: 'marketScope', label: 'Ámbito', value: (item) => marketScopeLabel(item.marketScope) },
+      { id: 'contractType', label: 'Tipo de contrato', value: (item) => contractTypeLabel(item.contractType) },
+      { id: 'serviceType', label: 'Tipo de servicio', value: (item) => serviceTypeLabel(item.serviceType) },
+      { id: 'aiScore', label: 'Scoring IA', type: 'number', value: (item) => item.aiScore, render: (item) => formatAiScore(item.aiScore) },
+      { id: 'reusable', label: 'Reutilizable', value: (item) => (item.reusable ? 'Sí' : 'No') },
+      { id: 'addedValue', label: 'Valor añadido', type: 'amount', value: (item) => item.addedValue, render: (item) => item.addedValue, cellClassName: 'table-amount' },
+      { id: 'servicesAddedValue', label: 'VA Servicios', type: 'amount', value: (item) => item.servicesAddedValue, render: (item) => item.servicesAddedValue, cellClassName: 'table-amount' },
     ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />
     {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{filtersActive ? (archivedView ? 'No hay oportunidades archivadas que coincidan con los filtros.' : 'No hay oportunidades que coincidan con los filtros.') : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{filtersActive && <button className="button button-secondary" onClick={onClearFilters}>Limpiar filtros</button>}</div>}
     </div>}
@@ -1432,9 +1459,36 @@ function MultiSelect({ legend, hint, options, selected, onChange, disabled }) {
   </fieldset>;
 }
 
+/**
+ * Euro input with live thousands formatting ("125.000,50") that keeps the caret after the same
+ * digit while typing; trailing commas are dropped on blur.
+ */
+function MoneyInput({ value, onChange, placeholder, required = false, disabled, inputProps = {} }) {
+  const inputRef = useRef(null);
+  const handleChange = (event) => {
+    const input = event.target;
+    const caret = input.selectionStart ?? input.value.length;
+    const digitsBefore = input.value.slice(0, caret).replace(/[^0-9,]/g, '').length;
+    const formatted = formatAmountInput(input.value);
+    onChange(formatted, true);
+    window.requestAnimationFrame(() => {
+      const field = inputRef.current;
+      if (!field) return;
+      let position = 0;
+      let seen = 0;
+      while (position < formatted.length && seen < digitsBefore) {
+        if (/[0-9,]/.test(formatted[position])) seen += 1;
+        position += 1;
+      }
+      field.setSelectionRange(position, position);
+    });
+  };
+  const handleBlur = () => onChange(formatAmountInput(value.replace(/,+$/, '')), false);
+  return <span className="amount-field"><input ref={inputRef} value={value} onChange={handleChange} onBlur={handleBlur} inputMode="decimal" autoComplete="off" placeholder={placeholder} required={required} disabled={disabled} {...inputProps} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span>;
+}
+
 function OpportunityDialog({ record, users = [], clients, towers, services, currentServiceYear, lobs, people, initiatives, onQuickCreate, onClose, onSave, saving, saveError, historyRefresh, currentUserId = '', focusComments = false }) {
   const dialogRef = useRef(null);
-  const amountInputRef = useRef(null);
   const isEditing = Boolean(record.id);
   // Opened from an initiative's "Crear oportunidad": origin and source are fixed by the flow.
   const isConversion = !isEditing && Boolean(record.convertFromInitiativeId);
@@ -1445,8 +1499,11 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
     due: record.due || '', tags: record.tags || [], number: record.number || '',
     clientId: record.clientId || '', ownerId: record.ownerId || '', bidManagerId: record.bidManagerId || '', qaPercent: record.qaPercent ?? 0, closureReason: record.closureReason || '',
     origin: record.origin || '', probability: record.probability === null || record.probability === undefined ? '' : String(record.probability),
-    expectedCloseDate: record.expectedCloseDate || '', nextMilestone: record.nextMilestone || '', nextMilestoneDate: record.nextMilestoneDate || '',
+    resolutionDate: record.resolutionDate || '', nextMilestone: record.nextMilestone || '', nextMilestoneDate: record.nextMilestoneDate || '',
     nextActionDate: record.nextActionDate || '',
+    deliveryDeadline: record.deliveryDeadline || '', startDate: record.startDate || '', endDate: record.endDate || '',
+    aiScore: formatAiScore(record.aiScore), reusable: Boolean(record.reusable), reusableReason: record.reusableReason || '',
+    marketScope: record.marketScope || '', contractType: record.contractType || '', serviceType: record.serviceType || '',
     need: record.need || '', initiativeId: record.initiativeId || '', outcome: record.outcome || '', pep: record.pep || '',
     opportunityType: record.opportunityType || '',
     registryId: record.registryId || '',
@@ -1457,6 +1514,8 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
     links: toWorkspaceLinkForm(record.links),
   });
   const [amountText, setAmountText] = useState(() => formatAmountInput(record.amount || ''));
+  const [addedValueText, setAddedValueText] = useState(() => formatAmountInput(record.addedValue || ''));
+  const [servicesAddedValueText, setServicesAddedValueText] = useState(() => formatAmountInput(record.servicesAddedValue || ''));
   const [error, setError] = useState('');
   const fieldErrors = useFieldErrors();
 
@@ -1470,26 +1529,15 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
     fieldErrors.clear(field);
     setForm((current) => ({ ...current, [field]: value }));
   };
-  const handleAmountChange = (event) => {
-    fieldErrors.clear('amount');
-    const input = event.target;
-    const caret = input.selectionStart ?? input.value.length;
-    const digitsBefore = input.value.slice(0, caret).replace(/[^0-9,]/g, '').length;
-    const formatted = formatAmountInput(input.value);
-    setAmountText(formatted);
-    window.requestAnimationFrame(() => {
-      const field = amountInputRef.current;
-      if (!field) return;
-      let position = 0;
-      let seen = 0;
-      while (position < formatted.length && seen < digitsBefore) {
-        if (/[0-9,]/.test(formatted[position])) seen += 1;
-        position += 1;
-      }
-      field.setSelectionRange(position, position);
-    });
+  // Typing in a money input clears its error; the value-rule errors depend on all three.
+  const moneyChange = (field, setText) => (text, typed) => {
+    if (typed) {
+      fieldErrors.clear(field);
+      if (field !== 'servicesAddedValue') fieldErrors.clear('addedValue');
+      fieldErrors.clear('servicesAddedValue');
+    }
+    setText(text);
   };
-  const handleAmountBlur = () => setAmountText(formatAmountInput(amountText.replace(/,+$/, '')));
   const initiativeChoices = originInitiativeOptions(initiatives, form.initiativeId);
   // The list may only hold active initiatives; keep an archived current link selectable.
   if (record.initiativeId && form.initiativeId === record.initiativeId && !initiativeChoices.some((item) => item.id === record.initiativeId)) {
@@ -1505,8 +1553,9 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
     event.preventDefault();
     if (saving) return;
     setError('');
-    if (fieldErrors.show(validateOpportunityForm(form, { amountText, original: record }))) return;
+    if (fieldErrors.show(validateOpportunityForm(form, { amountText, addedValueText, servicesAddedValueText, original: record }))) return;
     const amount = parseAmount(amountText);
+    const optionalMoney = (text) => (/\d/.test(text) ? formatCurrency(parseAmount(text)) : '');
     const selectedTowers = towers.filter((item) => form.towerIds.includes(item.id));
     const milestone = form.nextMilestone.trim();
     const milestoneDate = form.nextMilestoneDate.trim();
@@ -1525,10 +1574,22 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
         bidManagerId: form.bidManagerId, qaPercent: Number(form.qaPercent), closureReason: form.closureReason.trim(),
         origin: form.origin,
         probability: probabilityValue === null || Number.isNaN(probabilityValue) ? null : probabilityValue,
-        expectedCloseDate: form.expectedCloseDate,
+        resolutionDate: form.resolutionDate,
         nextMilestone: milestone,
         nextMilestoneDate: milestoneDate,
         nextActionDate: form.nextActionDate,
+        deliveryDeadline: form.deliveryDeadline,
+        startDate: form.startDate,
+        endDate: form.endDate,
+        aiScore: parseAiScore(form.aiScore),
+        reusable: form.reusable,
+        // Unchecking "Reutilizable" clears its reason on save.
+        reusableReason: form.reusable ? form.reusableReason.trim() : '',
+        marketScope: form.marketScope,
+        contractType: form.contractType,
+        serviceType: form.serviceType,
+        addedValue: optionalMoney(addedValueText),
+        servicesAddedValue: optionalMoney(servicesAddedValueText),
         need: form.need.trim(),
         initiativeId: form.initiativeId,
         outcome: isResult ? form.outcome : '',
@@ -1558,23 +1619,37 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
         <label className="form-field">{opportunityNumberLabel(form.opportunityType)}<input value={form.number} onChange={(event) => update('number', event.target.value)} placeholder={form.opportunityType === 'staffing' ? 'Identificador del ticket' : 'Identificador externo'} disabled={saving} /></label>
         <FormField form={fieldErrors} field="registryId" label="ICRM"><input value={form.registryId} onChange={(event) => update('registryId', event.target.value)} placeholder="Referencia ICRM" maxLength="120" disabled={saving} {...fieldErrors.fieldProps('registryId')} /><span className="field-hint">Opcional. Referencia del registro en ICRM.</span></FormField>
         <FormField form={fieldErrors} field="clientId" label="Cliente / cuenta" required={clientRequired}><select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} aria-required={clientRequired ? 'true' : undefined} disabled={saving} {...fieldErrors.fieldProps('clientId')}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active || item.id === form.clientId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{form.opportunityType === 'staffing' && <span className="field-hint">Opcional en oportunidades de Staffing.</span>}<button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></FormField>
-        <FormField form={fieldErrors} field="amount" label="Importe estimado" required><span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} {...fieldErrors.fieldProps('amount')} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></FormField>
-        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => { ['expectedCloseDate', 'outcome', 'closureReason'].forEach(fieldErrors.clear); update('stage', event.target.value); }} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
+        <label className="form-field">Etapa<select value={form.stage} onChange={(event) => { ['resolutionDate', 'outcome', 'closureReason'].forEach(fieldErrors.clear); update('stage', event.target.value); }} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
         <label className="form-field">Origen<select value={form.origin} onChange={(event) => { fieldErrors.clear('initiativeId'); setForm((current) => applyOriginChange(current, event.target.value)); }} disabled={saving || isConversion}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
         {requiresOriginInitiative(form.origin) && <FormField form={fieldErrors} field="initiativeId" label="Iniciativa de origen" required><select value={form.initiativeId} onChange={(event) => update('initiativeId', event.target.value)} aria-required="true" disabled={saving || isConversion} {...fieldErrors.fieldProps('initiativeId')}><option value="">Selecciona una iniciativa</option>{initiativeChoices.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.title}{item.archivedAt ? ' (archivada)' : ''}</option>)}</select><span className="field-hint">{linkedInitiative ? `Vinculada a ${linkedInitiative.id} · ${linkedInitiative.title}. ` : ''}{isConversion ? 'Al guardar esta oportunidad, la iniciativa se marcará como Completada.' : 'Los ciclos de vida de la iniciativa y la oportunidad son independientes.'}</span></FormField>}
-        <FormField form={fieldErrors} field="probability" label="Probabilidad (%)"><input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} {...fieldErrors.fieldProps('probability')} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado (importe QE × probabilidad): ${formatCurrency(weightedPreview)}.`}</span></FormField>
-        <FormField form={fieldErrors} field="expectedCloseDate" label="Fecha estimada de cierre" required={isResult}><input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} aria-required={isResult ? 'true' : undefined} disabled={saving} {...fieldErrors.fieldProps('expectedCloseDate')} /></FormField>
-        <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
-        <label className="form-field">Fecha del próximo hito<input type="date" value={form.nextMilestoneDate} onChange={(event) => update('nextMilestoneDate', event.target.value)} disabled={saving} /></label>
-        <FormField form={fieldErrors} field="nextActionDate" label="Fecha de próxima acción"><input type="date" value={form.nextActionDate} onChange={(event) => update('nextActionDate', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('nextActionDate')} /><span className="field-hint">Opcional. Independiente del próximo hito.</span></FormField>
         <label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)} disabled={saving}><option value="">Sin responsable</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))}>+ Crear responsable</button></label>
         <AssigneeField value={form.assignedUserId} users={users} onChange={(value) => update('assignedUserId', value)} disabled={saving} />
         <label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)} disabled={saving}><option value="">Sin asignar</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))}>+ Crear responsable</button></label>
-        <FormField form={fieldErrors} field="qaPercent" label="Participación del equipo QA (%)"><input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('qaPercent')} /><span className="field-hint">Alimenta el KPI Pipeline QE.</span></FormField>
         {isResult && <FormField form={fieldErrors} field="outcome" label="Resultado" required><select value={form.outcome} onChange={(event) => update('outcome', event.target.value)} aria-required="true" disabled={saving} {...fieldErrors.fieldProps('outcome')}><option value="">Selecciona un resultado</option>{opportunityOutcomes.map((outcome) => <option key={outcome.id} value={outcome.id}>{outcome.label}</option>)}</select></FormField>}
         {isResult && form.outcome !== 'won' && <FormField form={fieldErrors} field="closureReason" label="Motivo de cierre" required className="wide"><input value={form.closureReason} onChange={(event) => update('closureReason', event.target.value)} maxLength="160" aria-required="true" disabled={saving} {...fieldErrors.fieldProps('closureReason')} /></FormField>}
         {form.outcome === 'won' && <label className="form-field wide">PEP<input value={form.pep} onChange={(event) => update('pep', event.target.value)} placeholder="Identificador PEP" maxLength="160" disabled={saving} /><span className="field-hint">Obligatorio para la etapa Resultado con resultado Ganada. Se conserva si cambia el resultado.</span></label>}
         <label className="form-field wide">Descripción / necesidad<textarea rows="3" value={form.need} onChange={(event) => update('need', event.target.value)} placeholder="Contexto, alcance y necesidad del cliente" maxLength="2000" disabled={saving} /></label>
+        <h3 className="form-section-title">Fechas</h3>
+        <FormField form={fieldErrors} field="deliveryDeadline" label="Fecha límite de entrega"><input type="date" value={form.deliveryDeadline} onChange={(event) => update('deliveryDeadline', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('deliveryDeadline')} /></FormField>
+        <FormField form={fieldErrors} field="resolutionDate" label="Fecha resolución" required={isResult}><input type="date" value={form.resolutionDate} onChange={(event) => update('resolutionDate', event.target.value)} aria-required={isResult ? 'true' : undefined} disabled={saving} {...fieldErrors.fieldProps('resolutionDate')} /></FormField>
+        <FormField form={fieldErrors} field="startDate" label="Fecha inicio"><input type="date" value={form.startDate} onChange={(event) => { fieldErrors.clear('endDate'); update('startDate', event.target.value); }} disabled={saving} {...fieldErrors.fieldProps('startDate')} /></FormField>
+        <FormField form={fieldErrors} field="endDate" label="Fecha fin"><input type="date" value={form.endDate} min={form.startDate || undefined} onChange={(event) => update('endDate', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('endDate')} /></FormField>
+        <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
+        <label className="form-field">Fecha próximo hito<input type="date" value={form.nextMilestoneDate} onChange={(event) => update('nextMilestoneDate', event.target.value)} disabled={saving} /></label>
+        <FormField form={fieldErrors} field="nextActionDate" label="Fecha de próxima acción"><input type="date" value={form.nextActionDate} onChange={(event) => update('nextActionDate', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('nextActionDate')} /><span className="field-hint">Opcional. Independiente del próximo hito.</span></FormField>
+        <h3 className="form-section-title">Clasificación comercial</h3>
+        <FormField form={fieldErrors} field="marketScope" label="Ámbito"><select value={form.marketScope} onChange={(event) => update('marketScope', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('marketScope')}><option value="">Sin definir</option>{opportunityMarketScopes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></FormField>
+        <FormField form={fieldErrors} field="contractType" label="Tipo de contrato"><select value={form.contractType} onChange={(event) => update('contractType', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('contractType')}><option value="">Sin definir</option>{opportunityContractTypes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></FormField>
+        <FormField form={fieldErrors} field="serviceType" label="Tipo de servicio"><select value={form.serviceType} onChange={(event) => update('serviceType', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('serviceType')}><option value="">Sin definir</option>{opportunityServiceTypes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></FormField>
+        <FormField form={fieldErrors} field="aiScore" label="Scoring calificación IA"><input value={form.aiScore} onChange={(event) => update('aiScore', event.target.value)} inputMode="decimal" autoComplete="off" placeholder="Ej. 7,5" disabled={saving} {...fieldErrors.fieldProps('aiScore')} /><span className="field-hint">Opcional. De 1 a 10, admite decimales.</span></FormField>
+        <label className="form-field wide checkbox-field"><span><input type="checkbox" checked={form.reusable} onChange={(event) => { fieldErrors.clear('reusableReason'); update('reusable', event.target.checked); }} disabled={saving} /> Reutilizable</span></label>
+        {form.reusable && <FormField form={fieldErrors} field="reusableReason" label="Motivo" required className="wide"><textarea rows="3" value={form.reusableReason} onChange={(event) => update('reusableReason', event.target.value)} placeholder="Qué se puede reutilizar y en qué contexto" maxLength={REUSABLE_REASON_LIMIT} aria-required="true" disabled={saving} {...fieldErrors.fieldProps('reusableReason')} /></FormField>}
+        <h3 className="form-section-title">Importes</h3>
+        <FormField form={fieldErrors} field="amount" label="Importe estimado" required><MoneyInput value={amountText} onChange={moneyChange('amount', setAmountText)} placeholder="125.000,00" required disabled={saving} inputProps={fieldErrors.fieldProps('amount')} /><span className="field-hint">Importe estimado de la oportunidad en euros sin IVA.</span></FormField>
+        <FormField form={fieldErrors} field="addedValue" label="Valor añadido"><MoneyInput value={addedValueText} onChange={moneyChange('addedValue', setAddedValueText)} placeholder="Sin valor añadido" disabled={saving} inputProps={fieldErrors.fieldProps('addedValue')} /><span className="field-hint">Valor aportado por SEIDOR: servicios profesionales más el margen de hardware, software y licencias. Nunca superior al importe.</span></FormField>
+        <FormField form={fieldErrors} field="servicesAddedValue" label="VA Servicios"><MoneyInput value={servicesAddedValueText} onChange={moneyChange('servicesAddedValue', setServicesAddedValueText)} placeholder="Sin VA Servicios" disabled={saving} inputProps={fieldErrors.fieldProps('servicesAddedValue')} /><span className="field-hint">Parte del valor aportado que corresponde a servicios profesionales excluido el coste de servicios subcontratados.</span></FormField>
+        <FormField form={fieldErrors} field="qaPercent" label="Participación del equipo QA (%)"><input type="number" min="0" max="100" value={form.qaPercent} onChange={(event) => update('qaPercent', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('qaPercent')} /><span className="field-hint">Alimenta el KPI Pipeline QE.</span></FormField>
+        <FormField form={fieldErrors} field="probability" label="Probabilidad (%)"><input type="number" min="0" max="100" step="1" value={form.probability} onChange={(event) => update('probability', event.target.value)} placeholder="Sin probabilidad" disabled={saving} {...fieldErrors.fieldProps('probability')} /><span className="field-hint">{weightedPreview === null ? 'Sin probabilidad no se calcula el importe ponderado.' : `Importe ponderado (importe QE × probabilidad): ${formatCurrency(weightedPreview)}.`}</span></FormField>
       </div>
       <MultiSelect legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
       <MultiSelect legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
@@ -1770,7 +1845,7 @@ function InitiativeDialog({ record, users = [], clients, services, lobs = [], to
         {onCreateOpportunity && <p className="field-hint">«Crear oportunidad» guarda antes los cambios de la iniciativa. La iniciativa pasará a Completada cuando se guarde la oportunidad; si cancelas, seguirá en su etapa actual.</p>}
         {generatedOpportunities.length === 0
           ? <p className="field-hint">Todavía no hay oportunidades vinculadas a esta iniciativa.</p>
-          : <ul className="generated-opportunity-list">{generatedOpportunities.map((item) => <li key={item.id} className={item.archived ? 'archived' : undefined}><span><strong>{item.id} · {item.title}</strong><small>{[stages.find((stage) => stage.id === item.stage)?.label || item.stage, item.owner || 'Sin responsable', item.expectedCloseDate ? `Cierre ${item.expectedCloseDate}` : 'Sin fecha de cierre', item.outcome, item.archived ? 'Archivada' : ''].filter(Boolean).join(' · ')}</small></span><b>{item.amount}</b></li>)}</ul>}
+          : <ul className="generated-opportunity-list">{generatedOpportunities.map((item) => <li key={item.id} className={item.archived ? 'archived' : undefined}><span><strong>{item.id} · {item.title}</strong><small>{[stages.find((stage) => stage.id === item.stage)?.label || item.stage, item.owner || 'Sin responsable', item.resolutionDate ? `Resolución ${item.resolutionDate}` : 'Sin fecha de resolución', item.outcome, item.archived ? 'Archivada' : ''].filter(Boolean).join(' · ')}</small></span><b>{item.amount}</b></li>)}</ul>}
       </section>}
       {record.id && <RecordActions type="initiatives" id={record.id} />}
       <RecordComments kind="initiatives" id={record.id || ''} users={users} currentUserId={currentUserId} focus={focusComments} />
