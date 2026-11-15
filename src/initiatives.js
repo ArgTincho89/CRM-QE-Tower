@@ -152,6 +152,46 @@ export function buildOpportunityPrefill(initiative, clients = [], services = [],
   };
 }
 
+/** Days ahead (inclusive) in which a next action counts as due soon. */
+export const INITIATIVE_SOON_DAYS = 5;
+
+/**
+ * Whole calendar days from `today` (local date) to an ISO `YYYY-MM-DD` date: 0 today, negative
+ * when past. Both sides use local calendar dates, never UTC instants, so the result does not
+ * shift around midnight. Returns null for an empty or malformed date.
+ */
+export function daysUntilDate(isoDate, today = new Date()) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || '').trim());
+  if (!match) return null;
+  const target = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const base = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.round((target - base) / 86400000);
+}
+
+/**
+ * Kanban tint of an initiative by its next action date: 'due' (today or past), 'soon' (1 to 5
+ * days ahead) or 'none' (no date, further ahead, completed or archived).
+ */
+export function initiativeUrgency(initiative, today = new Date()) {
+  if (!initiative || initiative.archivedAt || isInitiativeCompleted(initiative)) return 'none';
+  const days = daysUntilDate(initiative.nextActionDate, today);
+  if (days === null) return 'none';
+  if (days <= 0) return 'due';
+  return days <= INITIATIVE_SOON_DAYS ? 'soon' : 'none';
+}
+
+/** Urgency plus the Spanish text cue that accompanies the color (empty label when there is none). */
+export function describeInitiativeUrgency(initiative, today = new Date()) {
+  const level = initiativeUrgency(initiative, today);
+  if (level === 'none') return { level, label: '' };
+  const days = daysUntilDate(initiative.nextActionDate, today);
+  if (level === 'due') {
+    if (days === 0) return { level, label: 'Vence hoy' };
+    return { level, label: days === -1 ? 'Vencida hace 1 día' : `Vencida hace ${-days} días` };
+  }
+  return { level, label: days === 1 ? 'Vence mañana' : `Vence en ${days} días` };
+}
+
 export function removeInitiative(list, id) {
   return list.filter((item) => item.id !== id);
 }

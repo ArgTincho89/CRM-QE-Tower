@@ -56,19 +56,36 @@ const EDITABLE_FIELDS = [
   'client_id', 'tower_id', 'owner_id', 'bid_manager_id', 'qa_percent', 'closure_reason',
   'origin', 'probability', 'expected_close_date', 'next_milestone', 'next_milestone_date',
   'need', 'initiative_id', 'outcome', 'pep', 'opportunity_type', 'registry_id', 'assigned_user_id',
+  'next_action_date',
 ];
 
 /** Optional external registry reference shared by opportunities and framework agreements. */
 const REGISTRY_ID_LIMIT = 120;
+/** UI label of `registry_id`: opportunities call it "ICRM", framework agreements keep "ID registro". */
+const OPPORTUNITY_REGISTRY_LABEL = 'ICRM';
 
-function parseRegistryId(value) {
+function parseRegistryId(value, label = 'ID registro') {
   if (value === undefined || value === null) return '';
-  if (typeof value !== 'string') throw validationError('El campo "ID registro" debe ser texto.');
+  if (typeof value !== 'string') throw validationError(`El campo "${label}" debe ser texto.`, 'registryId');
   const trimmed = value.trim();
   if (trimmed.length > REGISTRY_ID_LIMIT) {
-    throw validationError(`El campo "ID registro" no puede superar los ${REGISTRY_ID_LIMIT} caracteres.`);
+    throw validationError(`El campo "${label}" no puede superar los ${REGISTRY_ID_LIMIT} caracteres.`, 'registryId');
   }
   return trimmed;
+}
+
+/** Opportunity type whose client is optional: staffing requests may arrive before a client exists. */
+const CLIENT_OPTIONAL_OPPORTUNITY_TYPE = 'staffing';
+
+/**
+ * Pliego and Oferta opportunities need a client; Staffing does not. Legacy rows without a type
+ * are not checked, so they stay editable until someone picks a type.
+ */
+function assertOpportunityClient({ opportunityType, clientId }) {
+  if (!opportunityType || opportunityType === CLIENT_OPTIONAL_OPPORTUNITY_TYPE) return;
+  if (!clientId) {
+    throw validationError('Selecciona el cliente: es obligatorio salvo en oportunidades de Staffing.', 'clientId');
+  }
 }
 
 const MAX_TAGS = 20;
@@ -145,7 +162,7 @@ function deleteRecord(ctx, req, res, type, rawId) {
         );
       }
       deleteOwnedRecordRows(ctx.db, 'initiative', id);
-      ctx.db.prepare('DELETE FROM initiative_services WHERE initiative_id = ?').run(id);
+      for (const table of INITIATIVE_JOIN_TABLES) ctx.db.prepare(`DELETE FROM ${table} WHERE initiative_id = ?`).run(id);
       ctx.db.prepare('DELETE FROM initiatives WHERE id = ?').run(id);
       return;
     }
@@ -159,6 +176,9 @@ function deleteRecord(ctx, req, res, type, rawId) {
   });
   sendJson(res, 200, { deleted: true });
 }
+
+/** Join tables owned by an initiative; deleting the initiative deletes its rows. */
+const INITIATIVE_JOIN_TABLES = ['initiative_services', 'initiative_lobs', 'initiative_towers'];
 
 /** Relations that block deleting a master record. */
 const MASTER_DELETE_RULES = {
@@ -181,7 +201,12 @@ const MASTER_DELETE_RULES = {
         'oportunidad',
         'oportunidades',
       ],
-      ['SELECT COUNT(*) AS count FROM initiatives WHERE tower_id = $id', 'iniciativa', 'iniciativas'],
+      [
+        `SELECT COUNT(*) AS count FROM initiatives
+          WHERE tower_id = $id OR id IN (SELECT initiative_id FROM initiative_towers WHERE tower_id = $id)`,
+        'iniciativa',
+        'iniciativas',
+      ],
     ],
   },
   lobs: {
@@ -190,6 +215,7 @@ const MASTER_DELETE_RULES = {
     checks: [
       ['SELECT COUNT(*) AS count FROM towers WHERE lob_id = $id', 'tower', 'towers'],
       ['SELECT COUNT(*) AS count FROM opportunity_lobs WHERE lob_id = $id', 'oportunidad', 'oportunidades'],
+      ['SELECT COUNT(*) AS count FROM initiative_lobs WHERE lob_id = $id', 'iniciativa', 'iniciativas'],
     ],
   },
   services: {
@@ -332,6 +358,7 @@ function mapOpportunity(row, db) {
     expectedCloseDate: row.expected_close_date || '',
     nextMilestone: row.next_milestone || '',
     nextMilestoneDate: row.next_milestone_date || '',
+    nextActionDate: row.next_action_date || '',
     need: row.need || '',
     initiativeId: row.initiative_id || '',
     initiativeTitle: initiative?.title || '',
@@ -389,6 +416,8 @@ function mapMaster(row, kind) {
 
 function mapInitiative(row, db) {
   const services = db ? loadJoinRows(db, 'initiative_services', 'services', 'initiative_id', 'service_id', row.id) : [];
+  const lobs = db ? loadJoinRows(db, 'initiative_lobs', 'lobs', 'initiative_id', 'lob_id', row.id) : [];
+  const towers = db ? loadJoinRows(db, 'initiative_towers', 'towers', 'initiative_id', 'tower_id', row.id) : [];
   const links = db ? loadWorkspaceLinks(db, 'initiative', row.id) : [];
   const opportunities = db
     ? db
@@ -424,6 +453,10 @@ function mapInitiative(row, db) {
     assignedUserName: row.assigned_user_name || '',
     stage: row.stage,
     services,
+    lobs,
+    towers,
+    lobIds: lobs.map((item) => item.id),
+    towerIds: towers.map((item) => item.id),
     links,
     opportunities,
     linkedOpportunityCount: opportunities.length,
@@ -770,9 +803,9 @@ function normalizeFieldValue(db, field, value) {
   if (field === 'origin') return parseOrigin(value);
   if (field === 'outcome') return parseOutcome(value);
   if (field === 'opportunity_type') return parseOpportunityType(value);
-  if (field === 'registry_id') return parseRegistryId(value);
+  if (field === 'registry_id') return parseRegistryId(value, OPPORTUNITY_REGISTRY_LABEL);
   if (field === 'probability') return parseProbability(value);
-  if (field === 'expected_close_date' || field === 'next_milestone_date') return parseOptionalDate(value, field);
+  if (field === 'expected_close_date' || field === 'next_milestone_date' || field === 'next_action_date') return parseOptionalDate(value, field);
   if (field === 'next_milestone' || field === 'need' || field === 'pep') return parseShortText(value);
   if (field === 'initiative_id') return optionalInitiativeId(db, value);
   if (field === 'assigned_user_id') return parseAssignedUserId(db, value);
@@ -1104,14 +1137,16 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
     expected_close_date: expectedCloseDate,
     next_milestone: parseShortText(body.nextMilestone),
     next_milestone_date: parseOptionalDate(body.nextMilestoneDate, 'nextMilestoneDate'),
+    next_action_date: parseOptionalDate(body.nextActionDate, 'nextActionDate'),
     need: parseShortText(body.need, 2000),
     initiative_id: initiativeId,
     outcome,
     pep: parseShortText(body.pep),
     opportunity_type: opportunityType,
-    registry_id: parseRegistryId(body.registryId),
+    registry_id: parseRegistryId(body.registryId, OPPORTUNITY_REGISTRY_LABEL),
     assigned_user_id: parseAssignedUserId(ctx.db, body.assignedUserId),
   };
+  assertOpportunityClient({ opportunityType, clientId: values.client_id });
 
   const nowIso = ctx.now().toISOString();
   const insert = ctx.db.prepare(
@@ -1119,8 +1154,8 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
        (id, title, account, amount, stage, tower, owner, due, tags, created_at, updated_at,
         number, client_id, tower_id, owner_id, bid_manager_id, qa_percent, closure_reason,
         origin, probability, expected_close_date, next_milestone, next_milestone_date, need,
-        initiative_id, outcome, pep, opportunity_type, registry_id, assigned_user_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        initiative_id, outcome, pep, opportunity_type, registry_id, assigned_user_id, next_action_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   let createdId;
@@ -1159,6 +1194,7 @@ async function createOpportunity(ctx, req, res, rawSourceInitiativeId = null) {
           values.opportunity_type,
           values.registry_id,
           values.assigned_user_id,
+          values.next_action_date,
         );
         replaceJoinRows(ctx.db, 'opportunity_towers', 'opportunity_id', id, 'tower_id', towerIds);
         replaceJoinRows(ctx.db, 'opportunity_lobs', 'opportunity_id', id, 'lob_id', lobIds);
@@ -1231,7 +1267,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
     expectedCloseDate: 'expected_close_date', nextMilestone: 'next_milestone',
     nextMilestoneDate: 'next_milestone_date', need: 'need', initiativeId: 'initiative_id',
     outcome: 'outcome', pep: 'pep', opportunityType: 'opportunity_type', registryId: 'registry_id',
-    assignedUserId: 'assigned_user_id',
+    assignedUserId: 'assigned_user_id', nextActionDate: 'next_action_date',
   };
   for (const apiField of EDITABLE_FIELDS.map((field) => Object.keys(apiFields).find((key) => apiFields[key] === field) || field)) {
     if (!Object.prototype.hasOwnProperty.call(body, apiField)) continue;
@@ -1250,6 +1286,14 @@ async function patchOpportunity(ctx, req, res, rawId) {
       changes.origin ?? existing.origin,
       Object.hasOwn(changes, 'initiative_id') ? changes.initiative_id : existing.initiative_id,
     );
+  }
+
+  // Only a change to type or client triggers the rule, so untouched legacy rows stay editable.
+  if (changedFields.includes('opportunity_type') || changedFields.includes('client_id')) {
+    assertOpportunityClient({
+      opportunityType: changes.opportunity_type ?? existing.opportunity_type,
+      clientId: Object.hasOwn(changes, 'client_id') ? changes.client_id : existing.client_id,
+    });
   }
 
   // Leaving the Resultado stage clears the outcome; a result requires one.
@@ -1532,12 +1576,13 @@ function getMasterRow(db, kind, id) {
   return db.prepare(`SELECT * FROM ${MASTER_CONFIG[kind].table} WHERE id = ?`).get(id);
 }
 
-/** LoB deactivation is blocked while a Tower or Opportunity still references it. */
+/** LoB deactivation is blocked while a Tower, Opportunity or Initiative still references it. */
 function assertLobUnreferenced(db, id) {
   const tower = db.prepare('SELECT id FROM towers WHERE lob_id = ? LIMIT 1').get(id);
   const opportunity = db.prepare('SELECT opportunity_id FROM opportunity_lobs WHERE lob_id = ? LIMIT 1').get(id);
-  if (tower || opportunity) {
-    throw new HttpError(409, 'lob_in_use', 'No se puede desactivar esta LoB porque está vinculada a towers u oportunidades.');
+  const initiative = db.prepare('SELECT initiative_id FROM initiative_lobs WHERE lob_id = ? LIMIT 1').get(id);
+  if (tower || opportunity || initiative) {
+    throw new HttpError(409, 'lob_in_use', 'No se puede desactivar esta LoB porque está vinculada a towers, oportunidades o iniciativas.');
   }
 }
 
@@ -1670,6 +1715,12 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
   const links = parseWorkspaceLinks(body.links);
   const hasServiceIds = Object.hasOwn(body, 'serviceIds') || Object.hasOwn(body, 'service_ids');
   const hasLinks = Object.hasOwn(body, 'links');
+  const hasLobIds = hasAny(body, ['lobIds', 'lob_ids']);
+  const hasTowerIds = hasAny(body, ['towerIds', 'tower_ids']);
+  const lobIds = readRelationIds(body, 'lobIds', 'lob_ids', 'LoBs');
+  const towerIds = readRelationIds(body, 'towerIds', 'tower_ids', 'towers');
+  assertRecordsExist(ctx.db, 'lobs', lobIds, 'LoBs');
+  assertRecordsExist(ctx.db, 'towers', towerIds, 'towers');
   const currentServiceIds = rawId === null ? [] : linkedServiceIds(ctx.db, 'initiative_services', 'initiative_id', decodeId(rawId));
   assertAssignableServices(ctx, serviceIds, currentServiceIds);
   let id;
@@ -1695,6 +1746,8 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
           const nextId = nextInitiativeId(ctx.db);
           insert.run(nextId, ...Object.values(fields), now, now);
           replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', nextId, 'service_id', serviceIds);
+          replaceJoinRows(ctx.db, 'initiative_lobs', 'initiative_id', nextId, 'lob_id', lobIds);
+          replaceJoinRows(ctx.db, 'initiative_towers', 'initiative_id', nextId, 'tower_id', towerIds);
           replaceWorkspaceLinks(ctx.db, 'initiative', nextId, links, user, now);
           appendEntityEvent(ctx.db, { type: 'initiative', id: nextId, user, action: 'created', now });
           notifyAssignment(ctx.db, { recipientId: fields.assigned_user_id, actor: user, entityType: 'initiative', entityId: nextId, entityTitle: fields.title, now });
@@ -1744,14 +1797,24 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
         ctx.db.prepare(`UPDATE initiatives SET ${assignments}, updated_at = ? WHERE id = ?`).run(...Object.values(fields), now, id);
       }
       if (hasServiceIds) replaceJoinRows(ctx.db, 'initiative_services', 'initiative_id', id, 'service_id', serviceIds);
+      if (hasLobIds) replaceJoinRows(ctx.db, 'initiative_lobs', 'initiative_id', id, 'lob_id', lobIds);
+      if (hasTowerIds) replaceJoinRows(ctx.db, 'initiative_towers', 'initiative_id', id, 'tower_id', towerIds);
       if (hasLinks) replaceWorkspaceLinks(ctx.db, 'initiative', id, links, user, now);
-      if (changedFields.length > 0 || hasServiceIds || hasLinks) {
+      if (changedFields.length > 0 || hasServiceIds || hasLobIds || hasTowerIds || hasLinks) {
         appendEntityEvent(ctx.db, {
           type: 'initiative',
           id,
           user,
           action: 'updated',
-          detail: { fields: [...changedFields, ...(hasServiceIds ? ['services'] : []), ...(hasLinks ? ['links'] : [])] },
+          detail: {
+            fields: [
+              ...changedFields,
+              ...(hasServiceIds ? ['services'] : []),
+              ...(hasLobIds ? ['lobs'] : []),
+              ...(hasTowerIds ? ['towers'] : []),
+              ...(hasLinks ? ['links'] : []),
+            ],
+          },
           now,
         });
       }

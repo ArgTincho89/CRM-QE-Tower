@@ -3,7 +3,7 @@ import test from 'node:test';
 import { AGREEMENT_FORM_FIELDS, MASTER_FORM_FIELDS, OPPORTUNITY_FORM_FIELDS, clearFieldError, fieldErrorId, hasFieldErrors, mapServerFieldError, validateAgreementForm, validateInitiativeForm, validateMasterForm, validateOpportunityForm, validateServiceYearForm } from './formValidation.js';
 
 const validOpportunity = {
-  title: 'Modernización', opportunityType: 'offer', stage: 'prospecting', qaPercent: 30, probability: '',
+  title: 'Modernización', opportunityType: 'offer', clientId: 'c1', stage: 'prospecting', qaPercent: 30, probability: '',
   origin: '', initiativeId: '', outcome: '', expectedCloseDate: '', closureReason: '',
 };
 
@@ -18,6 +18,20 @@ test('opportunity form reports every missing required field at once', () => {
   assert.equal(errors.title, 'Completa el nombre de la oportunidad.');
   assert.match(errors.opportunityType, /tipo de oportunidad/);
   assert.equal(errors.amount, 'Indica el importe estimado.');
+});
+
+test('opportunity form requires a client for Pliego and Oferta but not for Staffing', () => {
+  for (const opportunityType of ['offer', 'tender']) {
+    const errors = validateOpportunityForm({ ...validOpportunity, opportunityType, clientId: '' }, { amountText: '10' });
+    assert.deepEqual(Object.keys(errors), ['clientId']);
+    assert.match(errors.clientId, /cliente/);
+  }
+  assert.deepEqual(validateOpportunityForm({ ...validOpportunity, opportunityType: 'staffing', clientId: '' }, { amountText: '10' }), {});
+  // Untouched legacy records without a client stay editable; switching their type does not.
+  const legacy = { id: 'OP-1', opportunityType: 'offer', clientId: '' };
+  assert.deepEqual(validateOpportunityForm({ ...validOpportunity, clientId: '' }, { amountText: '10', original: legacy }), {});
+  const fromStaffing = { id: 'OP-2', opportunityType: 'staffing', clientId: '' };
+  assert.ok(validateOpportunityForm({ ...validOpportunity, clientId: '' }, { amountText: '10', original: fromStaffing }).clientId);
 });
 
 test('opportunity form validates QA and probability ranges', () => {
@@ -80,6 +94,8 @@ test('hasFieldErrors and clearFieldError manage the error map', () => {
 test('mapServerFieldError maps API field errors that belong to the form', () => {
   assert.deepEqual(mapServerFieldError({ field: 'title', message: 'El campo "title" no puede estar vacío.' }, OPPORTUNITY_FORM_FIELDS), { title: 'El campo "title" no puede estar vacío.' });
   assert.deepEqual(mapServerFieldError({ field: 'expected_close_date', message: 'Fecha no válida.' }, OPPORTUNITY_FORM_FIELDS), { expectedCloseDate: 'Fecha no válida.' });
+  assert.deepEqual(mapServerFieldError({ field: 'clientId', message: 'Selecciona el cliente.' }, OPPORTUNITY_FORM_FIELDS), { clientId: 'Selecciona el cliente.' });
+  assert.deepEqual(mapServerFieldError({ field: 'next_action_date', message: 'Fecha no válida.' }, OPPORTUNITY_FORM_FIELDS), { nextActionDate: 'Fecha no válida.' });
   assert.deepEqual(mapServerFieldError({ field: 'responsibleId', message: 'Selecciona un responsable para la tower.' }, MASTER_FORM_FIELDS), { responsibleId: 'Selecciona un responsable para la tower.' });
   assert.deepEqual(mapServerFieldError({ field: 'amount', message: '' }, AGREEMENT_FORM_FIELDS), { amount: 'Revisa este campo.' });
 });

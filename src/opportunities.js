@@ -10,7 +10,7 @@ export function describeOpportunityOutcome(value) {
 
 /** Searchable text for the opportunity management table; archived view also searches the archiver. */
 export function matchesOpportunityQuery(item, query, archivedView = false) {
-  const parts = [item.id, item.number, item.registryId, item.title, item.account, item.tower, item.owner, item.bidManager, item.due, item.closureReason];
+  const parts = [item.id, item.number, item.registryId, item.title, opportunityClientLabel(item), item.tower, item.owner, item.bidManager, item.due, item.closureReason];
   if (archivedView) parts.push(item.archivedByName);
   return parts.join(' ').toLowerCase().includes(String(query || '').trim().toLowerCase());
 }
@@ -48,6 +48,38 @@ export function validateOpportunityType(value) {
   return opportunityTypes.some((item) => item.id === value)
     ? ''
     : 'Selecciona el tipo de oportunidad (Pliego, Oferta o Staffing).';
+}
+
+/** Staffing requests may arrive before a client exists: their client is optional. */
+export const STAFFING_OPPORTUNITY_TYPE = 'staffing';
+
+/** Shown wherever an opportunity has no client (staffing records, legacy rows). */
+export const NO_CLIENT_LABEL = 'Sin cliente';
+
+/** Mirrors the API: Pliego and Oferta need a client; Staffing and a missing type do not. */
+export function isClientRequired(opportunityType) {
+  return Boolean(opportunityType) && opportunityType !== STAFFING_OPPORTUNITY_TYPE;
+}
+
+/** Form label of the `number` field: staffing requests carry a ticket number. */
+export function opportunityNumberLabel(opportunityType) {
+  return opportunityType === STAFFING_OPPORTUNITY_TYPE ? 'Número de ticket' : 'Número de oportunidad';
+}
+
+/** Client display name, or "Sin cliente" when the opportunity has none. */
+export function opportunityClientLabel(item) {
+  return String(item?.account || '').trim() || NO_CLIENT_LABEL;
+}
+
+/**
+ * Mirrors the API rule: the client is checked only when the type or the client is set or
+ * changed, so untouched legacy records without a client stay editable. Returns a Spanish error
+ * message, or '' when valid.
+ */
+export function validateOpportunityClient(form, original = {}) {
+  if (!isClientRequired(form.opportunityType) || form.clientId) return '';
+  const untouchedLegacy = Boolean(original.id) && original.opportunityType === form.opportunityType && !original.clientId;
+  return untouchedLegacy ? '' : 'Selecciona el cliente: es obligatorio salvo en oportunidades de Staffing.';
 }
 
 export const INTERNAL_INITIATIVE_ORIGIN = 'Iniciativa interna';

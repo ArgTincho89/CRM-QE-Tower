@@ -12,7 +12,8 @@ const OPPORTUNITY_PAYLOAD = {
   owner: 'Lucía Martín',
   due: '12 jun',
   tags: ['Cross-selling', 'Alta prioridad'],
-  opportunityType: 'offer',
+  // Staffing needs no client, so the shared fixture works without creating one.
+  opportunityType: 'staffing',
 };
 
 /** Sends a request with a raw path so the test can bypass client-side URL normalization. */
@@ -705,12 +706,67 @@ describe('CRM API', () => {
     assert.equal(invalid.status, 400);
     assert.match(invalid.body.error.message, /Pliego, Oferta o Staffing/);
 
-    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType: 'tender' }, cookie: session });
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente de pliego' }, cookie: session });
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType: 'tender', clientId: client.body.record.id }, cookie: session });
     assert.equal(created.status, 201);
     assert.equal(created.body.opportunity.opportunityType, 'tender');
     assert.equal(app.db.prepare('SELECT opportunity_type FROM opportunities WHERE id = ?').get(created.body.opportunity.id).opportunity_type, 'tender');
     const listed = await app.json('GET', '/api/opportunities', { cookie: session });
     assert.equal(listed.body.opportunities.find((item) => item.id === created.body.opportunity.id).opportunityType, 'tender');
+  });
+
+  test('client is required for Pliego and Oferta but optional for Staffing', async () => {
+    for (const opportunityType of ['tender', 'offer']) {
+      const missing = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, opportunityType, clientId: '' }, cookie: session });
+      assert.equal(missing.status, 400);
+      assert.equal(missing.body.error.field, 'clientId');
+      assert.match(missing.body.error.message, /cliente/i);
+    }
+    const staffing = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, account: '', opportunityType: 'staffing' }, cookie: session });
+    assert.equal(staffing.status, 201);
+    assert.equal(staffing.body.opportunity.clientId, '');
+    const id = staffing.body.opportunity.id;
+
+    // Switching a client-less staffing record to Oferta needs a client in the same PATCH.
+    const toOffer = await app.json('PATCH', `/api/opportunities/${id}`, { body: { opportunityType: 'offer' }, cookie: session });
+    assert.equal(toOffer.status, 400);
+    assert.equal(toOffer.body.error.field, 'clientId');
+    const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente de oferta' }, cookie: session });
+    const withClient = await app.json('PATCH', `/api/opportunities/${id}`, { body: { opportunityType: 'offer', clientId: client.body.record.id }, cookie: session });
+    assert.equal(withClient.status, 200);
+    assert.equal(withClient.body.opportunity.opportunityType, 'offer');
+    const clearClient = await app.json('PATCH', `/api/opportunities/${id}`, { body: { clientId: '' }, cookie: session });
+    assert.equal(clearClient.status, 400);
+    assert.equal(clearClient.body.error.field, 'clientId');
+
+    // Legacy rows without a type and without a client stay editable.
+    app.db.prepare('UPDATE opportunities SET opportunity_type = NULL, client_id = NULL WHERE id = ?').run(id);
+    const legacy = await app.json('PATCH', `/api/opportunities/${id}`, { body: { title: 'Legado sin cliente' }, cookie: session });
+    assert.equal(legacy.status, 200);
+  });
+
+  test('next action date is optional, validated, persisted and audited separately from the milestone', async () => {
+    const created = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, nextActionDate: '2026-12-01', nextMilestoneDate: '2026-12-20' }, cookie: session });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.opportunity.nextActionDate, '2026-12-01');
+    assert.equal(created.body.opportunity.nextMilestoneDate, '2026-12-20');
+    const id = created.body.opportunity.id;
+    assert.equal(app.db.prepare('SELECT next_action_date FROM opportunities WHERE id = ?').get(id).next_action_date, '2026-12-01');
+
+    const invalid = await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, nextActionDate: '01/12/2026' }, cookie: session });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.error.field, 'nextActionDate');
+    const invalidPatch = await app.json('PATCH', `/api/opportunities/${id}`, { body: { nextActionDate: 'mañana' }, cookie: session });
+    assert.equal(invalidPatch.status, 400);
+
+    const patched = await app.json('PATCH', `/api/opportunities/${id}`, { body: { nextActionDate: '2026-12-05' }, cookie: session });
+    assert.equal(patched.status, 200);
+    assert.equal(patched.body.opportunity.nextActionDate, '2026-12-05');
+    assert.ok(patched.body.events.some((event) => event.action === 'updated' && event.detail.fields.includes('next_action_date')));
+    const cleared = await app.json('PATCH', `/api/opportunities/${id}`, { body: { nextActionDate: '' }, cookie: session });
+    assert.equal(cleared.body.opportunity.nextActionDate, '');
+    const plain = await app.json('POST', '/api/opportunities', { body: OPPORTUNITY_PAYLOAD, cookie: session });
+    assert.equal(plain.body.opportunity.nextActionDate, '');
   });
 
   test('opportunity type is optional on PATCH, so legacy records without a type stay editable', async () => {
@@ -1289,6 +1345,59 @@ describe('CRM API', () => {
     const archived = await app.json('POST', `/api/initiatives/${sourceId}/archive`, { cookie: session });
     assert.equal(archived.status, 200);
     assert.ok(archived.body.initiative.archivedAt);
+  });
+
+  test('initiative LoB and Tower relations persist, replace, block master deletes and go away with the initiative', async () => {
+    const make = async (kind, body) => (await app.json('POST', `/api/${kind}`, { body, cookie: session })).body.record;
+    const person = await make('people', { name: 'Responsable iniciativa LoB' });
+    const lobA = await make('lobs', { name: 'LoB iniciativa A' });
+    const lobB = await make('lobs', { name: 'LoB iniciativa B' });
+    const towerA = await make('towers', { name: 'Tower iniciativa A', responsibleId: person.id });
+    const towerB = await make('towers', { name: 'Tower iniciativa B', responsibleId: person.id });
+
+    const created = await app.json('POST', '/api/initiatives', {
+      body: { title: 'Iniciativa con LoB y Tower', lobIds: [lobA.id, lobA.id], towerIds: [towerA.id] }, cookie: session,
+    });
+    assert.equal(created.status, 201);
+    const id = created.body.initiative.id;
+    assert.deepEqual(created.body.initiative.lobIds, [lobA.id]);
+    assert.deepEqual(created.body.initiative.towerIds, [towerA.id]);
+    assert.deepEqual(created.body.initiative.lobs.map((item) => item.name), ['LoB iniciativa A']);
+    assert.deepEqual(created.body.initiative.towers.map((item) => item.name), ['Tower iniciativa A']);
+
+    const unknown = await app.json('POST', '/api/initiatives', { body: { title: 'LoB inexistente', lobIds: ['missing'] }, cookie: session });
+    assert.equal(unknown.status, 400);
+
+    // Omitting a relation keeps it; sending it replaces it in one transaction.
+    const untouched = await app.json('PATCH', `/api/initiatives/${id}`, { body: { title: 'Iniciativa renombrada' }, cookie: session });
+    assert.deepEqual(untouched.body.initiative.lobIds, [lobA.id]);
+    const replaced = await app.json('PATCH', `/api/initiatives/${id}`, { body: { lobIds: [lobB.id], towerIds: [towerA.id, towerB.id] }, cookie: session });
+    assert.equal(replaced.status, 200);
+    assert.deepEqual(replaced.body.initiative.lobIds, [lobB.id]);
+    assert.deepEqual([...replaced.body.initiative.towerIds].sort(), [towerA.id, towerB.id].sort());
+    const listed = (await app.json('GET', '/api/initiatives', { cookie: session })).body.initiatives.find((item) => item.id === id);
+    assert.deepEqual(listed.lobIds, [lobB.id]);
+    const events = await app.json('GET', `/api/initiatives/${id}/events`, { cookie: session });
+    assert.ok(events.body.events.some((event) => event.action === 'updated' && event.detail.fields.includes('lobs') && event.detail.fields.includes('towers')));
+
+    // Initiative references block LoB and Tower deletes and LoB deactivation.
+    const lobDelete = await app.json('DELETE', `/api/lobs/${lobB.id}`, { cookie: session });
+    assert.equal(lobDelete.status, 409);
+    assert.equal(lobDelete.body.error.message, 'No se puede eliminar la LoB «LoB iniciativa B»: tiene vínculos con 1 iniciativa.');
+    const towerDelete = await app.json('DELETE', `/api/towers/${towerB.id}`, { cookie: session });
+    assert.equal(towerDelete.status, 409);
+    assert.equal(towerDelete.body.error.message, 'No se puede eliminar la tower «Tower iniciativa B»: tiene vínculos con 1 iniciativa.');
+    const lobDeactivate = await app.json('PATCH', `/api/lobs/${lobB.id}`, { body: { active: false }, cookie: session });
+    assert.equal(lobDeactivate.status, 409);
+    assert.equal((await app.json('DELETE', `/api/lobs/${lobA.id}`, { cookie: session })).status, 200);
+
+    // Deleting the initiative deletes its own join rows and frees the masters.
+    const deleted = await app.json('DELETE', `/api/initiatives/${id}`, { cookie: session });
+    assert.equal(deleted.status, 200);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM initiative_lobs WHERE initiative_id = ?').get(id).count, 0);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM initiative_towers WHERE initiative_id = ?').get(id).count, 0);
+    assert.equal((await app.json('DELETE', `/api/lobs/${lobB.id}`, { cookie: session })).status, 200);
+    assert.equal((await app.json('DELETE', `/api/towers/${towerB.id}`, { cookie: session })).status, 200);
   });
 
   test('POST /api/initiatives/:id/convert creates the opportunity and completes the initiative atomically', async () => {

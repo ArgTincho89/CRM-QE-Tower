@@ -1,11 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { filterOptions, isAssignable, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
+import { clampActiveIndex, edgeEnabledIndex, filterOptions, isAssignable, reduceDropdownKey, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
-import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
+import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
 import { NAV_GROUPS, resolveNavigationTarget } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
-import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
+import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
 import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLinks, safeWorkspaceUrl, toWorkspaceLinkForm } from './workspaceLinks.js';
 import { filterAgreements } from './agreements.js';
 import { computeWeightedAmount } from './pipelineSummary.js';
@@ -17,6 +17,7 @@ import { formatNotificationTime, markNotificationsRead, notificationTargetPage, 
 import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CardHistory from './CardHistory.jsx';
+import { fieldLabel } from './history.js';
 import DataTable from './DataTable.jsx';
 import { FormField, useFieldErrors } from './FormField.jsx';
 import { AGREEMENT_FORM_FIELDS, INITIATIVE_FORM_FIELDS, MASTER_FORM_FIELDS, OPPORTUNITY_FORM_FIELDS, SERVICE_YEAR_FORM_FIELDS, mapServerFieldError, validateAgreementForm, validateInitiativeForm, validateMasterForm, validateOpportunityForm, validateServiceYearForm } from './formValidation.js';
@@ -452,6 +453,7 @@ function App() {
         expectedCloseDate: record.expectedCloseDate || '',
         nextMilestone: record.nextMilestone || '',
         nextMilestoneDate: record.nextMilestoneDate || '',
+        nextActionDate: record.nextActionDate || '',
         need: record.need || '',
         initiativeId: record.initiativeId || '',
         outcome: record.outcome || '',
@@ -734,7 +736,7 @@ function App() {
         <header className="topbar">
           <button className="mobile-menu icon-button" aria-label="Abrir navegación" onClick={() => setMobileNav(true)}><Icon name="list" /></button>
           <div className="breadcrumbs"><span>SEIDOR</span><Icon name="chevron" size={14} /><strong>{title}</strong></div>
-          <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en CRM QE</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad..." /><kbd>⌘ K</kbd></label>
+          <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en CRM QE</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad, ICRM..." /><kbd>⌘ K</kbd></label>
           <NotificationBell notifications={notifications.items} unreadCount={notifications.unreadCount} onOpen={openNotification} onMarkAllRead={markAllRead} />
           <div className="user-menu">
             <Avatar name={user.name} />
@@ -792,7 +794,7 @@ function App() {
         </div>
       </main>
       {editing !== null && <OpportunityDialog record={editing} users={users} clients={clients} towers={towers} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} />}
-      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} users={users} clients={clients} services={services} currentServiceYear={serviceYears.currentYear} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
+      {editingInitiative !== null && <InitiativeDialog record={editingInitiative} users={users} clients={clients} services={services} lobs={lobs} towers={towers} currentServiceYear={serviceYears.currentYear} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingInitiative(null)} onSave={saveInitiative} onCreateOpportunity={startOpportunityFromInitiative} />}
       {editingAgreement !== null && <AgreementDialog agreement={editingAgreement} users={users} clients={clients} people={people} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => setEditingAgreement(null)} onSave={saveAgreement} />}
       {creatingServiceYear && <ServiceYearDialog years={serviceYears.years} currentYear={serviceYears.currentYear} onClose={() => setCreatingServiceYear(false)} onSave={saveServiceYear} />}
       {masterEditing !== null && <MasterDialog kind={masterEditing.kind} record={masterEditing} people={people} lobs={lobs} onClose={() => setMasterEditing(null)} onSave={saveMaster} onSaved={(record) => masterEditing.onCreated?.(record.id)} />}
@@ -928,6 +930,7 @@ function AdvancedFilters({ filters, people, users = [], services = [], currentSe
     {field('minQaPercent', 'QA mínimo (%)', 'number')}
     {field('maxQaPercent', 'QA máximo (%)', 'number')}
     {field('externalNumber', 'N.º externo')}
+    {field('registryId', 'ICRM')}
     {field('due', 'Próximo hito')}
     {field('tags', 'Etiquetas')}
     {field('closureReason', 'Motivo de cierre')}
@@ -1035,12 +1038,16 @@ function OpportunityCard({ record, onCardClick, onDragStart, onDragEnd, onArchiv
     }
     onDragStart(event, record);
   };
-  return <article className={`opportunity-card${isInitiative ? ' initiative-card' : ''}${isDragging ? ' dragging' : ''}`} draggable onDragStart={handleDragStart} onDragEnd={onDragEnd}>
-    <button type="button" className="card-body-button" onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}, ${record.account}`}>
+  // Initiatives are tinted by their next action date; the text cue keeps color from being the only signal.
+  const urgency = isInitiative ? describeInitiativeUrgency(record) : { level: 'none', label: '' };
+  return <article className={`opportunity-card${isInitiative ? ' initiative-card' : ''}${urgency.level !== 'none' ? ` urgency-${urgency.level}` : ''}${isDragging ? ' dragging' : ''}`} draggable onDragStart={handleDragStart} onDragEnd={onDragEnd}>
+    <button type="button" className="card-body-button" onClick={() => onCardClick(record)} title="Arrastra para cambiar de etapa" aria-label={`Editar ${isInitiative ? 'iniciativa' : 'oportunidad'} ${record.title}, ${record.account || NO_CLIENT_LABEL}${urgency.label ? `. ${urgency.label}` : ''}`}>
       <div className="card-top"><span className="opportunity-id">{record.id}</span>{isInitiative ? <span className="initiative-type-pill">Iniciativa · {record.categoryLabel}</span> : <><OpportunityTypePill type={record.opportunityType} />{record.number && <span className="external-opportunity-number">N.º {record.number}</span>}</>}<span className={`card-stage-dot ${stage?.tone || ''}`} title={stage?.label || record.stage} /></div>
-      <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || 'Sin cliente'}</span></div>
+      <h4>{record.title}</h4><div className="card-client"><span className="client-glyph">{(record.account || '—').charAt(0)}</span><span>{record.account || NO_CLIENT_LABEL}</span></div>
+      {urgency.label && <span className={`urgency-cue ${urgency.level}`}>{urgency.label}</span>}
       <div className="card-value-row">{isInitiative ? <><strong className={`priority-text ${String(record.priority || 'media').toLowerCase()}`}>{record.priority || 'Media'}</strong><span className="tower-pill">{record.statusLabel}</span></> : <><strong>{record.amount}</strong><span className="tower-pill">{record.tower}</span></>}</div>
       {!isInitiative && record.weightedAmount !== null && record.weightedAmount !== undefined && <small className="weighted-amount">Ponderado: {formatCurrency(Number(record.weightedAmount))}</small>}
+      {!isInitiative && record.nextActionDate && <small className="card-next-action" title="Fecha de próxima acción"><Icon name="clock" size={12} /><span className="sr-only">Próxima acción: </span>{record.nextActionDate}</small>}
       <div className="card-bottom"><span className="card-date"><Icon name={isInitiative ? 'calendar' : (record.due || '').includes('Ganada') ? 'check' : 'calendar'} size={13} />{isInitiative ? (record.nextActionDate || 'Sin próxima acción') : (record.due || 'Por definir')}</span>{!isInitiative && record.outcome && <span className={`status-pill ${opportunityOutcomes.find((item) => item.id === record.outcome)?.tone || 'gray'}`}>{opportunityOutcomes.find((item) => item.id === record.outcome)?.label || record.outcome}</span>}{!isInitiative && record.pep && <span className="pep-pill" title={record.pep}>PEP</span>}<AssigneeBadge name={record.assignedUserName} />{!isInitiative && <span className="card-owner"><Avatar name={record.owner} compact /></span>}</div>
     </button>
     <div className="card-menu-container" ref={menuRef} data-card-menu>
@@ -1078,7 +1085,7 @@ const typeSortLabel = (item) => {
 };
 
 function OpportunityRows({ opportunities, onEdit }) {
-  return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+  return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {opportunityClientLabel(item)}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
 }
 
 function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
@@ -1120,9 +1127,9 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
     {!loading && !error && <div className="table-wrap"><DataTable tableId="opportunities" className="data-table opportunity-management-table" rows={opportunities} columns={[
       { id: 'id', label: 'ID interno', value: (item) => item.id },
       { id: 'number', label: 'N.º externo', value: (item) => item.number },
-      { id: 'registryId', label: 'ID registro', value: (item) => item.registryId },
+      { id: 'registryId', label: 'ICRM', value: (item) => item.registryId },
       { id: 'title', label: 'Oportunidad', value: (item) => item.title, render: (item) => <button className="table-title" onClick={() => onEdit(item)} disabled={archivedView}>{item.title}</button> },
-      { id: 'account', label: 'Cliente', value: (item) => item.account },
+      { id: 'account', label: 'Cliente', value: (item) => item.account, render: (item) => item.account || <span className="muted-text">{NO_CLIENT_LABEL}</span> },
       { id: 'stage', label: 'Etapa', type: 'number', value: stageOrder, render: (item) => { const stage = stages.find((entry) => entry.id === item.stage); return <span className={`status-pill ${stage?.tone || ''}`}>{stage?.label || item.stage}</span>; } },
       { id: 'outcome', label: 'Resultado', value: outcomeSortLabel, render: (item) => <OutcomeCell outcome={item.outcome} /> },
       { id: 'opportunityType', label: 'Tipo', value: typeSortLabel, render: (item) => <OpportunityTypePill type={item.opportunityType} /> },
@@ -1133,6 +1140,7 @@ function OpportunityManagementPanel({ opportunities, onEdit, loading, error, onR
       { id: 'amount', label: 'Importe', type: 'amount', value: (item) => item.amount, render: (item) => item.amount, cellClassName: 'table-amount' },
       { id: 'qaPercent', label: 'QA %', type: 'percent', value: (item) => Number(item.qaPercent || 0), render: (item) => `${Number(item.qaPercent || 0)}%` },
       { id: 'due', label: 'Próximo hito', type: 'date', value: (item) => item.due },
+      { id: 'nextActionDate', label: 'Próxima acción', type: 'date', value: (item) => item.nextActionDate },
       { id: 'closureReason', label: 'Motivo de cierre', value: (item) => item.closureReason },
     ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archivedView ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />
     {opportunities.length === 0 && <div className="empty-state opportunity-empty-state"><p>{filtersActive ? (archivedView ? 'No hay oportunidades archivadas que coincidan con los filtros.' : 'No hay oportunidades que coincidan con los filtros.') : archivedView ? 'Todavía no hay oportunidades archivadas.' : 'Todavía no hay oportunidades.'}</p>{filtersActive && <button className="button button-secondary" onClick={onClearFilters}>Limpiar filtros</button>}</div>}
@@ -1185,7 +1193,7 @@ function InitiativeBoard({ page, initiatives, archivedInitiatives, archivedView,
 
 /** Compact initiative rows, mirroring the CRM QE list view. */
 function InitiativeList({ rows, emptyMessage, onEdit }) {
-  return <div className="list-view">{rows.map((item) => <button type="button" className="list-row initiative-list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={item.stageTone} />{item.stageLabel}</span><span className={`priority-text ${String(item.priority).toLowerCase()}`}>{item.priority}</span><span className="list-date"><Icon name="calendar" size={14} />{item.nextActionDate || 'Sin próxima acción'}</span><span className="table-owner">{item.assignedUserName ? <><Avatar name={item.assignedUserName} compact />{item.assignedUserName}</> : 'Sin asignar'}</span><Icon name="chevron" size={16} /></button>)}{rows.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div>;
+  return <div className="list-view">{rows.map((item) => { const urgency = describeInitiativeUrgency(item); return <button type="button" className={`list-row initiative-list-row${urgency.level !== 'none' ? ` urgency-${urgency.level}` : ''}`} key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id} <span>·</span> {item.account}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={item.stageTone} />{item.stageLabel}</span><span className={`priority-text ${String(item.priority).toLowerCase()}`}>{item.priority}</span><span className="list-date"><Icon name="calendar" size={14} />{item.nextActionDate || 'Sin próxima acción'}{urgency.label && <span className={`urgency-cue ${urgency.level}`}>{urgency.label}</span>}</span><span className="table-owner">{item.assignedUserName ? <><Avatar name={item.assignedUserName} compact />{item.assignedUserName}</> : 'Sin asignar'}</span><Icon name="chevron" size={16} /></button>; })}{rows.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div>;
 }
 
 /** Initiative table shared by Iniciativas (Tabla view and archived) and Cross-Selling. */
@@ -1199,6 +1207,8 @@ function InitiativeTable({ tableId, rows, archived, emptyMessage, onEdit, onArch
     { id: 'status', label: 'Estado operativo', value: (item) => item.statusLabel },
     { id: 'priority', label: 'Prioridad', type: 'number', value: (item) => priorityOrder(item.priority), render: (item) => item.priority },
     { id: 'nextActionDate', label: 'Fecha próxima acción', type: 'date', value: (item) => item.nextActionDate },
+    { id: 'lobs', label: 'LoB', value: (item) => (item.lobs || []).map((lob) => lob.name).join(', ') },
+    { id: 'towers', label: 'Towers', value: (item) => (item.towers || []).map((tower) => tower.name).join(', ') },
     { id: 'services', label: 'Servicios', value: (item) => item.servicesLabel },
     { id: 'assignedUserName', label: 'Asignado a', value: (item) => item.assignedUserName },
     { id: 'links', label: 'Enlaces', type: 'number', value: (item) => item.linkCount, render: (item) => <WorkspaceLinkList links={item.links} /> },
@@ -1215,30 +1225,107 @@ function Analytics({ opportunities, grouped }) {
   return <div className="analytics-layout"><section className="panel-card analytics-card"><div className="panel-heading"><div><h3>Oportunidades por Tower</h3><p>Registros del pipeline actual</p></div><span className="range-pill">Últimos 90 días <Icon name="chevron" size={13} /></span></div><div className="bar-chart">{grouped.map((item) => <div className="bar-row" key={item.tower}><span>{item.tower}</span><div className="bar-track"><i style={{ width: `${Math.max(5, item.count / max * 100)}%` }} /></div><strong>{item.count}</strong></div>)}</div></section><section className="panel-card analytic-summary"><div className="panel-heading"><h3>Resumen del pipeline</h3><span className="period-badge">Este trimestre</span></div><div className="summary-number"><small>Importe estimado en oportunidades</small><strong>{formatCurrency(totalAmount)}</strong><span>No equivale a ingreso contratado ni a valor influido del CRM corporativo.</span></div><div className="summary-divider" /><div className="mini-metric"><span>Oportunidades registradas</span><strong>{opportunities.length}</strong></div><div className="mini-metric"><span>En propuesta</span><strong>{opportunities.filter((item) => item.stage === 'proposal').length}</strong></div><div className="mini-metric"><span>Ganadas</span><strong>{opportunities.filter((item) => item.stage === 'won').length}</strong></div></section></div>;
 }
 
+/**
+ * Dropdown multi-select: a closed control with the selected chips (removable) and a toggle that
+ * opens a popover listbox with a search box. Keyboard: ArrowDown/ArrowUp/Home/End move, Enter
+ * toggles, Escape closes; focus stays in the search box (aria-activedescendant). Clicking outside
+ * closes the popover only, never the surrounding dialog. Non-assignable options (inactive or of
+ * another fiscal year) render disabled unless already selected, so they can still be removed.
+ */
 function MultiSelect({ legend, hint, options, selected, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const rootRef = useRef(null);
+  const toggleRef = useRef(null);
+  const searchRef = useRef(null);
   const baseId = useId();
   const listId = `${baseId}-list`;
+  const hintId = `${baseId}-hint`;
+  const optionId = (index) => `${baseId}-option-${index}`;
   const chips = selectedOptions(options, selected);
   const visible = filterOptions(options, query);
-  return <fieldset className="relation-field multi-select" disabled={disabled}>
+  const optionLabel = (option) => `${option.name}${option.active === false ? ' (inactivo)' : ''}`;
+
+  const close = (restoreFocus) => {
+    setOpen(false);
+    setQuery('');
+    setActiveIndex(-1);
+    if (restoreFocus) toggleRef.current?.focus();
+  };
+  const openList = (index) => {
+    setOpen(true);
+    setActiveIndex(index);
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    searchRef.current?.focus();
+    // Pointer down outside closes the popover; the dialog itself stays open.
+    const handlePointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) close(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) document.getElementById(optionId(activeIndex))?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, activeIndex]);
+
+  useEffect(() => {
+    if (disabled && open) close(false);
+  }, [disabled, open]);
+
+  const handleKeyDown = (event) => {
+    const next = reduceDropdownKey({ open, activeIndex }, event.key, { options: visible, selected });
+    if (!next.handled) return;
+    event.preventDefault();
+    // Escape must close only the popover, not the dialog around it.
+    event.stopPropagation();
+    if (next.toggle) onChange(toggleSelection(selected, next.toggle));
+    if (!next.open) close(true);
+    else openList(next.activeIndex);
+  };
+  const handleSearch = (value) => {
+    setQuery(value);
+    setActiveIndex(clampActiveIndex(filterOptions(options, value), selected, -1));
+  };
+  const pick = (option, index) => {
+    if (!isAssignable(option, selected)) return;
+    onChange(toggleSelection(selected, option));
+    setActiveIndex(index);
+    searchRef.current?.focus();
+  };
+
+  return <fieldset className="relation-field multi-select" disabled={disabled} ref={rootRef} onBlur={(event) => { if (open && !rootRef.current?.contains(event.relatedTarget)) close(false); }}>
     <legend>{legend}</legend>
-    {hint && <span className="field-hint" id={`${baseId}-hint`}>{hint}</span>}
-    {chips.length > 0 && <ul className="multi-select-chips" aria-label={`${legend} seleccionados`}>
-      {chips.map((option) => <li key={option.id} className={`relation-option selected${option.active === false ? ' inactive' : ''}`}><span>{option.name}{option.active === false ? ' (inactivo)' : ''}</span><button type="button" className="chip-remove" onClick={() => onChange(removeSelection(selected, option.id))} aria-label={`Quitar ${option.name}`}>×</button></li>)}
-    </ul>}
-    <input type="search" className="multi-select-search" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') setQuery(''); }} placeholder={`Buscar ${legend.toLowerCase()}…`} aria-label={`Buscar en ${legend}`} aria-controls={listId} aria-describedby={hint ? `${baseId}-hint` : undefined} />
-    <div className="relation-options multi-select-options" id={listId} role="group" aria-label={`Opciones de ${legend}`}>
+    {hint && <span className="field-hint" id={hintId}>{hint}</span>}
+    <div className={`multi-select-control${open ? ' open' : ''}`}>
+      {chips.length > 0
+        ? <ul className="multi-select-chips" aria-label={`${legend} seleccionados`}>
+          {chips.map((option) => <li key={option.id} className={`relation-option selected${option.active === false ? ' inactive' : ''}`}><span>{optionLabel(option)}</span><button type="button" className="chip-remove" onClick={() => onChange(removeSelection(selected, option.id))} aria-label={`Quitar ${option.name}`}>×</button></li>)}
+        </ul>
+        : <span className="multi-select-placeholder">Sin selección</span>}
+      <button type="button" ref={toggleRef} className="multi-select-toggle" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} aria-describedby={hint ? hintId : undefined} onClick={() => (open ? close(true) : openList(edgeEnabledIndex(visible, selected, 'start')))} onKeyDown={handleKeyDown}>
+        <span className="sr-only">{open ? 'Cerrar' : 'Abrir'} opciones de {legend}</span><Icon name="chevron" size={14} />
+      </button>
+    </div>
+    {open && <div className="multi-select-popover">
+      <input type="search" ref={searchRef} className="multi-select-search" value={query} onChange={(event) => handleSearch(event.target.value)} onKeyDown={handleKeyDown} placeholder={`Buscar ${legend.toLowerCase()}…`} role="combobox" aria-label={`Buscar en ${legend}`} aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={activeIndex >= 0 && activeIndex < visible.length ? optionId(activeIndex) : undefined} autoComplete="off" />
+      <ul className="multi-select-listbox" id={listId} role="listbox" aria-multiselectable="true" aria-label={`Opciones de ${legend}`}>
+        {visible.map((option, index) => {
+          const isSelected = selected.includes(option.id);
+          const assignable = isAssignable(option, selected);
+          return <li key={option.id} id={optionId(index)} role="option" aria-selected={isSelected} aria-disabled={assignable ? undefined : 'true'} className={`multi-select-option${isSelected ? ' selected' : ''}${index === activeIndex ? ' active' : ''}${assignable ? '' : ' disabled'}`} onPointerDown={(event) => event.preventDefault()} onClick={() => pick(option, index)} onPointerEnter={() => { if (assignable) setActiveIndex(index); }}>
+            <span className="multi-select-check" aria-hidden="true">{isSelected ? '✓' : ''}</span><span>{optionLabel(option)}</span>
+          </li>;
+        })}
+      </ul>
       {options.length === 0
         ? <span className="field-hint">No hay opciones disponibles.</span>
-        : visible.length === 0
-          ? <span className="field-hint" role="status">Sin coincidencias.</span>
-          : visible.map((option) => {
-            const isSelected = selected.includes(option.id);
-            const assignable = isAssignable(option, selected);
-            return <label key={option.id} className={`relation-option${isSelected ? ' selected' : ''}${option.active === false ? ' inactive' : ''}`}><input type="checkbox" checked={isSelected} onChange={() => onChange(toggleSelection(selected, option))} disabled={!assignable} /><span>{option.name}{option.active === false ? ' (inactivo)' : ''}</span></label>;
-          })}
-    </div>
+        : visible.length === 0 && <span className="field-hint" role="status">Sin coincidencias.</span>}
+    </div>}
     <span className="sr-only" role="status" aria-live="polite">{selected.length} seleccionados</span>
   </fieldset>;
 }
@@ -1257,6 +1344,7 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
     clientId: record.clientId || '', ownerId: record.ownerId || '', bidManagerId: record.bidManagerId || '', qaPercent: record.qaPercent ?? 0, closureReason: record.closureReason || '',
     origin: record.origin || '', probability: record.probability === null || record.probability === undefined ? '' : String(record.probability),
     expectedCloseDate: record.expectedCloseDate || '', nextMilestone: record.nextMilestone || '', nextMilestoneDate: record.nextMilestoneDate || '',
+    nextActionDate: record.nextActionDate || '',
     need: record.need || '', initiativeId: record.initiativeId || '', outcome: record.outcome || '', pep: record.pep || '',
     opportunityType: record.opportunityType || '',
     registryId: record.registryId || '',
@@ -1307,6 +1395,8 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
   }
   const linkedInitiative = initiativeChoices.find((item) => item.id === form.initiativeId);
   const isResult = form.stage === 'result';
+  // Staffing requests need no client and carry a ticket number instead of an opportunity number.
+  const clientRequired = isClientRequired(form.opportunityType);
   const probabilityValue = form.probability === '' ? null : Number(form.probability);
   const weightedPreview = probabilityValue === null || Number.isNaN(probabilityValue) ? null : computeWeightedAmount({ amount: amountText, qaPercent: form.qaPercent, probability: probabilityValue });
   const submit = async (event) => {
@@ -1336,6 +1426,7 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
         expectedCloseDate: form.expectedCloseDate,
         nextMilestone: milestone,
         nextMilestoneDate: milestoneDate,
+        nextActionDate: form.nextActionDate,
         need: form.need.trim(),
         initiativeId: form.initiativeId,
         outcome: isResult ? form.outcome : '',
@@ -1362,9 +1453,9 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
       <div className="form-grid">
         <FormField form={fieldErrors} field="title" label="Nombre de la oportunidad" required className="wide"><input autoFocus value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="Ej. Modernización de plataforma de datos" required disabled={saving} {...fieldErrors.fieldProps('title')} /></FormField>
         <FormField form={fieldErrors} field="opportunityType" label="Tipo de oportunidad" required><select value={form.opportunityType} onChange={(event) => update('opportunityType', event.target.value)} aria-required="true" disabled={saving} {...fieldErrors.fieldProps('opportunityType')}><option value="">Selecciona un tipo</option>{opportunityTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select>{isEditing && !record.opportunityType && <span className="field-hint">Registro sin tipo: elige uno para guardar los cambios.</span>}</FormField>
-        <label className="form-field">Número de oportunidad<input value={form.number} onChange={(event) => update('number', event.target.value)} placeholder="Identificador externo" disabled={saving} /></label>
-        <label className="form-field">ID registro<input value={form.registryId} onChange={(event) => update('registryId', event.target.value)} placeholder="Portal del cliente, pliego o ERP" maxLength="120" disabled={saving} /><span className="field-hint">Opcional. Referencia externa del registro.</span></label>
-        <label className="form-field">Cliente / cuenta<select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} disabled={saving}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></label>
+        <label className="form-field">{opportunityNumberLabel(form.opportunityType)}<input value={form.number} onChange={(event) => update('number', event.target.value)} placeholder={form.opportunityType === 'staffing' ? 'Identificador del ticket' : 'Identificador externo'} disabled={saving} /></label>
+        <FormField form={fieldErrors} field="registryId" label="ICRM"><input value={form.registryId} onChange={(event) => update('registryId', event.target.value)} placeholder="Referencia ICRM" maxLength="120" disabled={saving} {...fieldErrors.fieldProps('registryId')} /><span className="field-hint">Opcional. Referencia del registro en ICRM.</span></FormField>
+        <FormField form={fieldErrors} field="clientId" label="Cliente / cuenta" required={clientRequired}><select value={form.clientId} onChange={(event) => update('clientId', event.target.value)} aria-required={clientRequired ? 'true' : undefined} disabled={saving} {...fieldErrors.fieldProps('clientId')}><option value="">Sin cliente asociado</option>{clients.filter((item) => item.active || item.id === form.clientId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{form.opportunityType === 'staffing' && <span className="field-hint">Opcional en oportunidades de Staffing.</span>}<button type="button" className="inline-link" onClick={() => onQuickCreate('clients', (id) => { update('clientId', id); setForm((current) => ({ ...current, clientId: id, account: clients.find((item) => item.id === id)?.name || current.account })); })}>+ Crear cliente</button></FormField>
         <FormField form={fieldErrors} field="amount" label="Importe estimado" required><span className="amount-field"><input ref={amountInputRef} value={amountText} onChange={handleAmountChange} onBlur={handleAmountBlur} inputMode="decimal" autoComplete="off" placeholder="125.000,00" required disabled={saving} {...fieldErrors.fieldProps('amount')} /><span className="amount-suffix" aria-hidden="true">{AMOUNT_CURRENCY}</span></span></FormField>
         <label className="form-field">Etapa<select value={form.stage} onChange={(event) => { ['expectedCloseDate', 'outcome', 'closureReason'].forEach(fieldErrors.clear); update('stage', event.target.value); }} disabled={saving}>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.label}</option>)}</select></label>
         <label className="form-field">Origen<select value={form.origin} onChange={(event) => { fieldErrors.clear('initiativeId'); setForm((current) => applyOriginChange(current, event.target.value)); }} disabled={saving || isConversion}><option value="">Sin definir</option>{opportunityOrigins.map((origin) => <option key={origin} value={origin}>{origin}</option>)}</select>{form.initiativeId && !form.origin && <span className="field-hint">Se guardará como «Iniciativa interna».</span>}</label>
@@ -1373,6 +1464,7 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
         <FormField form={fieldErrors} field="expectedCloseDate" label="Fecha estimada de cierre" required={isResult}><input type="date" value={form.expectedCloseDate} onChange={(event) => update('expectedCloseDate', event.target.value)} aria-required={isResult ? 'true' : undefined} disabled={saving} {...fieldErrors.fieldProps('expectedCloseDate')} /></FormField>
         <label className="form-field">Próximo hito<input value={form.nextMilestone} onChange={(event) => update('nextMilestone', event.target.value)} placeholder="Ej. Revisión de propuesta" disabled={saving} /></label>
         <label className="form-field">Fecha del próximo hito<input type="date" value={form.nextMilestoneDate} onChange={(event) => update('nextMilestoneDate', event.target.value)} disabled={saving} /></label>
+        <FormField form={fieldErrors} field="nextActionDate" label="Fecha de próxima acción"><input type="date" value={form.nextActionDate} onChange={(event) => update('nextActionDate', event.target.value)} disabled={saving} {...fieldErrors.fieldProps('nextActionDate')} /><span className="field-hint">Opcional. Independiente del próximo hito.</span></FormField>
         <label className="form-field">Responsable<select value={form.ownerId} onChange={(event) => update('ownerId', event.target.value)} disabled={saving}><option value="">Sin responsable</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('ownerId', id))}>+ Crear responsable</button></label>
         <AssigneeField value={form.assignedUserId} users={users} onChange={(value) => update('assignedUserId', value)} disabled={saving} />
         <label className="form-field">Bid Manager<select value={form.bidManagerId} onChange={(event) => update('bidManagerId', event.target.value)} disabled={saving}><option value="">Sin asignar</option>{people.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" className="inline-link" onClick={() => onQuickCreate('people', (id) => update('bidManagerId', id))}>+ Crear responsable</button></label>
@@ -1382,8 +1474,8 @@ function OpportunityDialog({ record, users = [], clients, towers, services, curr
         {form.outcome === 'won' && <label className="form-field wide">PEP<input value={form.pep} onChange={(event) => update('pep', event.target.value)} placeholder="Identificador PEP" maxLength="160" disabled={saving} /><span className="field-hint">Obligatorio para la etapa Resultado con resultado Ganada. Se conserva si cambia el resultado.</span></label>}
         <label className="form-field wide">Descripción / necesidad<textarea rows="3" value={form.need} onChange={(event) => update('need', event.target.value)} placeholder="Contexto, alcance y necesidad del cliente" maxLength="2000" disabled={saving} /></label>
       </div>
-      <MultiSelect legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
       <MultiSelect legend="LoB" hint="Las LoB se asignan de forma manual, sin inferencia desde las towers." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
+      <MultiSelect legend="Towers" hint="Una oportunidad puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
       <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
       <WorkspaceLinksEditor links={form.links} onChange={(links) => update('links', links)} disabled={saving} />
       {isEditing && <CardHistory opportunityId={form.id} refreshKey={historyRefresh} />}
@@ -1496,7 +1588,7 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
   return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit} noValidate ref={fieldErrors.formRef}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <FormField form={fieldErrors} field={field} label={label} required={field === 'name'} className="wide" key={field}><input required={field === 'name'} value={values[field]} onChange={(event) => setValue(field, event.target.value)} {...fieldErrors.fieldProps(field)} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</FormField>)}{kind === 'towers' && <FormField form={fieldErrors} field="responsibleId" label="Responsable" required className="wide"><select required value={values.responsibleId} onChange={(event) => setValue('responsibleId', event.target.value)} {...fieldErrors.fieldProps('responsibleId')}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></FormField>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
 }
 
-function InitiativeDialog({ record, users = [], clients, services, currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
+function InitiativeDialog({ record, users = [], clients, services, lobs = [], towers = [], currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity }) {
   const dialogRef = useRef(null);
   const [form, setForm] = useState({
     id: record.id || '',
@@ -1509,6 +1601,8 @@ function InitiativeDialog({ record, users = [], clients, services, currentServic
     nextActionDate: record.nextActionDate || '',
     description: record.description || '',
     assignedUserId: record.assignedUserId || '',
+    lobIds: (record.lobs || []).map((item) => item.id),
+    towerIds: (record.towers || []).map((item) => item.id),
     serviceIds: (record.services || []).map((item) => item.id),
     links: toWorkspaceLinkForm(record.links),
   });
@@ -1564,6 +1658,8 @@ function InitiativeDialog({ record, users = [], clients, services, currentServic
         <AssigneeField value={form.assignedUserId} users={users} onChange={(value) => update('assignedUserId', value)} disabled={saving} />
         <label className="form-field wide">Descripción<textarea rows="3" value={form.description} onChange={(event) => update('description', event.target.value)} placeholder="Contexto y objetivo de la iniciativa" maxLength="2000" disabled={saving} /></label>
       </div>
+      <MultiSelect legend="LoB" hint="Opcional. Las LoB se asignan de forma manual." options={lobs} selected={form.lobIds} onChange={(ids) => update('lobIds', ids)} disabled={saving} />
+      <MultiSelect legend="Towers" hint="Opcional. Una iniciativa puede cubrir varias towers." options={towers} selected={form.towerIds} onChange={(ids) => update('towerIds', ids)} disabled={saving} />
       <MultiSelect legend="Servicios" hint={`Solo se asignan servicios activos del ejercicio ${currentServiceYear}. Los vínculos de otros ejercicios o inactivos se conservan y se pueden quitar.`} options={buildServiceOptions(services, form.serviceIds, currentServiceYear)} selected={form.serviceIds} onChange={(ids) => update('serviceIds', ids)} disabled={saving} />
       <WorkspaceLinksEditor links={form.links} onChange={(links) => update('links', links)} disabled={saving} />
       {record.id && <section className="generated-opportunities">
@@ -1685,7 +1781,7 @@ function InitiativeHistory({ id }) {
   const [events, setEvents] = useState([]);
   useEffect(() => { listInitiativeEvents(id).then(({ events: rows }) => setEvents(rows || [])).catch(() => setEvents([])); }, [id]);
   const labels = { created: 'Creó la iniciativa', updated: 'Actualizó la iniciativa', action_added: 'Añadió una acción o nota', action_completed: 'Completó una acción', action_reopened: 'Reabrió una acción', converted: 'Creó una oportunidad y completó la iniciativa' };
-  return <section className="record-actions" aria-labelledby="initiative-history-title"><h3 id="initiative-history-title">Historial</h3>{events.length === 0 ? <p className="empty-actions">Todavía no hay cambios registrados.</p> : <div className="history-scroll" tabIndex={0} role="region" aria-label="Historial de la iniciativa"><ul className="action-list">{events.map((event) => <li key={event.id}><span><strong>{labels[event.action] || event.action}</strong><small>{event.userName} · {new Date(event.createdAt).toLocaleString('es-ES')}</small></span></li>)}</ul></div>}</section>;
+  return <section className="record-actions" aria-labelledby="initiative-history-title"><h3 id="initiative-history-title">Historial</h3>{events.length === 0 ? <p className="empty-actions">Todavía no hay cambios registrados.</p> : <div className="history-scroll" tabIndex={0} role="region" aria-label="Historial de la iniciativa"><ul className="action-list">{events.map((event) => <li key={event.id}><span><strong>{labels[event.action] || event.action}{event.action === 'updated' && Array.isArray(event.detail?.fields) && event.detail.fields.length > 0 ? `: ${event.detail.fields.map(fieldLabel).join(', ')}` : ''}</strong><small>{event.userName} · {new Date(event.createdAt).toLocaleString('es-ES')}</small></span></li>)}</ul></div>}</section>;
 }
 
 export default App;

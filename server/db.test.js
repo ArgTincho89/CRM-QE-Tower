@@ -391,7 +391,7 @@ test('registry_id is added idempotently to agreements and opportunities with an 
 
 const SIX_DIGIT_REFERENCE_TABLES = [
   'opportunities', 'initiatives', 'framework_agreements', 'card_events', 'opportunity_towers', 'opportunity_lobs',
-  'opportunity_services', 'initiative_services', 'record_actions', 'record_action_comments', 'workspace_links', 'entity_events',
+  'opportunity_services', 'initiative_services', 'initiative_lobs', 'initiative_towers', 'record_actions', 'record_action_comments', 'workspace_links', 'entity_events',
   'notifications',
 ];
 
@@ -413,6 +413,8 @@ function createLegacyIdDatabase(dbPath, extraSql = '') {
     INSERT INTO opportunity_lobs VALUES ('O-0001','l-1'), ('OP-0001','l-1');
     INSERT INTO opportunity_services VALUES ('O-0001','SVC-0001'), ('OP-0001','SVC-0002');
     INSERT INTO initiative_services VALUES ('IN-0001','SVC-0001');
+    INSERT INTO initiative_lobs VALUES ('IN-0001','l-1');
+    INSERT INTO initiative_towers VALUES ('IN-0001','t-1');
     INSERT INTO card_events (card_id,user_id,user_name,action,detail,created_at) VALUES
       ('O-0001','u-1','Ada','created','{"opportunityId":"O-0001","nested":[{"initiativeId":"IN-0001"}],"note":"O-0001"}','2025-01-01'),
       ('OP-0001',NULL,'Sistema','moved','{"from":"prospecting","to":"proposal"}','2026-02-02'),
@@ -472,6 +474,8 @@ test('commercial ids migrate to six-digit prefixes with every reference rewritte
     assert.deepEqual(pairs('opportunity_lobs', 'opportunity_id', 'lob_id'), [['OP-000001', 'l-1'], ['OP-000002', 'l-1']]);
     assert.deepEqual(pairs('opportunity_services', 'opportunity_id', 'service_id'), [['OP-000001', 'SVC-0002'], ['OP-000002', 'SVC-0001']]);
     assert.deepEqual(pairs('initiative_services', 'initiative_id', 'service_id'), [['IN-000001', 'SVC-0001']]);
+    assert.deepEqual(pairs('initiative_lobs', 'initiative_id', 'lob_id'), [['IN-000001', 'l-1']]);
+    assert.deepEqual(pairs('initiative_towers', 'initiative_id', 'tower_id'), [['IN-000001', 't-1']]);
     assert.deepEqual(db.prepare('SELECT card_id, detail FROM card_events ORDER BY id').all().map((row) => [row.card_id, row.detail]), [
       ['OP-000002', '{"opportunityId":"OP-000002","nested":[{"initiativeId":"IN-000001"}],"note":"O-0001"}'],
       ['OP-000001', '{"from":"prospecting","to":"proposal"}'],
@@ -570,6 +574,45 @@ test('assigned_user_id columns and the notifications table are added idempotentl
     for (const table of ['opportunities', 'initiatives', 'framework_agreements']) {
       assert.equal(reopened.prepare(`PRAGMA table_info(${table})`).all().filter((row) => row.name === 'assigned_user_id').length, 1, table);
     }
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('opportunity next_action_date and the initiative LoB and Tower join tables are added idempotently', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-next-action-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE opportunities (id TEXT PRIMARY KEY, title TEXT NOT NULL, account TEXT NOT NULL, amount TEXT NOT NULL, stage TEXT NOT NULL, tower TEXT NOT NULL, owner TEXT NOT NULL, due TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    INSERT INTO opportunities VALUES ('OP-000001','A','','100','prospecting','','','','[]','2026-01-01','2026-01-01');
+  `);
+  original.close();
+  try {
+    const db = openDatabase(dbPath);
+    applySchema(db);
+    const column = db.prepare('PRAGMA table_info(opportunities)').all().filter((row) => row.name === 'next_action_date');
+    assert.equal(column.length, 1);
+    assert.equal(column[0].notnull, 1);
+    assert.equal(db.prepare("SELECT next_action_date FROM opportunities WHERE id = 'OP-000001'").get().next_action_date, '');
+    for (const [table, valueColumn, target] of [['initiative_lobs', 'lob_id', 'lobs'], ['initiative_towers', 'tower_id', 'towers']]) {
+      assert.deepEqual(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name), ['initiative_id', valueColumn], table);
+      const keys = db.prepare(`PRAGMA foreign_key_list(${table})`).all();
+      assert.equal(keys.find((row) => row.from === 'initiative_id')?.on_delete, 'CASCADE', table);
+      assert.equal(keys.find((row) => row.from === valueColumn)?.table, target, table);
+    }
+    db.exec(`
+      INSERT INTO lobs (id, name, created_at, updated_at) VALUES ('l-1','Banca','x','x');
+      INSERT INTO initiatives (id, title, created_at, updated_at) VALUES ('IN-000001','Iniciativa','x','x');
+      INSERT INTO initiative_lobs VALUES ('IN-000001','l-1');
+    `);
+    assert.throws(() => db.prepare("INSERT INTO initiative_lobs VALUES ('IN-000001','l-1')").run(), /UNIQUE|PRIMARY KEY/);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    applySchema(reopened);
+    assert.equal(reopened.prepare('PRAGMA table_info(opportunities)').all().filter((row) => row.name === 'next_action_date').length, 1);
+    assert.equal(count(reopened, 'initiative_lobs'), 1);
     closeDatabase(reopened);
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

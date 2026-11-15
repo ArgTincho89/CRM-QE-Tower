@@ -11,8 +11,23 @@ const FIELD_LABELS = {
   owner: 'responsable',
   due: 'próximo hito',
   tags: 'etiquetas',
-  registry_id: 'ID registro',
+  registry_id: 'ICRM',
   assigned_user_id: 'asignado a',
+  next_action_date: 'fecha de próxima acción',
+  next_milestone_date: 'fecha del próximo hito',
+  client_id: 'cliente',
+  opportunity_type: 'tipo',
+  number: 'número',
+  towers: 'towers',
+  lobs: 'LoB',
+  services: 'servicios',
+  links: 'enlaces',
+  // Initiative fields (the initiative history shares these labels).
+  category: 'categoría',
+  priority: 'prioridad',
+  description: 'descripción',
+  operational_status: 'estado operativo',
+  next_action: 'próxima acción',
 };
 
 function pad(value) {

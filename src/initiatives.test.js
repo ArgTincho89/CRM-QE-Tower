@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { describe } from 'node:test';
 import { initiativeStages } from './data.js';
 import { moveOpportunityToStage } from './kanban.js';
 import {
   INITIATIVE_STATUS_FILTERS,
   addInitiative,
   buildOpportunityPrefill,
+  daysUntilDate,
+  describeInitiativeUrgency,
   filterInitiativeRecords,
   filterInitiativesByStatus,
   initiativeCategoryLabel,
@@ -13,6 +15,7 @@ import {
   isInitiativeCompleted,
   initiativeCountLabel,
   initiativeStatusLabel,
+  initiativeUrgency,
   isActiveInitiative,
   mapInitiativeStage,
   removeInitiative,
@@ -206,4 +209,48 @@ test('initiative display records tolerate missing relations', () => {
   assert.equal(record.servicesLabel, '');
   assert.equal(record.linkCount, 0);
   assert.equal(record.generatedOpportunityCount, 3);
+});
+
+describe('initiative next-action urgency', () => {
+  // Late local evening: a UTC-based comparison would drift a day in some time zones.
+  const today = new Date(2026, 10, 15, 23, 30);
+  const withDays = (days, extra = {}) => {
+    const date = new Date(2026, 10, 15 + days);
+    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return { id: 'IN-1', stage: 'pending', nextActionDate: iso, ...extra };
+  };
+
+  test('daysUntilDate counts local calendar days and rejects malformed dates', () => {
+    assert.equal(daysUntilDate('2026-11-15', today), 0);
+    assert.equal(daysUntilDate('2026-11-20', today), 5);
+    assert.equal(daysUntilDate('2026-11-14', today), -1);
+    assert.equal(daysUntilDate('2026-12-01', today), 16);
+    assert.equal(daysUntilDate('', today), null);
+    assert.equal(daysUntilDate('15/11/2026', today), null);
+  });
+
+  test('boundaries: 6 days none, 5 and 1 soon, 0 and -1 due', () => {
+    assert.equal(initiativeUrgency(withDays(6), today), 'none');
+    assert.equal(initiativeUrgency(withDays(5), today), 'soon');
+    assert.equal(initiativeUrgency(withDays(1), today), 'soon');
+    assert.equal(initiativeUrgency(withDays(0), today), 'due');
+    assert.equal(initiativeUrgency(withDays(-1), today), 'due');
+  });
+
+  test('no date, completed (legacy won included) and archived initiatives are never tinted', () => {
+    assert.equal(initiativeUrgency({ id: 'IN-1', stage: 'pending', nextActionDate: '' }, today), 'none');
+    assert.equal(initiativeUrgency(withDays(-3, { stage: 'completed' }), today), 'none');
+    assert.equal(initiativeUrgency(withDays(-3, { stage: 'won' }), today), 'none');
+    assert.equal(initiativeUrgency(withDays(0, { archivedAt: '2026-11-01T10:00:00.000Z' }), today), 'none');
+    assert.equal(initiativeUrgency(null, today), 'none');
+  });
+
+  test('describeInitiativeUrgency adds a text cue so color is not the only signal', () => {
+    assert.deepEqual(describeInitiativeUrgency(withDays(6), today), { level: 'none', label: '' });
+    assert.deepEqual(describeInitiativeUrgency(withDays(5), today), { level: 'soon', label: 'Vence en 5 días' });
+    assert.deepEqual(describeInitiativeUrgency(withDays(1), today), { level: 'soon', label: 'Vence mañana' });
+    assert.deepEqual(describeInitiativeUrgency(withDays(0), today), { level: 'due', label: 'Vence hoy' });
+    assert.deepEqual(describeInitiativeUrgency(withDays(-1), today), { level: 'due', label: 'Vencida hace 1 día' });
+    assert.deepEqual(describeInitiativeUrgency(withDays(-4), today), { level: 'due', label: 'Vencida hace 4 días' });
+  });
 });

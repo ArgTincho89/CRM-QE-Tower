@@ -1,4 +1,5 @@
 import { parseAmount } from './money.js';
+import { opportunityClientLabel } from './opportunities.js';
 
 export function createDefaultAdvancedFilters() {
   return {
@@ -14,6 +15,7 @@ export function createDefaultAdvancedFilters() {
     minQaPercent: '',
     maxQaPercent: '',
     externalNumber: '',
+    registryId: '',
     due: '',
     tags: '',
     closureReason: '',
@@ -70,7 +72,7 @@ function hasRelation(list, id) {
 
 function pipelineSearchText(item) {
   const tags = Array.isArray(item.tags) ? item.tags.join(' ') : '';
-  return `${item.title} ${item.account} ${item.owner} ${item.tower} ${item.id} ${item.number || ''} ${item.registryId || ''} ${item.due || ''} ${tags} ${item.category || ''} ${item.status || ''} ${item.closureReason || ''}`.toLowerCase();
+  return `${item.title} ${opportunityClientLabel(item)} ${item.owner} ${item.tower} ${item.id} ${item.number || ''} ${item.registryId || ''} ${item.due || ''} ${tags} ${item.category || ''} ${item.status || ''} ${item.closureReason || ''}`.toLowerCase();
 }
 
 /**
@@ -98,7 +100,8 @@ export function filterPipelineCards(cards, filters, { currentUserId = '' } = {})
     if (!hasRelation(record.lobs, filters.lobId)) return false;
     if (!hasRelation(record.towers, filters.towerId)) return false;
 
-    if (!includesText(`${record.account || ''} ${record.clientId || ''}`, filters.account)) return false;
+    // Opportunities without a client (staffing) match "Sin cliente".
+    if (!includesText(`${opportunityClientLabel(record)} ${record.clientId || ''}`, filters.account)) return false;
     if (filters.bidManagerId !== 'all' && record.bidManagerId !== filters.bidManagerId) return false;
     if (!matchesAssignee(record, filters.assignedUserId, currentUserId)) return false;
     if (!withinRange(parseAmount(record.amount), filters.minAmount, filters.maxAmount)) return false;
@@ -108,6 +111,7 @@ export function filterPipelineCards(cards, filters, { currentUserId = '' } = {})
     if (!withinDateRange(record.updatedAt, filters.updatedFrom, filters.updatedTo)) return false;
 
     if (!includesText(record.number, filters.externalNumber)) return false;
+    if (!includesText(record.registryId, filters.registryId ?? '')) return false;
     if (!includesText(record.due, filters.due)) return false;
     const tags = Array.isArray(record.tags) ? record.tags.join(' ') : record.tags;
     if (!includesText(tags, filters.tags)) return false;

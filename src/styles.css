@@ -581,3 +581,33 @@ button.kpi-card-main:focus-visible { outline: 2px solid #1268d5; outline-offset:
 .form-field [aria-invalid="true"] { border-color: #c34450; box-shadow: 0 0 0 1px #c34450; }
 .field-error { color: #c34450; font-size: 12px; font-weight: 600; line-height: 1.4; }
 .field-error:empty { display: none; }
+
+/* Dropdown multi-select (LoB, Towers, Servicios): closed control with chips + popover listbox. */
+.multi-select { position: relative; }
+.multi-select-control { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 4px 4px 8px; border: 1px solid #e2e7ee; border-radius: 6px; background: #fff; }
+.multi-select-control.open { border-color: #8bb9ec; }
+.multi-select-control .multi-select-chips { flex: 1; }
+.multi-select-placeholder { flex: 1; color: #8a97a8; font-size: 13px; }
+.multi-select-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 28px; flex: none; border: 0; border-radius: 5px; background: #f2f5f9; color: #546b87; cursor: pointer; }
+.multi-select-toggle svg { transform: rotate(90deg); transition: transform .15s; }
+.multi-select-toggle[aria-expanded="true"] svg { transform: rotate(-90deg); }
+.multi-select-toggle:hover { background: #e6edf6; }
+.multi-select-toggle:focus-visible { outline: 2px solid #176ccf; outline-offset: 1px; }
+.multi-select-popover { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; display: grid; gap: 6px; margin-top: 4px; padding: 8px; border: 1px solid #d5dfeb; border-radius: 8px; background: #fff; box-shadow: 0 10px 28px #24344c24; }
+.multi-select-listbox { max-height: 220px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.multi-select-option { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; color: #34465d; font-size: 13px; cursor: pointer; }
+.multi-select-option.active { background: #eef5fd; }
+.multi-select-option.selected { color: #176ccf; font-weight: 600; }
+.multi-select-option.disabled { color: #a0abb9; cursor: not-allowed; }
+.multi-select-check { width: 14px; flex: none; color: #176ccf; text-align: center; }
+
+/* Initiative next-action urgency: tint plus a text cue. */
+.opportunity-card.urgency-soon, .list-row.urgency-soon { background: #fff4e6; }
+.opportunity-card.urgency-due, .list-row.urgency-due { background: #fdecec; }
+.urgency-cue { display: inline-block; margin: 2px 0; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.urgency-cue.soon { background: #ffe3bf; color: #8a4b00; }
+.urgency-cue.due { background: #f9cfcf; color: #9b1c1c; }
+.list-date .urgency-cue { margin: 0 0 0 4px; }
+
+.card-next-action { display: inline-flex; align-items: center; gap: 4px; color: #6b7a90; font-size: 11px; }
+.muted-text { color: #8a97a8; }

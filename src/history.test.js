@@ -38,6 +38,13 @@ test('describeEvent updated lists field labels', () => {
   );
 });
 
+test('describeEvent labels the ICRM, next action date and relation fields', () => {
+  assert.equal(
+    describeEvent({ action: 'updated', detail: { fields: ['registry_id', 'next_action_date', 'lobs', 'towers'] } }),
+    'Actualizó: ICRM, fecha de próxima acción, LoB, towers',
+  );
+});
+
 test('describeEvent updated empty fields', () => {
   assert.equal(describeEvent({ action: 'updated', detail: { fields: [] } }), 'Actualizó la tarjeta');
 });

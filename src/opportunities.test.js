@@ -1,6 +1,36 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, originInitiativeOptions, requiresOriginInitiative, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative, validateOpportunityClient, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+
+describe('staffing opportunities', () => {
+  test('only Pliego and Oferta require a client', () => {
+    assert.equal(isClientRequired('tender'), true);
+    assert.equal(isClientRequired('offer'), true);
+    assert.equal(isClientRequired('staffing'), false);
+    assert.equal(isClientRequired(''), false);
+  });
+
+  test('the number field is a ticket number only for Staffing', () => {
+    assert.equal(opportunityNumberLabel('staffing'), 'Número de ticket');
+    assert.equal(opportunityNumberLabel('offer'), 'Número de oportunidad');
+    assert.equal(opportunityNumberLabel(''), 'Número de oportunidad');
+  });
+
+  test('opportunities without a client read "Sin cliente"', () => {
+    assert.equal(opportunityClientLabel({ account: 'Acme' }), 'Acme');
+    assert.equal(opportunityClientLabel({ account: '  ' }), 'Sin cliente');
+    assert.equal(opportunityClientLabel({}), 'Sin cliente');
+    assert.equal(filterOpportunityRecords([{ id: 'OP-9', title: 'Staffing', account: '' }], [], 'sin cliente', false).length, 1);
+  });
+
+  test('validateOpportunityClient mirrors the API and keeps untouched legacy rows editable', () => {
+    assert.match(validateOpportunityClient({ opportunityType: 'offer', clientId: '' }), /cliente/);
+    assert.equal(validateOpportunityClient({ opportunityType: 'offer', clientId: 'c1' }), '');
+    assert.equal(validateOpportunityClient({ opportunityType: 'staffing', clientId: '' }), '');
+    assert.equal(validateOpportunityClient({ opportunityType: 'tender', clientId: '' }, { id: 'OP-1', opportunityType: 'tender', clientId: '' }), '');
+    assert.match(validateOpportunityClient({ opportunityType: 'tender', clientId: '' }, { id: 'OP-1', opportunityType: 'tender', clientId: 'c1' }), /cliente/);
+  });
+});
 
 describe('opportunity result rules', () => {
   const base = { stage: 'result', outcome: 'won', expectedCloseDate: '2026-06-01', closureReason: '' };

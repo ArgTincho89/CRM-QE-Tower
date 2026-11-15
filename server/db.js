@@ -125,6 +125,14 @@ const SCHEMA_STATEMENTS = [
       initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
       service_id TEXT NOT NULL REFERENCES services(id), PRIMARY KEY(initiative_id, service_id)
     )`,
+  `CREATE TABLE IF NOT EXISTS initiative_lobs (
+      initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+      lob_id TEXT NOT NULL REFERENCES lobs(id), PRIMARY KEY(initiative_id, lob_id)
+    )`,
+  `CREATE TABLE IF NOT EXISTS initiative_towers (
+      initiative_id TEXT NOT NULL REFERENCES initiatives(id) ON DELETE CASCADE,
+      tower_id TEXT NOT NULL REFERENCES towers(id), PRIMARY KEY(initiative_id, tower_id)
+    )`,
   `CREATE TABLE IF NOT EXISTS workspace_links (${WORKSPACE_LINK_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // In-app notifications. Title and message are snapshots taken when the notification is created.
@@ -229,6 +237,8 @@ export function applySchema(db) {
     // Optional external reference (client portal, tender or ERP registry number). Not unique.
     ['registry_id', "TEXT NOT NULL DEFAULT ''"],
     ASSIGNED_USER_COLUMN,
+    // Optional "Fecha de próxima acción" (ISO date), distinct from the next milestone date.
+    ['next_action_date', "TEXT NOT NULL DEFAULT ''"],
   ];
   for (const [name, declaration] of opportunityAdditions) {
     if (!columns.includes(name)) db.exec(`ALTER TABLE opportunities ADD COLUMN ${name} ${declaration}`);
@@ -265,6 +275,8 @@ export function applySchema(db) {
     'CREATE INDEX IF NOT EXISTS idx_opportunity_lobs_lob ON opportunity_lobs(lob_id)',
     'CREATE INDEX IF NOT EXISTS idx_opportunity_services_service ON opportunity_services(service_id)',
     'CREATE INDEX IF NOT EXISTS idx_initiative_services_service ON initiative_services(service_id)',
+    'CREATE INDEX IF NOT EXISTS idx_initiative_lobs_lob ON initiative_lobs(lob_id)',
+    'CREATE INDEX IF NOT EXISTS idx_initiative_towers_tower ON initiative_towers(tower_id)',
     WORKSPACE_LINKS_INDEX,
     'CREATE INDEX IF NOT EXISTS idx_opportunities_initiative ON opportunities(initiative_id)',
     'CREATE INDEX IF NOT EXISTS idx_opportunities_archived ON opportunities(archived_at)',
@@ -426,7 +438,12 @@ const COMMERCIAL_ID_RENAMES = [
     table: 'initiatives',
     prefix: INITIATIVE_ID_PREFIX,
     entityTypes: ['initiative', 'initiatives'],
-    references: [['opportunities', 'initiative_id'], ['initiative_services', 'initiative_id']],
+    references: [
+      ['opportunities', 'initiative_id'],
+      ['initiative_services', 'initiative_id'],
+      ['initiative_lobs', 'initiative_id'],
+      ['initiative_towers', 'initiative_id'],
+    ],
     detailKeys: ['initiativeId', 'fromInitiativeId'],
   },
   {

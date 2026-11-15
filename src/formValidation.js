@@ -1,12 +1,12 @@
 import { parseAmount } from './money.js';
-import { validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { validateOpportunityClient, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 
 /**
  * Per-form validators. Each returns `{ fieldId: message }` in form order; an empty object
  * means the form is valid. Messages are Spanish UI copy shown under each field.
  */
 
-export const OPPORTUNITY_FORM_FIELDS = ['title', 'opportunityType', 'amount', 'initiativeId', 'probability', 'expectedCloseDate', 'qaPercent', 'outcome', 'closureReason'];
+export const OPPORTUNITY_FORM_FIELDS = ['title', 'opportunityType', 'registryId', 'clientId', 'amount', 'initiativeId', 'probability', 'expectedCloseDate', 'nextActionDate', 'qaPercent', 'outcome', 'closureReason'];
 export const INITIATIVE_FORM_FIELDS = ['title'];
 export const AGREEMENT_FORM_FIELDS = ['title', 'amount'];
 export const MASTER_FORM_FIELDS = ['name', 'responsibleId'];
@@ -25,6 +25,8 @@ export function validateOpportunityForm(form, { amountText = '', original = {} }
   if (isBlank(form.title)) errors.title = 'Completa el nombre de la oportunidad.';
   const typeError = validateOpportunityType(form.opportunityType);
   if (typeError) errors.opportunityType = typeError;
+  const clientError = validateOpportunityClient(form, original);
+  if (clientError) errors.clientId = clientError;
   if (!/\d/.test(String(amountText ?? ''))) errors.amount = 'Indica el importe estimado.';
   else if (!(parseAmount(amountText) >= 0)) errors.amount = 'El importe debe ser igual o superior a cero.';
   const originError = validateOriginInitiative(form, original);
@@ -79,6 +81,9 @@ export function clearFieldError(errors, field) {
 /** Server column names the API may report, mapped to the form field ids. */
 const SERVER_FIELD_ALIASES = {
   opportunity_type: 'opportunityType',
+  client_id: 'clientId',
+  registry_id: 'registryId',
+  next_action_date: 'nextActionDate',
   qa_percent: 'qaPercent',
   initiative_id: 'initiativeId',
   expected_close_date: 'expectedCloseDate',

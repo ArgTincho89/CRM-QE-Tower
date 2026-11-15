@@ -94,6 +94,18 @@ describe('pipeline toolbar filters', () => {
     assert.deepEqual(filterPipelineToolbar(records, { query: 'precio' }).map((item) => item.id), ['OP-000002']);
   });
 
+  test('opportunities without a client are found as "Sin cliente"', () => {
+    const withStaffing = [...records, { id: 'OP-000003', title: 'Perfil QA', account: '', owner: 'Ana', tower: '', stage: 'prospecting', opportunityType: 'staffing' }];
+    assert.deepEqual(filterPipelineToolbar(withStaffing, { query: 'sin cliente' }).map((item) => item.id), ['OP-000003']);
+    const advanced = filterPipelineCards(withStaffing, { ...createDefaultAdvancedFilters(), account: 'sin cliente' });
+    assert.deepEqual(advanced.map((item) => item.id), ['OP-000003']);
+  });
+
+  test('the ICRM advanced filter matches the registry id', () => {
+    assert.equal(createDefaultAdvancedFilters().registryId, '');
+    assert.deepEqual(filterPipelineCards(records, { ...createDefaultAdvancedFilters(), registryId: 'icrm-9' }).map((item) => item.id), ['OP-000001']);
+  });
+
   test('stage, tower and owner selects combine with the search', () => {
     assert.deepEqual(filterPipelineToolbar(records, { stage: 'result' }).map((item) => item.id), ['OP-000002']);
     assert.deepEqual(filterPipelineToolbar(records, { tower: 'Testing', owner: 'Luis' }), []);
