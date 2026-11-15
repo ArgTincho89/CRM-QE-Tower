@@ -32,11 +32,16 @@ test('Dockerfile copies every src module imported by the server runtime', () => 
   assert.ok(seen.size > 0, 'expected the server to import at least one src module');
 });
 
-test('Dockerfile ships the private resources and the seed CSVs in the runtime image', () => {
+// The GitHub repo is public, so content/ is git-ignored and never part of the image built in CI.
+// Production reads it from the persistent Fly volume instead (fly.toml RESOURCES_DIR / SEED_DIR).
+test('runtime image never bundles private content and production reads it from the volume', () => {
   const dockerfile = readFileSync(path.join(rootDir, 'Dockerfile'), 'utf8');
-  const runtime = dockerfile.slice(dockerfile.indexOf('AS runtime'));
-  assert.match(runtime, /^COPY content\/resources \.\/content\/resources$/m);
-  assert.match(runtime, /^COPY content\/seed\/\*\.csv \.\/content\/seed\/$/m);
+  assert.doesNotMatch(dockerfile, /^COPY\s+content\b/m);
+  const gitignore = readFileSync(path.join(rootDir, '.gitignore'), 'utf8');
+  assert.match(gitignore, /^content\/$/m);
+  const flyToml = readFileSync(path.join(rootDir, 'fly.toml'), 'utf8');
+  assert.match(flyToml, /RESOURCES_DIR\s*=\s*'\/data\/content\/resources'/);
+  assert.match(flyToml, /SEED_DIR\s*=\s*'\/data\/content\/seed'/);
 });
 
 // Vite copies public/ verbatim into dist/, which is served without authentication.
@@ -53,8 +58,11 @@ test('public/ holds no private documents, data files or archives', () => {
   assert.deepEqual(offending, []);
 });
 
-test('private documents only reference images that exist next to them', () => {
-  const resourcesDir = path.join(rootDir, 'content', 'resources');
+const localResourcesDir = path.join(rootDir, 'content', 'resources');
+
+// content/ only exists on machines that hold the private files (never in a clean checkout).
+test('private documents only reference images that exist next to them', { skip: !existsSync(localResourcesDir) && 'private content/ not present' }, () => {
+  const resourcesDir = localResourcesDir;
   for (const name of readdirSync(resourcesDir).filter((file) => file.endsWith('.html'))) {
     const html = readFileSync(path.join(resourcesDir, name), 'utf8');
     assert.doesNotMatch(html, /src=["']https:\/\/[^"']*sharepoint\.com/i, `${name} still loads images from SharePoint`);

@@ -13,6 +13,8 @@ primary_region = 'lhr'
   PORT = '8080'
   TRUST_PROXY = 'true'
   CRM_DB_PATH = '/data/app.db'
+  RESOURCES_DIR = '/data/content/resources'
+  SEED_DIR = '/data/content/seed'
   DIST_DIR = '/app/dist'
 
 [http_service]
