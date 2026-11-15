@@ -42,6 +42,18 @@ export async function startTestServer(options = {}) {
   // A file outside dist that a traversal attempt would try to reach.
   writeFileSync(path.join(dir, 'secret.txt'), 'top-secret');
 
+  // Private documents served under /resources/ to signed-in users only.
+  const resourcesDir = path.join(dir, 'resources');
+  mkdirSync(path.join(resourcesDir, 'images', 'Sub folder'), { recursive: true });
+  writeFileSync(path.join(resourcesDir, 'doc.html'), '<!doctype html><title>Doc</title><img src="images/logo.png">');
+  writeFileSync(path.join(resourcesDir, 'images', 'logo.png'), 'png-bytes');
+  writeFileSync(path.join(resourcesDir, 'images', 'Sub folder', 'photo.webp'), 'webp-bytes');
+  writeFileSync(path.join(resourcesDir, 'images', 'photo.jpg'), 'jpg-bytes');
+  writeFileSync(path.join(resourcesDir, 'images', 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+  writeFileSync(path.join(resourcesDir, 'style.css'), 'body{}');
+  writeFileSync(path.join(resourcesDir, 'script.js'), 'void 0;');
+  writeFileSync(path.join(resourcesDir, 'notes.txt'), 'not served');
+
   const db = openDatabase(dbPath);
   const config = {
     nodeEnv: 'test',
@@ -49,6 +61,7 @@ export async function startTestServer(options = {}) {
     port: 0,
     dbPath,
     distDir,
+    resourcesDir,
     sessionSecret: options.sessionSecret ?? 'test-session-secret',
     inviteCode: options.inviteCode === undefined ? DEFAULT_INVITE_CODE : options.inviteCode,
     trustProxy: false,

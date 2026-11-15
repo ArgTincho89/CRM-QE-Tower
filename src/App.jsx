@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { clampActiveIndex, edgeEnabledIndex, filterOptions, isAssignable, reduceDropdownKey, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityOrigins, opportunityOutcomes, opportunityTypes, proposals, stages } from './data.js';
 import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
-import { NAV_GROUPS, resolveNavigationTarget } from './navigation.js';
+import { MASTER_DATA_TABS, NAV_GROUPS, RESOURCE_PAGES, resolveNavigationTarget } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
@@ -10,7 +10,7 @@ import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLi
 import { filterAgreements } from './agreements.js';
 import { computeWeightedAmount } from './pipelineSummary.js';
 import { ALL_YEARS, availableYears, computePipelineKpis } from './pipelineMetrics.js';
-import { loadPipelineYear, loadViewMode, savePipelineYear, saveViewMode } from './preferences.js';
+import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePipelineYear, saveViewMode } from './preferences.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
 import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, OPEN_OUTCOME_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
@@ -41,7 +41,13 @@ const pageTitles = {
   calendar: ['Calendario', 'Próximas acciones de iniciativas y oportunidades y fin de vigencia de los acuerdos marco.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
   settings: ['Configuración', 'Preferencias de tu cuenta.'],
+  masterData: ['Datos Maestros', 'Clientes, LoB, towers, responsables y servicios compartidos por todo el equipo.'],
+  'resource-quality-gates': ['Modelo de gobernanza de Quality Gates', 'Documento de referencia de la Oficina de Calidad.'],
+  'resource-normativa-calidad': ['Normativa de calidad', 'Estrategia de calidad del portfolio: modelo extendido.'],
+  'resource-agentic-quality-engineering': ['Agentic Quality Engineering', 'Wiki unificado del framework de Agentic Quality Engineering.'],
 };
+
+const APP_NAME = 'QE Operations Centre';
 
 function Icon({ name, size = 18 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
@@ -69,6 +75,8 @@ function Icon({ name, size = 18 }) {
     table: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 4v16"/></>,
     close: <><path d="m6 6 12 12M18 6 6 18"/></>,
     check: <path d="m5 12 4 4L19 6"/>,
+    external: <><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></>,
+    book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></>,
   };
   return <svg {...common}>{shapes[name] || shapes.grid}</svg>;
 }
@@ -96,6 +104,8 @@ function App() {
   const [commentsFocus, setCommentsFocus] = useState('');
   const [oppState, setOppState] = useState('loading');
   const [page, setPage] = useState('pipeline');
+  // Last "Datos Maestros" tab, persisted per browser.
+  const [masterTab, setMasterTab] = useState(() => loadMasterDataTab());
   const [query, setQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
   const [towerFilter, setTowerFilter] = useState('all');
@@ -288,9 +298,16 @@ function App() {
 
   // Retired page ids (e.g. the old Oportunidades page) resolve to their new home and view.
   // A `filters` payload (e.g. from a report metric) replaces every CRM QE filter with it.
+  const selectMasterTab = (tabId) => {
+    setMasterTab(tabId);
+    saveMasterDataTab(tabId);
+  };
+
+  // Former master data page ids (e.g. "clients" from a KPI or report) open their Datos Maestros tab.
   const navigate = (nextPage, { view: requestedView = null, filters = null } = {}) => {
     const target = resolveNavigationTarget(nextPage, filters);
     setPage(target.page);
+    if (target.tab) selectMasterTab(target.tab);
     if (target.filters) {
       setQuery('');
       setStageFilter(target.filters.toolbar.stage);
@@ -737,6 +754,9 @@ function App() {
   const user = session.user;
   const activePage = page === 'home' ? 'home' : page;
   const [title, subtitle] = pageTitles[activePage] || pageTitles.pipeline;
+  // The master data kind (former page id) whose "Nuevo …" button the heading shows.
+  const masterKind = page === 'masterData' ? masterTab : null;
+  const resourcePage = RESOURCE_PAGES[page] || null;
   const kpiYears = availableYears([opportunities, initiatives, agreements, clients], serviceYears.currentYear, kpiYear);
   const kpis = computePipelineKpis({ opportunities, initiatives, agreements, clients }, kpiYear);
   const showingArchivedOpportunities = view === 'table' && archivedView;
@@ -744,20 +764,26 @@ function App() {
     ? advancedFilteredPipelineCards.length
     : showingArchivedOpportunities ? filteredArchivedOpportunities.length : filteredPipelineOpportunities.length;
 
+  const renderSecondaryPage = (pageId) => <SecondaryPage page={pageId} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />;
+
   return (
     <div className={`app-shell page-${page}`}>
       <aside className={`sidebar${mobileNav ? ' sidebar-open' : ''}`} aria-label="Navegación principal">
-        <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /></div>
+        <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /><span className="brand-name">{APP_NAME}</span></div>
         <div className="workspace-label">GESTIÓN COMERCIAL</div>
             <nav className="side-nav">
-          {NAV_GROUPS.map((group) => <div key={group.id} className={`nav-group${group.label ? ' nav-group-labeled' : ''}`} role="group" aria-labelledby={group.label ? `nav-group-${group.id}` : undefined}>
+          {NAV_GROUPS.map((group, groupIndex) => <div key={group.id} className={`nav-group nav-group-${group.id}${group.label || groupIndex > 0 ? ' nav-group-labeled' : ''}`} role="group" aria-labelledby={group.label ? `nav-group-${group.id}` : undefined}>
             {group.label && <div className="nav-group-label" id={`nav-group-${group.id}`}>{group.label}</div>}
-            {group.items.map((item) => <button key={item.id} className={`nav-item${page === item.id ? ' selected' : ''}`} onClick={() => navigate(item.id)} aria-current={page === item.id ? 'page' : undefined}>
+            {group.items.map((item) => item.href
+              ? <a key={item.id} className="nav-item nav-item-external" href={item.href} target="_blank" rel="noopener noreferrer">
+                <Icon name={item.icon} size={18} /><span>{item.label}</span><span className="sr-only"> (se abre en una pestaña nueva)</span>
+              </a>
+              : <button key={item.id} className={`nav-item${page === item.id ? ' selected' : ''}`} onClick={() => navigate(item.id)} aria-current={page === item.id ? 'page' : undefined}>
               <Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'pipeline' && <span className="nav-count">{opportunities.length}</span>}
             </button>)}
           </div>)}
         </nav>
-        <div className="sidebar-footer"><span className="footer-dot" /> CRM QE <span className="footer-version">{appVersion ? `v${appVersion}` : ''}</span></div>
+        <div className="sidebar-footer"><span className="footer-dot" /> {APP_NAME} <span className="footer-version">{appVersion ? `v${appVersion}` : ''}</span></div>
       </aside>
       {mobileNav && <button className="nav-backdrop" aria-label="Cerrar navegación" onClick={() => setMobileNav(false)} />}
 
@@ -765,7 +791,7 @@ function App() {
         <header className="topbar">
           <button className="mobile-menu icon-button" aria-label="Abrir navegación" onClick={() => setMobileNav(true)}><Icon name="list" /></button>
           <div className="breadcrumbs"><span>SEIDOR</span><Icon name="chevron" size={14} /><strong>{title}</strong></div>
-          <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en CRM QE</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad, ICRM..." /><kbd>⌘ K</kbd></label>
+          <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en {APP_NAME}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad, ICRM..." /><kbd>⌘ K</kbd></label>
           <NotificationBell notifications={notifications.items} unreadCount={notifications.unreadCount} onOpen={openNotification} onMarkAllRead={markAllRead} />
           <div className="user-menu">
             <Avatar name={user.name} />
@@ -779,7 +805,7 @@ function App() {
         <div className="content-wrap">
           <div className="page-heading">
             <div><div className="eyebrow"><span className="eyebrow-dot" /> ESPAÑA <span className="eyebrow-divider">/</span> QUALITY ENGINEERING</div><h1>{title}</h1><p>{subtitle}</p></div>
-            <div className="heading-actions">{['clients', 'towers', 'services', 'lobs', 'people'].includes(page) && <button className="button button-primary" onClick={() => setMasterEditing(page === 'services' ? { kind: page, year: activeServiceYear } : { kind: page })} disabled={page === 'services' && activeServiceYear === null}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[page]}</button>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{page === 'pipeline' && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
+            <div className="heading-actions">{masterKind && <button className="button button-primary" onClick={() => setMasterEditing(masterKind === 'services' ? { kind: masterKind, year: activeServiceYear } : { kind: masterKind })} disabled={masterKind === 'services' && activeServiceYear === null}><Icon name="plus" size={17} /> {{ clients: 'Nuevo cliente', towers: 'Nueva tower', services: 'Nuevo servicio', lobs: 'Nueva LoB', people: 'Nuevo responsable' }[masterKind]}</button>}{resourcePage && <a className="button button-secondary" href={resourcePage.resource} target="_blank" rel="noopener noreferrer"><Icon name="external" size={16} /> Abrir en pestaña nueva</a>}{['initiatives', 'crossSelling'].includes(page) && <button className="button button-primary" onClick={() => setEditingInitiative(page === 'crossSelling' ? { category: 'Cross-selling' } : {})}><Icon name="plus" size={17} /> Nueva iniciativa</button>}{page === 'agreements' && <button className="button button-primary" onClick={() => setEditingAgreement({})}><Icon name="plus" size={17} /> Nuevo acuerdo</button>}{page === 'pipeline' && <button className="button button-primary" onClick={() => setEditing({})}><Icon name="plus" size={18} /> Nueva oportunidad</button>}</div>
           </div>
 
           {page === 'pipeline' ? <>
@@ -822,8 +848,12 @@ function App() {
             ? <ReportsPage opportunities={opportunities} initiatives={initiatives} agreements={agreements} towers={towers} currentYear={serviceYears.currentYear} onNavigate={navigate} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
           : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
-            : <SecondaryPage page={page} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />}
-          <footer className="main-footer"><span>CRM QE <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
+            : page === 'masterData'
+              ? <MasterDataPage tab={masterTab} onSelectTab={selectMasterTab}>{renderSecondaryPage(masterTab)}</MasterDataPage>
+            : resourcePage
+              ? <ResourcePage key={resourcePage.id} title={resourcePage.label} src={resourcePage.resource} />
+            : renderSecondaryPage(page)}
+          <footer className="main-footer"><span>{APP_NAME} <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
       </main>
       {editing !== null && <OpportunityDialog record={editing} users={users} clients={clients} towers={towers} services={services} currentServiceYear={serviceYears.currentYear} lobs={lobs} people={people} initiatives={initiatives} onQuickCreate={(kind, onCreated) => setMasterEditing({ kind, onCreated })} onClose={() => { setEditing(null); setSaveError(''); setCommentsFocus(''); }} onSave={saveOpportunity} saving={saving} saveError={saveError} historyRefresh={historyRefresh} currentUserId={user.id} focusComments={Boolean(editing.id) && commentsFocus === `opportunity:${editing.id}`} />}
@@ -1122,6 +1152,41 @@ const typeSortLabel = (item) => {
 
 function OpportunityRows({ opportunities, onEdit }) {
   return <div className="list-view">{opportunities.map((item) => <button className="list-row" key={item.id} onClick={() => onEdit(item)}><span className="list-accent" /><span className="list-main"><small>{item.id}{item.number && ` · N.º ${item.number}`} <span>·</span> {opportunityClientLabel(item)}</small><strong>{item.title}</strong></span><span className="list-stage"><i className={stages.find((stage) => stage.id === item.stage).tone} />{stages.find((stage) => stage.id === item.stage).label}</span><span className="list-tower">{item.tower}</span><strong className="list-amount">{item.amount}</strong><span className="table-owner"><Avatar name={item.owner} compact />{item.owner}</span><span className="list-date"><Icon name="calendar" size={14} />{item.due}</span><Icon name="chevron" size={16} /></button>)}{opportunities.length === 0 && <p className="empty-state">No hay oportunidades que coincidan con los filtros.</p>}</div>;
+}
+
+/** "Datos Maestros": one page whose tabs hold the former Clientes, LoB, Towers, Responsables and Servicios pages. */
+function MasterDataPage({ tab, onSelectTab, children }) {
+  const tabRefs = useRef({});
+  const baseId = useId();
+  const focusTab = (index) => {
+    const next = MASTER_DATA_TABS[(index + MASTER_DATA_TABS.length) % MASTER_DATA_TABS.length];
+    onSelectTab(next.id);
+    tabRefs.current[next.id]?.focus();
+  };
+  const handleKeyDown = (event) => {
+    const index = MASTER_DATA_TABS.findIndex((item) => item.id === tab);
+    if (event.key === 'ArrowRight') focusTab(index + 1);
+    else if (event.key === 'ArrowLeft') focusTab(index - 1);
+    else if (event.key === 'Home') focusTab(0);
+    else if (event.key === 'End') focusTab(MASTER_DATA_TABS.length - 1);
+    else return;
+    event.preventDefault();
+  };
+  return <section className="master-data-page">
+    <div className="master-data-tabs" role="tablist" aria-label="Datos maestros" onKeyDown={handleKeyDown}>
+      {MASTER_DATA_TABS.map((item) => <button key={item.id} ref={(node) => { tabRefs.current[item.id] = node; }} type="button" role="tab" id={`${baseId}-tab-${item.id}`} aria-selected={item.id === tab} aria-controls={`${baseId}-panel`} tabIndex={item.id === tab ? 0 : -1} className={`master-data-tab${item.id === tab ? ' active' : ''}`} onClick={() => onSelectTab(item.id)}>{item.label}</button>)}
+    </div>
+    <div className="master-data-panel" role="tabpanel" id={`${baseId}-panel`} aria-labelledby={`${baseId}-tab-${tab}`}>{children}</div>
+  </section>;
+}
+
+/** An internal document from /resources/, embedded full size with a loading state. */
+function ResourcePage({ title, src }) {
+  const [loaded, setLoaded] = useState(false);
+  return <section className="resource-page" aria-busy={!loaded}>
+    {!loaded && <div className="resource-loading" role="status"><span className="resource-spinner" aria-hidden="true" />Cargando documento…</div>}
+    <iframe className={`resource-frame${loaded ? ' loaded' : ''}`} src={src} title={title} onLoad={() => setLoaded(true)} />
+  </section>;
 }
 
 function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {

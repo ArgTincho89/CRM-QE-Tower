@@ -41,6 +41,8 @@ export function loadConfig(env = process.env) {
     port: parsePort(env.PORT),
     dbPath: path.resolve((env.CRM_DB_PATH ?? '').trim() || './data/app.db'),
     distDir: path.resolve((env.DIST_DIR ?? '').trim() || './dist'),
+    // Private documents served only to signed-in users under /resources/ (never part of dist/).
+    resourcesDir: path.resolve((env.RESOURCES_DIR ?? '').trim() || './content/resources'),
     sessionSecret,
     // Empty string means "registration closed".
     inviteCode: (env.INVITE_CODE ?? '').trim(),

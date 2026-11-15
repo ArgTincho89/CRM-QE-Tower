@@ -5,3 +5,8 @@ data/
 .env
 .env.*
 !.env.example
+# Source archive of the extracted images in content/resources/images.
+content/seed/*.zip
+
+# Private SEIDOR content (internal docs, employee/client data). Never commit while the repo is public.
+content/

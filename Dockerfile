@@ -19,6 +19,10 @@ ENV PORT=8080
 COPY package.json ./
 COPY --from=build /app/dist ./dist
 COPY server ./server
+# Private content: documents served only to signed-in users under /resources/, and the seed
+# CSVs for the data import. Never part of dist/, which is served without authentication.
+COPY content/resources ./content/resources
+COPY content/seed/*.csv ./content/seed/
 RUN mkdir -p src
 COPY --from=build /app/src/data.js ./src/data.js
 COPY --from=build /app/src/money.js ./src/money.js

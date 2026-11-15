@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-/** The API runs separately during development, so `/api` is proxied to it. */
+/** The API runs separately during development, so `/api` and the private `/resources` are proxied to it. */
 const API_TARGET = process.env.API_TARGET || 'http://127.0.0.1:8080';
 
 export default defineConfig({
@@ -9,6 +9,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': { target: API_TARGET, changeOrigin: false },
+      '/resources': { target: API_TARGET, changeOrigin: false },
     },
   },
 });

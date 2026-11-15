@@ -79,8 +79,8 @@ export default function AuthScreen({ onAuthenticated, version = '' }) {
           <img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" />
           <div className="auth-brand-text">
             <span className="eyebrow">SEIDOR · QUALITY ENGINEERING</span>
-            <h1 id="auth-title">CRM QE</h1>
-            <p>Tablero comercial compartido del equipo QE.</p>
+            <h1 id="auth-title">QE Operations Centre</h1>
+            <p>Centro de operaciones compartido del equipo QE.</p>
             {version && <small className="auth-version">v{version}</small>}
           </div>
         </div>

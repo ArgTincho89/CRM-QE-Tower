@@ -32,6 +32,7 @@ import {
   sendNoContent,
   serveStatic,
 } from './http.js';
+import { RESOURCES_PREFIX, serveResource } from './resources.js';
 
 const STAGES = new Set(stages.map(({ id }) => id));
 const OPPORTUNITY_ORIGINS = new Set(opportunityOrigins);
@@ -2563,6 +2564,11 @@ export function createServer(deps = {}) {
 
     const run = pathname === '/api' || pathname.startsWith('/api/')
       ? handleApi(ctx, req, res, pathname, query)
+      : pathname.startsWith(RESOURCES_PREFIX)
+        ? serveResource(req, res, pathname, {
+          resourcesDir: config.resourcesDir,
+          isAuthenticated: () => getSessionUser(req, ctx, ctx.now()) !== null,
+        })
       : (req.method === 'GET' || req.method === 'HEAD'
         ? serveStatic(req, res, pathname, { distDir: config.distDir })
         : Promise.reject(new HttpError(405, 'method_not_allowed', 'Método no permitido.')));

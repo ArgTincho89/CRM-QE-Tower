@@ -1,4 +1,5 @@
 import { ALL_YEARS, normalizeYearSelection } from './pipelineMetrics.js';
+import { DEFAULT_MASTER_DATA_TAB, isMasterDataTab } from './navigation.js';
 
 // Per-browser UI preferences. Storage can be missing or throw (private mode, blocked site
 // data), so every read falls back to a default and every write reports success as a boolean.
@@ -61,4 +62,17 @@ export function savePipelineYear(year, storage = defaultPreferenceStorage()) {
   const value = normalizeYearSelection(year);
   if (value === null) return false;
   return writeItem(PIPELINE_YEAR_STORAGE_KEY, value === ALL_YEARS ? ALL_YEARS : String(value), storage);
+}
+
+export const MASTER_DATA_TAB_STORAGE_KEY = 'crm.masterData.tab';
+
+/** Last tab opened in "Datos Maestros"; unknown or missing values fall back to the first tab. */
+export function loadMasterDataTab(storage = defaultPreferenceStorage()) {
+  const saved = readItem(MASTER_DATA_TAB_STORAGE_KEY, storage);
+  return isMasterDataTab(saved) ? saved : DEFAULT_MASTER_DATA_TAB;
+}
+
+export function saveMasterDataTab(tabId, storage = defaultPreferenceStorage()) {
+  if (!isMasterDataTab(tabId)) return false;
+  return writeItem(MASTER_DATA_TAB_STORAGE_KEY, tabId, storage);
 }

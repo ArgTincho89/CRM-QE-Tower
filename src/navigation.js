@@ -19,23 +19,52 @@ export const NAV_GROUPS = [
   },
   {
     id: 'masterData',
-    label: 'Datos maestros',
+    label: '',
     items: [
-      { id: 'clients', label: 'Clientes', icon: 'users' },
-      { id: 'lobs', label: 'LoB', icon: 'grid' },
-      { id: 'towers', label: 'Towers', icon: 'grid' },
-      { id: 'people', label: 'Responsables', icon: 'users' },
-      { id: 'services', label: 'Servicios', icon: 'layers' },
+      { id: 'masterData', label: 'Datos Maestros', icon: 'grid' },
+    ],
+  },
+  {
+    id: 'resources',
+    label: 'Recursos',
+    items: [
+      { id: 'sharepointQaSolTech', label: 'SharePoint QA Sol&Tech', icon: 'external', href: 'https://seidor.sharepoint.com/teams/QASolTech/SitePages/Home.aspx' },
+      { id: 'qaAcceleratorsDemos', label: 'QA-Aceleradores-Demos', icon: 'external', href: 'https://seidor-my.sharepoint.com/:f:/r/personal/jgonzalez24_seidor_es/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fjgonzalez24%5Fseidor%5Fes%2FDocuments%2F01%2E%20QA%20%2D%20Quality%20Assurance%20Drive%2F99%2E%20SEIDOR%2F00%2E%20QE%20Tower%20Core%2F03%2E%20Aceleradores%20%2D%20Demos%2F01%2E%20QA%2DAceleradores%2DDemos&share=cgpB9Mi1maZqRZbK6VUMHsPkEgUDWZYwmdcEWVCpSUcYiuKjDg' },
+      { id: 'resource-quality-gates', label: 'Modelo de gobernanza de Quality Gates', icon: 'book', resource: '/resources/quality-gates.html' },
+      { id: 'resource-normativa-calidad', label: 'Normativa de calidad', icon: 'book', resource: '/resources/normativa-calidad.html' },
+      { id: 'resource-agentic-quality-engineering', label: 'Agentic Quality Engineering', icon: 'book', resource: '/resources/agentic-quality-engineering.html' },
     ],
   },
 ];
 
 export const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
 
+/** Menu entries that open an in-app page; external links (`href`) are not pages. */
+export const PAGE_ITEMS = NAV_ITEMS.filter((item) => !item.href);
+
+/** Internal documents shown inside the app, by page id. */
+export const RESOURCE_PAGES = Object.fromEntries(NAV_ITEMS.filter((item) => item.resource).map((item) => [item.id, item]));
+
+/** Tabs of the "Datos Maestros" page, in display order. Tab ids are the former page ids. */
+export const MASTER_DATA_TABS = [
+  { id: 'clients', label: 'Clientes' },
+  { id: 'lobs', label: 'LoB' },
+  { id: 'towers', label: 'Towers' },
+  { id: 'people', label: 'Responsables' },
+  { id: 'services', label: 'Servicios' },
+];
+export const DEFAULT_MASTER_DATA_TAB = MASTER_DATA_TABS[0].id;
+
+export function isMasterDataTab(tabId) {
+  return MASTER_DATA_TABS.some((tab) => tab.id === tabId);
+}
+
 // Retired page ids and where they live now. The Oportunidades page became the "Tabla" view of
-// CRM QE, so links, notifications and saved state that still name it land there.
+// CRM QE, so links, notifications and saved state that still name it land there. The master data
+// pages became tabs of "Datos Maestros", so their ids open that page on the matching tab.
 export const PAGE_REDIRECTS = {
   opportunities: { page: 'pipeline', view: 'table' },
+  ...Object.fromEntries(MASTER_DATA_TABS.map((tab) => [tab.id, { page: 'masterData', view: null, tab: tab.id }])),
 };
 
 /** Toolbar filters of the CRM QE page that a navigation filter payload may set. */
@@ -60,7 +89,8 @@ export function buildPipelineNavigationFilters(payload = {}) {
 
 /**
  * Resolves a requested page id to the page to show and, when the destination dictates one,
- * the view mode to select (`view` is null otherwise). Unknown ids fall back to the pipeline.
+ * the view mode to select (`view` is null otherwise). Unknown ids, and external links, fall back
+ * to the pipeline. Former master data page ids also carry the `tab` of "Datos Maestros" to open.
  *
  * With a `filters` payload the result also carries `filters`: the CRM QE filter state to apply
  * (see buildPipelineNavigationFilters), and a filtered pipeline opens in the "Tabla" view unless
@@ -69,7 +99,7 @@ export function buildPipelineNavigationFilters(payload = {}) {
 export function resolveNavigationTarget(pageId, filters = null) {
   let target;
   if (PAGE_REDIRECTS[pageId]) target = { ...PAGE_REDIRECTS[pageId] };
-  else if (NAV_ITEMS.some((item) => item.id === pageId)) target = { page: pageId, view: null };
+  else if (PAGE_ITEMS.some((item) => item.id === pageId)) target = { page: pageId, view: null };
   else target = { page: 'pipeline', view: null };
   if (filters === null || filters === undefined) return target;
   if (target.page !== 'pipeline') return { ...target, filters: null };

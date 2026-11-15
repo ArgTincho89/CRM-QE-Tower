@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { ALL_YEARS } from './pipelineMetrics.js';
-import { PIPELINE_YEAR_STORAGE_KEY, loadPipelineYear, loadViewMode, savePipelineYear, saveViewMode, viewStorageKey } from './preferences.js';
+import { MASTER_DATA_TAB_STORAGE_KEY, PIPELINE_YEAR_STORAGE_KEY, loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePipelineYear, saveViewMode, viewStorageKey } from './preferences.js';
 
 function memoryStorage(initial = {}) {
   const data = new Map(Object.entries(initial));
@@ -45,5 +45,25 @@ describe('CRM QE year preference', () => {
     assert.equal(loadPipelineYear(2026, failingStorage), 2026);
     assert.equal(savePipelineYear(2026, failingStorage), false);
     assert.equal(savePipelineYear('nope', memoryStorage()), false);
+  });
+});
+
+describe('Datos Maestros tab preference', () => {
+  test('defaults to Clientes and remembers the last tab', () => {
+    const storage = memoryStorage();
+    assert.equal(loadMasterDataTab(storage), 'clients');
+    assert.equal(saveMasterDataTab('services', storage), true);
+    assert.equal(loadMasterDataTab(storage), 'services');
+    assert.equal(storage.data.get(MASTER_DATA_TAB_STORAGE_KEY), 'services');
+  });
+
+  test('rejects unknown tabs and survives missing or failing storage', () => {
+    assert.equal(loadMasterDataTab(memoryStorage({ [MASTER_DATA_TAB_STORAGE_KEY]: 'pipeline' })), 'clients');
+    const storage = memoryStorage();
+    assert.equal(saveMasterDataTab('bogus', storage), false);
+    assert.equal(storage.data.size, 0);
+    assert.equal(loadMasterDataTab(null), 'clients');
+    assert.equal(loadMasterDataTab(failingStorage), 'clients');
+    assert.equal(saveMasterDataTab('lobs', failingStorage), false);
   });
 });

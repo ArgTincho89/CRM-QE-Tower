@@ -762,3 +762,31 @@ button.kpi-card-main:focus-visible { outline: 2px solid #1268d5; outline-offset:
   .page-analytics .report-table tr { break-inside: avoid; }
   .page-analytics .report-cell-link { color: inherit; }
 }
+
+/* ---------------------------------------------------------------------------
+   QE Operations Centre: brand name, Recursos menu group, Datos Maestros tabs
+   and embedded internal documents.
+   --------------------------------------------------------------------------- */
+
+.brand { flex-wrap: wrap; height: auto; min-height: 50px; row-gap: 4px; }
+.brand-name { flex-basis: 100%; padding-left: 2px; color: #1d2b40; font: 700 15px/1.2 'Manrope', sans-serif; letter-spacing: -.2px; }
+.brand + .workspace-label { margin-top: 22px; }
+a.nav-item { text-decoration: none; }
+.nav-group-resources .nav-item { height: auto; min-height: 41px; padding-top: 8px; padding-bottom: 8px; }
+.nav-group-resources .nav-item span:nth-child(2) { white-space: normal; line-height: 1.3; }
+
+.master-data-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 14px; padding: 4px; border: 1px solid #e1e6ee; border-radius: 8px; background: #fff; width: fit-content; max-width: 100%; }
+.master-data-tab { border: 0; border-radius: 6px; padding: 8px 14px; background: transparent; color: #59677d; font-size: 14px; font-weight: 600; cursor: pointer; }
+.master-data-tab:hover { background: #f5f8fc; color: #234a79; }
+.master-data-tab.active { background: #1268d5; color: #fff; }
+.master-data-tab:focus-visible { outline: 2px solid #1268d5; outline-offset: 2px; }
+
+.resource-page { position: relative; height: calc(100vh - 230px); min-height: 480px; border: 1px solid #e1e6ee; border-radius: 8px; background: #fff; overflow: hidden; }
+.resource-frame { display: block; width: 100%; height: 100%; border: 0; opacity: 0; transition: opacity .15s ease; }
+.resource-frame.loaded { opacity: 1; }
+.resource-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: #69768b; font-size: 14px; }
+.resource-spinner { width: 18px; height: 18px; border: 2px solid #d6e2f2; border-top-color: #1268d5; border-radius: 50%; animation: resource-spin .8s linear infinite; }
+@keyframes resource-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .resource-spinner { animation: none; } }
+@media (max-width: 760px) { .resource-page { height: calc(100vh - 200px); min-height: 360px; } }
+a.button { text-decoration: none; }

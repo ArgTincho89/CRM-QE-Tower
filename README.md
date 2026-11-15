@@ -1,6 +1,6 @@
-# CRM QE Tower
+# QE Operations Centre
 
-A Spanish-language React dashboard prototype for Quality Engineering commercial activity. It covers the opportunity pipeline, account development, cross-selling, proposals and estimates, master agreements, service towers, and basic analytics.
+QE Operations Centre is a Spanish-language React application for the SEIDOR Quality Engineering team. It covers the CRM QE opportunity pipeline, initiatives and cross-selling, proposals and estimates, master agreements, the calendar, reports, master data (clients, LoB, towers, people in charge and services), and internal quality resources.
 
 ## Run locally
 
@@ -18,6 +18,12 @@ Data is stored server-side in SQLite behind an authenticated Node API (`server/`
 The application version has a single source, the `version` field in `package.json`. The server exposes it at `GET /api/version`, and the UI shows it on the login screen and in the sidebar footer. Every production deployment must bump it with compatibility-based SemVer: patch for fixes, copy, or visual changes; minor for compatible capabilities; major for breaking workflow, API, or data-contract changes. Current version: 1.1.0.
 
 Opportunity value is an estimate for the QE pipeline. It must not be interpreted as contracted QE revenue or as the value of a deal influenced in the corporate CRM. Proposals and estimates remain separate from opportunities and link to them using an opportunity ID where available.
+
+## Private resources
+
+Internal documents live in `content/resources/` (HTML docs plus their `images/`) and are served by the Node server under `/resources/` only to signed-in users: anonymous requests get a 401 (a top-level navigation is redirected to the login screen). Responses are `Cache-Control: private`. They appear in the app under the "Recursos" menu group, embedded in an in-app page.
+
+`public/` is copied verbatim into `dist/`, which is served without authentication, so it must only hold public assets (logo, background). Never put documents, CSV/XLSX data or archives there; a test fails if it does. Seed data for later imports lives in `content/seed/` (the image source archive `content/seed/*.zip` is git-ignored; its images are committed extracted under `content/resources/images/`).
 
 ## Container
 
