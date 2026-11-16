@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { PEOPLE_TABS, TRAINING_TABS, DEFAULT_MASTER_DATA_TAB, MASTER_DATA_TABS, NAV_GROUPS, NAV_ITEMS, PAGE_ITEMS, PAGE_REDIRECTS, RESOURCE_PAGES, buildPipelineNavigationFilters, isMasterDataTab, resolveNavigationTarget } from './navigation.js';
+import { PEOPLE_TABS, TRAINING_TABS, DEFAULT_MASTER_DATA_TAB, MASTER_DATA_TABS, NAV_GROUPS, NAV_ITEMS, PAGE_ITEMS, PAGE_REDIRECTS, RESOURCE_LINKS, RESOURCE_PAGES, buildPipelineNavigationFilters, isMasterDataTab, resolveNavigationTarget } from './navigation.js';
 import { createDefaultAdvancedFilters } from './pipelineFilters.js';
 
 describe('sidebar navigation', () => {
@@ -17,11 +17,13 @@ describe('sidebar navigation', () => {
     assert.ok(NAV_GROUPS.indexOf(masterData) > NAV_GROUPS.indexOf(operations));
   });
 
-  test('every page id is in the menu exactly once', () => {
-    const ids = NAV_ITEMS.map((item) => item.id);
-    const expectedPages = ['home', 'pipeline', 'initiatives', 'proposals', 'agreements', 'calendar', 'crossSelling', 'analytics', 'settings', 'masterData', 'talents', 'projects', 'resource-quality-gates', 'resource-normativa-calidad', 'resource-agentic-quality-engineering'];
-    assert.equal(new Set(ids).size, ids.length);
-    assert.deepEqual(PAGE_ITEMS.map((item) => item.id).sort(), [...expectedPages].sort());
+  test('every page id is reachable exactly once, from the menu or the Recursos list', () => {
+    const menuIds = NAV_ITEMS.map((item) => item.id);
+    const expectedPages = ['home', 'pipeline', 'initiatives', 'proposals', 'agreements', 'calendar', 'crossSelling', 'analytics', 'settings', 'masterData', 'talents', 'projects', 'resources', 'resource-quality-gates', 'resource-normativa-calidad', 'resource-agentic-quality-engineering'];
+    assert.equal(new Set(menuIds).size, menuIds.length);
+    const pageIds = PAGE_ITEMS.map((item) => item.id);
+    assert.equal(new Set(pageIds).size, pageIds.length);
+    assert.deepEqual(pageIds.sort(), [...expectedPages].sort());
   });
 
   test('the former master data pages are tabs of Datos Maestros, Servicios included', () => {
@@ -41,14 +43,24 @@ describe('sidebar navigation', () => {
 describe('resources group', () => {
   const resources = NAV_GROUPS.find((group) => group.id === 'resources');
 
-  test('Recursos is the last group of the menu, after Datos Maestros', () => {
-    assert.equal(resources.label, 'Recursos');
+  test('Recursos is a single menu entry, the last one, after Datos Maestros', () => {
     assert.equal(NAV_GROUPS.at(-1), resources);
     assert.equal(NAV_GROUPS.at(-2).id, 'masterData');
+    assert.deepEqual(resources.items.map((item) => [item.id, item.label, item.icon]), [['resources', 'Recursos', 'book']]);
+  });
+
+  test('the Recursos page lists every resource link in display order', () => {
+    assert.deepEqual(RESOURCE_LINKS.map((item) => item.label), [
+      'SharePoint QA Sol&Tech',
+      'QA-Aceleradores-Demos',
+      'Normativa de calidad',
+      'Modelo de gobernanza de Quality Gates',
+      'Agentic Quality Engineering',
+    ]);
   });
 
   test('the SharePoint entries are external links, not pages', () => {
-    const external = resources.items.filter((item) => item.href);
+    const external = RESOURCE_LINKS.filter((item) => item.href);
     assert.deepEqual(external.map((item) => item.label), ['SharePoint QA Sol&Tech', 'QA-Aceleradores-Demos']);
     assert.equal(external[0].href, 'https://seidor.sharepoint.com/teams/QASolTech/SitePages/Home.aspx');
     assert.equal(external[1].href, 'https://seidor-my.sharepoint.com/:f:/r/personal/jgonzalez24_seidor_es/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fjgonzalez24%5Fseidor%5Fes%2FDocuments%2F01%2E%20QA%20%2D%20Quality%20Assurance%20Drive%2F99%2E%20SEIDOR%2F00%2E%20QE%20Tower%20Core%2F03%2E%20Aceleradores%20%2D%20Demos%2F01%2E%20QA%2DAceleradores%2DDemos&share=cgpB9Mi1maZqRZbK6VUMHsPkEgUDWZYwmdcEWVCpSUcYiuKjDg');
@@ -59,7 +71,7 @@ describe('resources group', () => {
   });
 
   test('quality standards come before the quality gates governance model', () => {
-    const documents = resources.items.filter((item) => item.resource).map((item) => item.id);
+    const documents = RESOURCE_LINKS.filter((item) => item.resource).map((item) => item.id);
     assert.deepEqual(documents, ['resource-normativa-calidad', 'resource-quality-gates', 'resource-agentic-quality-engineering']);
   });
 

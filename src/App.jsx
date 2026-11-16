@@ -3,7 +3,7 @@ import { clampActiveIndex, edgeEnabledIndex, filterOptions, isAssignable, reduce
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityContractTypes, opportunityMarketScopes, opportunityOrigins, opportunityOutcomes, opportunityServiceTypes, opportunityTypes, proposals, stages } from './data.js';
 import { REUSABLE_REASON_LIMIT, contractTypeLabel, formatAiScore, marketScopeLabel, parseAiScore, serviceTypeLabel } from './opportunityFields.js';
 import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
-import { MASTER_DATA_TABS, NAV_GROUPS, RESOURCE_PAGES, resolveNavigationTarget } from './navigation.js';
+import { MASTER_DATA_TABS, NAV_GROUPS, RESOURCE_LINKS, RESOURCE_PAGES, resolveNavigationTarget } from './navigation.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
@@ -47,6 +47,7 @@ const pageTitles = {
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
   settings: ['Configuración', 'Preferencias de tu cuenta.'],
   masterData: ['Datos Maestros', 'Clientes, LoB, towers, responsables y servicios compartidos por todo el equipo.'],
+  resources: ['Recursos', 'Enlaces y documentos de referencia del equipo QE.'],
   'resource-quality-gates': ['Modelo de gobernanza de Quality Gates', 'Documento de referencia de la Oficina de Calidad.'],
   'resource-normativa-calidad': ['Normativa de calidad', 'Estrategia de calidad del portfolio: modelo extendido.'],
   'resource-agentic-quality-engineering': ['Agentic Quality Engineering', 'Wiki unificado del framework de Agentic Quality Engineering.'],
@@ -870,6 +871,8 @@ function App() {
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
             : page === 'masterData'
               ? <MasterDataPage tab={masterTab} onSelectTab={selectMasterTab}>{renderSecondaryPage(masterTab)}</MasterDataPage>
+             : page === 'resources'
+              ? <ResourcesPage onNavigate={navigate} />
             : resourcePage
               ? <ResourcePage key={resourcePage.id} title={resourcePage.label} src={resourcePage.resource} />
             : renderSecondaryPage(page)}
@@ -1201,6 +1204,28 @@ function MasterDataPage({ tab, onSelectTab, children }) {
       {MASTER_DATA_TABS.map((item) => <button key={item.id} ref={(node) => { tabRefs.current[item.id] = node; }} type="button" role="tab" id={`${baseId}-tab-${item.id}`} aria-selected={item.id === tab} aria-controls={`${baseId}-panel`} tabIndex={item.id === tab ? 0 : -1} className={`master-data-tab${item.id === tab ? ' active' : ''}`} onClick={() => onSelectTab(item.id)}>{item.label}</button>)}
     </div>
     <div className="master-data-panel" role="tabpanel" id={`${baseId}-panel`} aria-labelledby={`${baseId}-tab-${tab}`}>{children}</div>
+  </section>;
+}
+
+/** "Recursos": the list of external links and internal documents reachable from the menu. */
+function ResourcesPage({ onNavigate }) {
+  return <section className="resource-list-card" aria-label="Enlaces y documentos">
+    <h2 className="resource-list-title">Enlaces y documentos</h2>
+    <ul className="resource-list">
+      {RESOURCE_LINKS.map((item) => <li key={item.id}>
+        {item.href
+          ? <a className="resource-list-item" href={item.href} target="_blank" rel="noopener noreferrer">
+            <span className="resource-list-icon"><Icon name={item.icon} size={17} /></span>
+            <span className="resource-list-label">{item.label}</span>
+            <span className="resource-list-hint">Pestaña nueva <Icon name="external" size={14} /></span>
+          </a>
+          : <button type="button" className="resource-list-item" onClick={() => onNavigate(item.id)}>
+            <span className="resource-list-icon"><Icon name={item.icon} size={17} /></span>
+            <span className="resource-list-label">{item.label}</span>
+            <Icon name="chevron" size={15} />
+          </button>}
+      </li>)}
+    </ul>
   </section>;
 }
 
