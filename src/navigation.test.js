@@ -7,9 +7,16 @@ describe('sidebar navigation', () => {
   const operations = NAV_GROUPS.find((group) => group.id === 'operations');
   const masterData = NAV_GROUPS.find((group) => group.id === 'masterData');
 
-  test('operational sections start with home and the pipeline, then the commercial workflow, and end with proposals', () => {
-    assert.deepEqual(operations.items.slice(0, 5).map((item) => item.id), ['home', 'pipeline', 'initiatives', 'crossSelling', 'agreements']);
+  test('operational sections start with home, then initiatives and the opportunities pipeline', () => {
+    assert.deepEqual(operations.items.slice(0, 5).map((item) => item.id), ['home', 'initiatives', 'pipeline', 'crossSelling', 'agreements']);
     assert.equal(operations.items.at(-1).id, 'proposals');
+  });
+
+  test('the pipeline entry is labelled "Oportunidades" and the account page closes the menu', () => {
+    assert.equal(operations.items.find((item) => item.id === 'pipeline').label, 'Oportunidades');
+    const account = NAV_GROUPS.at(-1);
+    assert.equal(account.id, 'account');
+    assert.deepEqual(account.items.map((item) => [item.id, item.label]), [['settings', 'Configuración']]);
   });
 
   test('master data is a single "Datos Maestros" entry after the operational sections', () => {
@@ -43,9 +50,9 @@ describe('sidebar navigation', () => {
 describe('resources group', () => {
   const resources = NAV_GROUPS.find((group) => group.id === 'resources');
 
-  test('Recursos is a single menu entry, the last one, after Datos Maestros', () => {
-    assert.equal(NAV_GROUPS.at(-1), resources);
-    assert.equal(NAV_GROUPS.at(-2).id, 'masterData');
+  test('Recursos is a single menu entry just after Datos Maestros, before Configuración', () => {
+    assert.equal(NAV_GROUPS.at(-2), resources);
+    assert.equal(NAV_GROUPS.at(-3).id, 'masterData');
     assert.deepEqual(resources.items.map((item) => [item.id, item.label, item.icon]), [['resources', 'Recursos', 'book']]);
   });
 

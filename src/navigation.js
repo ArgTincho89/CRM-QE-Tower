@@ -7,8 +7,8 @@ export const NAV_GROUPS = [
     label: '',
     items: [
       { id: 'home', label: 'Inicio', icon: 'home' },
-      { id: 'pipeline', label: 'CRM QE', icon: 'briefcase' },
       { id: 'initiatives', label: 'Iniciativas', icon: 'share' },
+      { id: 'pipeline', label: 'Oportunidades', icon: 'briefcase' },
       { id: 'crossSelling', label: 'Cross-Selling', icon: 'share' },
       { id: 'agreements', label: 'Acuerdos Marco', icon: 'layers' },
       { id: 'calendar', label: 'Calendario', icon: 'calendar' },
@@ -16,7 +16,6 @@ export const NAV_GROUPS = [
       { id: 'talents', label: 'People', icon: 'users' },
       { id: 'projects', label: 'Proyectos', icon: 'layers' },
       { id: 'analytics', label: 'Informes', icon: 'chart' },
-      { id: 'settings', label: 'Configuración', icon: 'settings' },
       { id: 'proposals', label: 'Propuestas / Estimaciones', icon: 'file' },
     ],
   },
@@ -32,6 +31,14 @@ export const NAV_GROUPS = [
     label: '',
     items: [
       { id: 'resources', label: 'Recursos', icon: 'book' },
+    ],
+  },
+  // The account page sits at the bottom of the menu, after every work section.
+  {
+    id: 'account',
+    label: '',
+    items: [
+      { id: 'settings', label: 'Configuración', icon: 'settings' },
     ],
   },
 ];
