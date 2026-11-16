@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import DataTable from './DataTable.jsx';
-import { FormField, useFieldErrors } from './FormField.jsx';
+import { FieldError, FormField, useFieldErrors } from './FormField.jsx';
 import { mapServerFieldError } from './formValidation.js';
 
 /**
@@ -87,10 +87,25 @@ function ChecklistField({ legend, options, selected, onChange }) {
   </fieldset>;
 }
 
+/** Checkbox group over fixed `{ value, label }` options (no free text); the value is an id array. */
+function MultiCheckField({ legend, options, selected, onChange, form, field, hint }) {
+  const toggle = (value) => onChange(selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value]);
+  const invalid = Boolean(form.errors[field]);
+  return <fieldset className={`form-field wide ops-checklist${invalid ? ' has-error' : ''}`} aria-describedby={invalid ? form.errorId(field) : undefined}>
+    <legend>{legend}</legend>
+    {options.length === 0
+      ? <p className="field-hint">No hay registros activos.</p>
+      : <div className="ops-checklist-options">{options.map((option) => <label key={option.value} className="ops-check"><input type="checkbox" checked={selected.includes(option.value)} onChange={() => toggle(option.value)} aria-invalid={invalid ? 'true' : undefined} /> {option.label}</label>)}</div>}
+    {hint && <span className="field-hint">{hint}</span>}
+    <FieldError form={form} field={field} />
+  </fieldset>;
+}
+
 /**
  * Create/edit dialog generated from `fields`: `{ id, label, type, options?, required?, wide?, hint?,
- * visible?(values), compute?(values), onChange?(value, values) → patch }`. Types: text, textarea,
- * number, date, url, select, combo (free text with suggestions), readonly and checklist.
+ * visible?(values), compute?(values), onChange?(value, values) → patch }`. `options` may be a
+ * function of the current values. Types: text, textarea, number, date, url, select, combo (free
+ * text with suggestions), readonly, checklist and multicheck (ids from fixed options).
  * `validate(values)` returns field errors; server errors with a `field` are mapped back too.
  */
 export function RecordDialog({ eyebrow, title, fields, initialValues, validate, formFields, toPayload = (values) => values, onSave, onClose, submitLabel = 'Guardar' }) {
@@ -121,10 +136,11 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
       setSaving(false);
     }
   };
+  const optionsOf = (field) => (typeof field.options === 'function' ? field.options(values) : field.options) || [];
   const renderControl = (field) => {
     const common = { value: values[field.id] ?? '', onChange: (event) => setValue(field, event.target.value), required: field.required, ...fieldErrors.fieldProps(field.id) };
     if (field.type === 'textarea') return <textarea rows="3" {...common} />;
-    if (field.type === 'select') return <select {...common}><option value="">{field.placeholder || 'Sin seleccionar'}</option>{(field.options || []).map((option) => <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>)}</select>;
+    if (field.type === 'select') return <select {...common}><option value="">{field.placeholder || 'Sin seleccionar'}</option>{optionsOf(field).map((option) => <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>)}</select>;
     if (field.type === 'combo') {
       const listId = `${baseId}-${field.id}-options`;
       return <><input {...common} list={listId} autoComplete="off" /><datalist id={listId}>{(field.options || []).map((option) => <option key={option} value={option} />)}</datalist></>;
@@ -140,6 +156,7 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
       <div className="form-grid">
         {fields.filter((field) => !field.visible || field.visible(values)).map((field) => {
           if (field.type === 'checklist') return <ChecklistField key={field.id} legend={field.label} options={field.options || []} selected={values[field.id] || []} onChange={(next) => setValue(field, next)} />;
+          if (field.type === 'multicheck') return <MultiCheckField key={field.id} legend={field.label} options={optionsOf(field)} selected={values[field.id] || []} onChange={(next) => setValue(field, next)} form={fieldErrors} field={field.id} hint={field.hint} />;
           if (field.type === 'readonly') return <label key={field.id} className={`form-field${field.wide ? ' wide' : ''}`}>{field.label}<input value={field.compute(values) || ''} readOnly aria-readonly="true" className="ops-readonly" />{field.hint && <span className="field-hint">{field.hint}</span>}</label>;
           return <FormField key={field.id} form={fieldErrors} field={field.id} label={field.label} required={field.required} className={field.wide ? 'wide' : ''}>{renderControl(field)}{field.hint && <span className="field-hint">{field.hint}</span>}</FormField>;
         })}

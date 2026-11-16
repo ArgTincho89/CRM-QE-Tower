@@ -2,8 +2,18 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   buildActivityMatrix, computeAssignmentTotals, describeMatrixCell, filterRecords, mergeOptions, overAllocatedTalents, parseTestingScope,
-  safeExternalUrl, skillLevelLabel, validateAssignmentForm, validateCourseForm, validatePlanForm, validateProjectForm, validateSkillForm, validateTalentForm,
+  safeExternalUrl, skillLevelLabel, syncPrimaryTower, validateAssignmentForm, validateCourseForm, validatePlanForm, validateProjectForm, validateSkillForm, validateTalentForm,
 } from './people.js';
+
+describe('main tower', () => {
+  test('keeps a still-selected main tower, picks the only tower, otherwise clears it', () => {
+    assert.equal(syncPrimaryTower(['t1', 't2'], 't2'), 't2');
+    assert.equal(syncPrimaryTower(['t1'], ''), 't1');
+    assert.equal(syncPrimaryTower(['t1'], 't2'), 't1');
+    assert.equal(syncPrimaryTower(['t1', 't3'], 't2'), '');
+    assert.equal(syncPrimaryTower([], 't1'), '');
+  });
+});
 
 describe('activity matrix', () => {
   test('classifies cells with accessible labels', () => {
@@ -77,6 +87,10 @@ describe('option and search helpers', () => {
 describe('form validators', () => {
   test('talent and skill forms require their key fields', () => {
     assert.deepEqual(validateTalentForm({ name: ' ' }), { name: 'Indica el nombre del talento.' });
+    assert.deepEqual(Object.keys(validateTalentForm({ name: 'Ana', towerIds: ['t1', 't2'], primaryTowerId: '' })), ['primaryTowerId']);
+    assert.deepEqual(Object.keys(validateTalentForm({ name: 'Ana', towerIds: ['t1'], primaryTowerId: 't2' })), ['primaryTowerId']);
+    assert.deepEqual(validateTalentForm({ name: 'Ana', towerIds: ['t1', 't2'], primaryTowerId: 't2' }), {});
+    assert.deepEqual(validateTalentForm({ name: 'Ana', towerIds: [], primaryTowerId: '' }), {});
     assert.deepEqual(Object.keys(validateSkillForm({})), ['talentId', 'activityId', 'currentLevel']);
     assert.deepEqual(validateSkillForm({ talentId: 't', activityId: 'a', currentLevel: '2' }), {});
   });

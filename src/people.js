@@ -135,15 +135,29 @@ function numberError(value, { min = 0, max = Infinity, required = false, label }
   return '';
 }
 
-export const TALENT_FORM_FIELDS = ['name', 'location', 'category', 'profile'];
+export const TALENT_FORM_FIELDS = ['name', 'location', 'category', 'profile', 'lobIds', 'towerIds', 'primaryTowerId'];
 export const SKILL_FORM_FIELDS = ['talentId', 'activityId', 'currentLevel', 'targetLevel', 'careerLevel', 'certificate', 'comment'];
 export const ASSIGNMENT_FORM_FIELDS = ['talentId', 'towerId', 'lobId', 'clientId', 'percentage'];
 export const COURSE_FORM_FIELDS = ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'estimatedHours', 'url', 'validityMonths'];
 export const PLAN_FORM_FIELDS = ['talentId', 'task', 'courseId', 'courseName', 'family', 'estimatedHours', 'dedicatedHours', 'progress', 'status', 'startDate', 'plannedEndDate', 'actualEndDate', 'evidence', 'nextStep', 'expiryDate'];
 export const PROJECT_FORM_FIELDS = ['code', 'applicationName', 'version', 'client', 'naq', 'projectType', 'deliveryTarget', 'testingScope', 'qaServiceType', 'phase', 'riskLevel', 'automation', 'status', 'projectUrl', 'qaOwner', 'qaEntryDate', 'targetReleaseDate', 'createdDate', 'attachments', 'comments'];
 
+/**
+ * Main tower after the talent's tower list changes: kept while still selected, otherwise the
+ * only tower when there is exactly one, otherwise '' (the user must pick it).
+ */
+export function syncPrimaryTower(towerIds = [], primaryTowerId = '') {
+  if (primaryTowerId && towerIds.includes(primaryTowerId)) return primaryTowerId;
+  return towerIds.length === 1 ? towerIds[0] : '';
+}
+
 export function validateTalentForm(form) {
-  return isBlank(form.name) ? { name: 'Indica el nombre del talento.' } : {};
+  const errors = {};
+  if (isBlank(form.name)) errors.name = 'Indica el nombre del talento.';
+  const towerIds = form.towerIds || [];
+  if (towerIds.length > 0 && isBlank(form.primaryTowerId)) errors.primaryTowerId = 'Selecciona la Tower principal entre las towers del talento.';
+  else if (!isBlank(form.primaryTowerId) && !towerIds.includes(form.primaryTowerId)) errors.primaryTowerId = 'La Tower principal debe ser una de las towers del talento.';
+  return errors;
 }
 
 export function validateSkillForm(form) {
