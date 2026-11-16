@@ -45,10 +45,12 @@ function SortIndicator({ direction }) {
 
 /**
  * Data table with sortable headers and reorderable columns (drag and drop, or Alt+Left/Right
- * on a focused header). Columns: `{ id, label, value(row), render?(row), type?, sortable?, cellClassName? }`.
+ * on a focused header). Columns: `{ id, label, value(row), render?(row, index), type?, sortable?, cellClassName?, pinnedFirst? }`.
+ * `pinnedFirst` columns always render first, whatever the saved order.
  * `actions` (`{ label, srOnly?, className?, render(row) }`) always renders last and is fixed.
+ * With `onRowClick(row)` the whole row opens that record; clicks on its own controls are ignored.
  */
-export default function DataTable({ tableId, columns, rows, rowKey = (row) => row.id, actions = null, className = 'data-table' }) {
+export default function DataTable({ tableId, columns, rows, rowKey = (row) => row.id, actions = null, className = 'data-table', onRowClick = null, rowAriaLabel = null }) {
   const { order, sort, toggleSort, move, moveTo } = useTableState(tableId, columns);
   const [announcement, setAnnouncement] = useState('');
   const [dragId, setDragId] = useState(null);
@@ -57,7 +59,8 @@ export default function DataTable({ tableId, columns, rows, rowKey = (row) => ro
   const pendingFocusRef = useRef(null);
   const instructionsId = useId();
   const byId = new Map(columns.map((column) => [column.id, column]));
-  const orderedColumns = order.map((id) => byId.get(id)).filter(Boolean);
+  const pinnedIds = columns.filter((column) => column.pinnedFirst).map((column) => column.id);
+  const orderedColumns = [...pinnedIds, ...order.filter((id) => !pinnedIds.includes(id))].map((id) => byId.get(id)).filter(Boolean);
   const sortedRows = sortRows(rows, columns, sort);
 
   // Keyboard reordering moves the focused header; keep focus on it after React reorders the DOM.
@@ -117,11 +120,16 @@ export default function DataTable({ tableId, columns, rows, rowKey = (row) => ro
         })}
         {actions && <th className="actions-header">{actions.srOnly ? <span className="sr-only">{actions.label}</span> : actions.label}</th>}
       </tr></thead>
-      <tbody>{sortedRows.map((row, index) => <tr key={rowKey(row, index)}>
+      <tbody>{sortedRows.map((row, index) => <tr key={rowKey(row, index)}
+        className={onRowClick ? 'row-clickable' : undefined}
+        tabIndex={onRowClick ? 0 : undefined}
+        aria-label={onRowClick && rowAriaLabel ? rowAriaLabel(row) : undefined}
+        onClick={onRowClick ? (event) => { if (!event.target.closest('button, a, input, select, textarea, label')) onRowClick(row); } : undefined}
+        onKeyDown={onRowClick ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onRowClick(row); } } : undefined}>
         {orderedColumns.map((column) => {
           const cellClass = typeof column.cellClassName === 'function' ? column.cellClassName(row) : column.cellClassName;
           let content;
-          if (column.render) content = column.render(row);
+          if (column.render) content = column.render(row, index);
           else {
             const value = column.value(row);
             content = isEmptyValue(value) ? '—' : value;

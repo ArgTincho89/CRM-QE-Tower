@@ -136,6 +136,8 @@ function numberError(value, { min = 0, max = Infinity, required = false, label }
 }
 
 export const TALENT_FORM_FIELDS = ['name', 'location', 'category', 'profile', 'lobIds', 'towerIds', 'primaryTowerId'];
+/** Fields of the create dialog: the name is composed from these, so `name` is not a form field. */
+export const TALENT_CREATE_FORM_FIELDS = ['firstName', 'lastName', 'secondLastName', 'location', 'category', 'profile', 'lobIds', 'towerIds', 'primaryTowerId'];
 export const SKILL_FORM_FIELDS = ['talentId', 'activityId', 'currentLevel', 'targetLevel', 'careerLevel', 'certificate', 'comment'];
 export const ASSIGNMENT_FORM_FIELDS = ['talentId', 'towerId', 'lobId', 'clientId', 'percentage'];
 export const COURSE_FORM_FIELDS = ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'estimatedHours', 'url', 'validityMonths'];
@@ -158,6 +160,29 @@ export function validateTalentForm(form) {
   if (towerIds.length > 0 && isBlank(form.primaryTowerId)) errors.primaryTowerId = 'Selecciona la Tower principal entre las towers del talento.';
   else if (!isBlank(form.primaryTowerId) && !towerIds.includes(form.primaryTowerId)) errors.primaryTowerId = 'La Tower principal debe ser una de las towers del talento.';
   return errors;
+}
+
+/**
+ * Display name stored in `talents.name`: "Primer apellido, Segundo apellido, Nombre".
+ * Missing parts are skipped, so a talent with only surnames still gets a readable name.
+ */
+export function composeTalentName({ firstName = '', lastName = '', secondLastName = '' } = {}) {
+  const first = String(firstName ?? '').trim();
+  const surnames = [lastName, secondLastName].map((value) => String(value ?? '').trim()).filter(Boolean).join(', ');
+  if (surnames && first) return `${surnames}, ${first}`;
+  return surnames || first;
+}
+
+/** Create-only validation: first name, first surname and second surname, plus the shared talent rules. */
+export function validateTalentCreateForm(form) {
+  const errors = {};
+  if (isBlank(form.firstName)) errors.firstName = 'Indica el nombre.';
+  if (isBlank(form.lastName)) errors.lastName = 'Indica el primer apellido.';
+  if (isBlank(form.secondLastName)) errors.secondLastName = 'Indica el segundo apellido.';
+  // The composed name error is redundant with the three fields above.
+  const talentErrors = validateTalentForm({ ...form, name: composeTalentName(form) });
+  delete talentErrors.name;
+  return { ...errors, ...talentErrors };
 }
 
 export function validateSkillForm(form) {

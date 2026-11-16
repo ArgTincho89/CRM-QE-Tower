@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  buildActivityMatrix, computeAssignmentTotals, describeMatrixCell, filterRecords, mergeOptions, overAllocatedTalents, parseTestingScope,
-  safeExternalUrl, skillLevelLabel, syncPrimaryTower, validateAssignmentForm, validateCourseForm, validatePlanForm, validateProjectForm, validateSkillForm, validateTalentForm,
+  buildActivityMatrix, composeTalentName, computeAssignmentTotals, describeMatrixCell, filterRecords, mergeOptions, overAllocatedTalents, parseTestingScope,
+  safeExternalUrl, skillLevelLabel, syncPrimaryTower, validateAssignmentForm, validateCourseForm, validatePlanForm, validateProjectForm, validateSkillForm,
+  validateTalentCreateForm, validateTalentForm,
 } from './people.js';
 
 describe('main tower', () => {
@@ -108,5 +109,21 @@ describe('form validators', () => {
     assert.ok(validatePlanForm({ talentId: 't' }).courseName);
     assert.deepEqual(validatePlanForm({ talentId: 't', courseName: 'Libre', progress: '150 %', dedicatedHours: '10,5' }), {});
     assert.deepEqual(Object.keys(validateProjectForm({ applicationName: '', projectUrl: 'javascript:x' })), ['applicationName', 'projectUrl']);
+  });
+});
+
+describe('talent create form', () => {
+  test('composes "primer apellido, segundo apellido, nombre" and skips missing parts', () => {
+    assert.equal(composeTalentName({ firstName: 'Ana', lastName: 'Pérez', secondLastName: 'Gómez' }), 'Pérez, Gómez, Ana');
+    assert.equal(composeTalentName({ firstName: ' Ana ', lastName: ' Pérez ', secondLastName: ' Gómez ' }), 'Pérez, Gómez, Ana');
+    assert.equal(composeTalentName({ firstName: 'Ana', lastName: 'Pérez', secondLastName: '' }), 'Pérez, Ana');
+    assert.equal(composeTalentName({ firstName: '', lastName: 'Pérez', secondLastName: '' }), 'Pérez');
+    assert.equal(composeTalentName({}), '');
+  });
+
+  test('requires first name, first surname and second surname, then applies the talent rules', () => {
+    assert.deepEqual(Object.keys(validateTalentCreateForm({})), ['firstName', 'lastName', 'secondLastName']);
+    assert.deepEqual(Object.keys(validateTalentCreateForm({ firstName: 'Ana', lastName: 'Pérez', secondLastName: 'Gómez', towerIds: ['t1', 't2'] })), ['primaryTowerId']);
+    assert.deepEqual(validateTalentCreateForm({ firstName: 'Ana', lastName: 'Pérez', secondLastName: 'Gómez', towerIds: ['t1'], primaryTowerId: 't1' }), {});
   });
 });

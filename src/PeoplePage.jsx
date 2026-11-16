@@ -3,11 +3,12 @@ import { createOperationRecord, deleteOperationRecord, listActivityCatalog, list
 import { PEOPLE_TABS, TRAINING_TABS } from './navigation.js';
 import {
   ASSIGNMENT_FORM_FIELDS, CAREER_LEVELS, COURSE_FORM_FIELDS, PLAN_FORM_FIELDS, PLAN_STATUS_DEFAULTS, SKILL_FORM_FIELDS, SKILL_LEVELS, TALENT_CATEGORIES,
-  TALENT_FORM_FIELDS, TALENT_PROFILES, buildActivityMatrix, computeAssignmentTotals, filterRecords, mergeOptions, overAllocatedTalents, safeExternalUrl,
-  skillLevelLabel, syncPrimaryTower, validateAssignmentForm, validateCourseForm, validatePlanForm, validateSkillForm, validateTalentForm,
+  TALENT_CREATE_FORM_FIELDS, TALENT_FORM_FIELDS, TALENT_PROFILES, buildActivityMatrix, composeTalentName, computeAssignmentTotals, filterRecords, mergeOptions,
+  overAllocatedTalents, safeExternalUrl, skillLevelLabel, syncPrimaryTower, validateAssignmentForm, validateCourseForm, validatePlanForm, validateSkillForm,
+  validateTalentCreateForm, validateTalentForm,
 } from './people.js';
 import { loadPeopleTab, loadTrainingTab, savePeopleTab, saveTrainingTab } from './preferences.js';
-import { RecordDialog, RecordPanel, SearchBox, TabStrip, formatNumber, numberToInput, useCollection } from './OperationsUi.jsx';
+import { DetailsDialog, RecordDialog, RecordPanel, SearchBox, TabStrip, formatDateTime, formatNumber, numberToInput, useCollection } from './OperationsUi.jsx';
 
 const EYEBROW = 'PEOPLE';
 
@@ -54,7 +55,7 @@ export default function PeoplePage({ towers = [], lobs = [], clients = [], onNot
   const shared = { onNotice, talents: talents.records };
 
   return <TabStrip tabs={PEOPLE_TABS} active={tab} onSelect={selectTab} label="People">
-    {tab === 'talentList' && <TalentsPanel collection={talents} reload={reloadTalents} towers={towers} lobs={lobs} {...shared} />}
+    {tab === 'talentList' && <TalentsPanel collection={talents} reload={reloadTalents} towers={towers} lobs={lobs} skills={skills.records} assignments={assignments.records} plan={plan.records} {...shared} />}
     {tab === 'talentSkills' && <SkillsPanel collection={skills} activities={activities.records} {...shared} />}
     {tab === 'activityCatalog' && <ActivityMatrixPanel collection={activities} />}
     {tab === 'assignments' && <AssignmentsPanel collection={assignments} towers={towers} lobs={lobs} clients={clients} {...shared} />}
@@ -71,8 +72,9 @@ const masterOptions = (records, selected) => {
   return records.filter((item) => item.active !== false || keep.has(item.id)).map((item) => ({ value: item.id, label: item.name }));
 };
 
-function TalentsPanel({ collection, reload, towers, lobs, onNotice }) {
+function TalentsPanel({ collection, reload, towers, lobs, skills = [], assignments = [], plan = [], onNotice }) {
   const [query, setQuery] = useState('');
+  const [detail, setDetail] = useState(null);
   const actions = useRecordActions('talents', { reload, onNotice, describe: (row) => row.name, noun: 'el talento' });
   const rows = filterRecords(collection.records, query, ['name', 'location', 'category', 'profile', 'lobNames', 'towerNames', 'primaryTowerName']);
   const towerById = new Map(towers.map((tower) => [tower.id, tower]));
@@ -84,9 +86,37 @@ function TalentsPanel({ collection, reload, towers, lobs, onNotice }) {
     return { primaryTowerId: syncPrimaryTower(towerIds, values.primaryTowerId), lobIds: [...new Set([...(values.lobIds || []), ...towerLobs])] };
   };
   const listCell = (names) => (names?.length ? names.join(', ') : '—');
+  // Create asks for first name, first surname and second surname; the stored name is composed from them.
+  const masterFields = [
+    { id: 'location', label: 'Ubicación', wide: true },
+    { id: 'category', label: 'Categoría', type: 'select', options: TALENT_CATEGORIES },
+    { id: 'profile', label: 'Perfil', type: 'select', options: TALENT_PROFILES },
+    { id: 'lobIds', label: 'LoBs', type: 'multicheck', options: masterOptions(lobs, editing?.lobIds) },
+    { id: 'towerIds', label: 'Towers', type: 'multicheck', options: masterOptions(towers, editing?.towerIds), onChange: onTowersChange,
+      hint: 'Al marcar una tower se añade también su LoB.' },
+    { id: 'primaryTowerId', label: 'Tower principal', type: 'select', required: true, wide: true, placeholder: 'Selecciona la Tower principal',
+      visible: (values) => (values.towerIds || []).length > 0,
+      options: (values) => (values.towerIds || []).map((id) => ({ value: id, label: towerById.get(id)?.name || id })),
+      hint: 'Tower responsable de la cargabilidad del talento; debe ser una de sus towers.' },
+  ];
+  const nameFields = editing?.id
+    ? [{ id: 'name', label: 'Nombre', required: true, wide: true }]
+    : [
+      { id: 'firstName', label: 'Nombre', required: true },
+      { id: 'lastName', label: 'Primer apellido', required: true },
+      { id: 'secondLastName', label: 'Segundo apellido', required: true },
+      { id: 'name', label: 'Nombre completo', type: 'readonly', wide: true, compute: (values) => composeTalentName(values),
+        hint: 'Se guarda como «primer apellido, segundo apellido, nombre».' },
+    ];
+  const initialValues = editing?.id
+    ? { name: editing.name || '', location: editing.location || '', category: editing.category || '', profile: editing.profile || '',
+        lobIds: editing.lobIds || [], towerIds: editing.towerIds || [], primaryTowerId: editing.primaryTowerId || '' }
+    : { firstName: '', lastName: '', secondLastName: '', name: '', location: '', category: '', profile: '',
+        lobIds: [], towerIds: [], primaryTowerId: '' };
   return <>
     <RecordPanel title="Listado de personas" description="Talentos del equipo QE. Un talento con skills, asignaciones o plan de formación no se puede eliminar." tableId="people-talents"
       columns={[
+        { id: 'index', label: 'Nº', sortable: false, pinnedFirst: true, value: () => '', render: (_row, index) => index + 1, cellClassName: 'ops-index' },
         { id: 'name', label: 'Nombre', value: (row) => row.name },
         { id: 'location', label: 'Ubicación', value: (row) => row.location },
         { id: 'category', label: 'Categoría', value: (row) => row.category },
@@ -97,27 +127,44 @@ function TalentsPanel({ collection, reload, towers, lobs, onNotice }) {
       ]}
       rows={rows} totalCount={collection.records.length} query={query} onQueryChange={setQuery} searchLabel="Buscar talentos"
       createLabel="Crear talento" onCreate={() => actions.setEditing({})} onEdit={actions.setEditing} onDelete={actions.remove}
+      onRowClick={setDetail} rowAriaLabel={(row) => `Ver detalle de ${row.name}`}
       emptyMessage="Todavía no hay talentos." loading={collection.loading} error={collection.error} onRetry={collection.reload} />
     {editing && <RecordDialog eyebrow={EYEBROW} title={editing.id ? 'Editar talento' : 'Crear talento'}
-      fields={[
-        { id: 'name', label: 'Nombre', required: true, wide: true },
-        { id: 'location', label: 'Ubicación', wide: true },
-        { id: 'category', label: 'Categoría', type: 'select', options: TALENT_CATEGORIES },
-        { id: 'profile', label: 'Perfil', type: 'select', options: TALENT_PROFILES },
-        { id: 'lobIds', label: 'LoBs', type: 'multicheck', options: masterOptions(lobs, editing.lobIds) },
-        { id: 'towerIds', label: 'Towers', type: 'multicheck', options: masterOptions(towers, editing.towerIds), onChange: onTowersChange,
-          hint: 'Al marcar una tower se añade también su LoB.' },
-        { id: 'primaryTowerId', label: 'Tower principal', type: 'select', required: true, wide: true, placeholder: 'Selecciona la Tower principal',
-          visible: (values) => (values.towerIds || []).length > 0,
-          options: (values) => (values.towerIds || []).map((id) => ({ value: id, label: towerById.get(id)?.name || id })),
-          hint: 'Tower responsable de la cargabilidad del talento; debe ser una de sus towers.' },
-      ]}
-      initialValues={{
-        name: editing.name || '', location: editing.location || '', category: editing.category || '', profile: editing.profile || '',
-        lobIds: editing.lobIds || [], towerIds: editing.towerIds || [], primaryTowerId: editing.primaryTowerId || '',
-      }}
-      validate={validateTalentForm} formFields={TALENT_FORM_FIELDS} onSave={actions.save} onClose={() => actions.setEditing(null)} />}
+      fields={[...nameFields, ...masterFields]}
+      initialValues={initialValues}
+      validate={editing.id ? validateTalentForm : validateTalentCreateForm}
+      formFields={editing.id ? TALENT_FORM_FIELDS : TALENT_CREATE_FORM_FIELDS}
+      toPayload={(values) => ({
+        name: editing.id ? values.name || '' : composeTalentName(values),
+        location: values.location || '', category: values.category || '', profile: values.profile || '',
+        lobIds: values.lobIds || [], towerIds: values.towerIds || [], primaryTowerId: values.primaryTowerId || '',
+      })}
+      onSave={actions.save} onClose={() => actions.setEditing(null)} />}
+    {detail && <TalentDetailsDialog talent={detail} skills={skills} assignments={assignments} plan={plan} onClose={() => setDetail(null)} />}
   </>;
+}
+
+/** Read-only "Listado de personas" detail: the talent plus what hangs from it in the other tabs. */
+function TalentDetailsDialog({ talent, skills = [], assignments = [], plan = [], onClose }) {
+  const talentSkills = skills.filter((item) => item.talentId === talent.id);
+  const talentAssignments = assignments.filter((item) => item.talentId === talent.id);
+  const talentPlan = plan.filter((item) => item.talentId === talent.id);
+  const assignedPercentage = computeAssignmentTotals(talentAssignments).get(talent.id) || 0;
+  return <DetailsDialog eyebrow={EYEBROW} title={talent.name} onClose={onClose} rows={[
+    { label: 'ID', value: talent.id },
+    { label: 'Nombre', value: talent.name },
+    { label: 'Ubicación', value: talent.location },
+    { label: 'Categoría', value: talent.category },
+    { label: 'Perfil', value: talent.profile },
+    { label: 'LoBs', value: (talent.lobNames || []).join(', ') },
+    { label: 'Towers', value: (talent.towerNames || []).join(', ') },
+    { label: 'Tower principal', value: talent.primaryTowerName },
+    { label: 'Skills registradas', value: talentSkills.length },
+    { label: 'Asignaciones', value: talentAssignments.length ? `${talentAssignments.length} · ${formatNumber(assignedPercentage, { suffix: ' %' })}` : 0 },
+    { label: 'Plan de formación', value: talentPlan.length },
+    { label: 'Creado', value: formatDateTime(talent.createdAt) },
+    { label: 'Actualizado', value: formatDateTime(talent.updatedAt) },
+  ]} />;
 }
 
 const SKILL_LEVEL_OPTIONS = SKILL_LEVELS.map((level) => ({ value: String(level.value), label: level.label }));

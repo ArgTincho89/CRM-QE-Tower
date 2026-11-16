@@ -43,7 +43,7 @@ export function SearchBox({ value, onChange, label, placeholder = 'Buscar…' })
  * Table panel: title, description, record count, search box, optional create button, notices and
  * the sortable/draggable DataTable with "Editar" / "Eliminar" actions.
  */
-export function RecordPanel({ title, description, tableId, columns, rows, totalCount, query, onQueryChange, searchLabel, createLabel, onCreate, onEdit, onDelete, emptyMessage, loading = false, error = '', onRetry, children }) {
+export function RecordPanel({ title, description, tableId, columns, rows, totalCount, query, onQueryChange, searchLabel, createLabel, onCreate, onEdit, onDelete, emptyMessage, loading = false, error = '', onRetry, onRowClick = null, rowAriaLabel = null, children }) {
   const actions = onEdit || onDelete
     ? { label: 'Acciones', className: 'master-actions', render: (row) => <>{onEdit && <button type="button" className="button button-secondary" onClick={() => onEdit(row)}>Editar</button>}{onDelete && <button type="button" className="button button-secondary button-danger" onClick={() => onDelete(row)}>Eliminar</button>}</> }
     : null;
@@ -60,7 +60,7 @@ export function RecordPanel({ title, description, tableId, columns, rows, totalC
         : error
           ? <div className="board-state"><p>{error}</p>{onRetry && <button type="button" className="button button-secondary" onClick={onRetry}>Reintentar</button>}</div>
           : <>
-            <DataTable tableId={tableId} className="data-table secondary-table" columns={columns} rows={rows} actions={actions} />
+            <DataTable tableId={tableId} className="data-table secondary-table" columns={columns} rows={rows} actions={actions} onRowClick={onRowClick} rowAriaLabel={rowAriaLabel} />
             {rows.length === 0 && <p className="empty-state">{query.trim() ? 'No hay registros que coincidan con la búsqueda.' : emptyMessage}</p>}
           </>}
     </div>
@@ -167,6 +167,22 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
   </dialog>;
 }
 
+/**
+ * Read-only detail dialog: `{ eyebrow, title, rows: [{ label, value }], onClose }`. Values are
+ * already rendered (nodes or text); empty ones show as "—". Closes with Escape or the button.
+ */
+export function DetailsDialog({ eyebrow, title, rows = [], onClose }) {
+  const dialogRef = useRef(null);
+  useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
+  return <dialog ref={dialogRef} className="opportunity-dialog details-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <div className="dialog-body">
+      <div className="dialog-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}>×</button></div>
+      <dl className="detail-list">{rows.map((row, index) => <div key={`${row.label}-${index}`}><dt>{row.label}</dt><dd>{row.value === null || row.value === undefined || row.value === '' ? '—' : row.value}</dd></div>)}</dl>
+      <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
+    </div>
+  </dialog>;
+}
+
 /** Loads one API collection; `reload()` refetches it. 401 is reported through `onUnauthorized`. */
 export function useCollection(load, { onUnauthorized } = {}) {
   const [state, setState] = useState({ records: [], loading: true, error: '' });
@@ -193,6 +209,13 @@ export function formatNumber(value, { suffix = '' } = {}) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '';
   return `${number.toLocaleString('es-ES', { maximumFractionDigits: 2 })}${suffix}`;
+}
+
+/** Local date-time text of an ISO timestamp, '' when empty or invalid. */
+export function formatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('es-ES');
 }
 
 /** Form text of a stored number (Spanish decimal comma), '' when empty. */

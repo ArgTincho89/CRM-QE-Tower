@@ -26,12 +26,13 @@ import RecordComments from './RecordComments.jsx';
 import { fieldLabel } from './history.js';
 import DataTable from './DataTable.jsx';
 import { FormField, useFieldErrors } from './FormField.jsx';
+import { DetailsDialog, formatDateTime } from './OperationsUi.jsx';
 import { AGREEMENT_FORM_FIELDS, INITIATIVE_FORM_FIELDS, MASTER_FORM_FIELDS, OPPORTUNITY_FORM_FIELDS, SERVICE_YEAR_FORM_FIELDS, mapServerFieldError, validateAgreementForm, validateInitiativeForm, validateMasterForm, validateOpportunityForm, validateServiceYearForm } from './formValidation.js';
 
 
 const pageTitles = {
   home: ['Inicio', 'Resumen de actividad comercial y señales de tus cuentas.'],
-  pipeline: ['CRM QE', 'Gestiona el pipeline de oportunidades de calidad e ingeniería.'],
+  pipeline: ['Oportunidades', 'Gestiona el pipeline de oportunidades de calidad e ingeniería.'],
   initiatives: ['Iniciativas', 'Desarrollo de negocio previo o independiente de una oportunidad formal.'],
   clients: ['Clientes', 'Cuentas activas, responsables y oportunidades de desarrollo.'],
   proposals: ['Propuestas / Estimaciones', 'Preventa interna y propuestas externas vinculadas a oportunidades.'],
@@ -118,6 +119,8 @@ function App() {
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [advancedFilters, setAdvancedFilters] = useState(createDefaultAdvancedFilters);
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
+  // The "Gestión" heading collapses the operational items of the sidebar.
+  const [operationsCollapsed, setOperationsCollapsed] = useState(false);
   const [view, setViewState] = useState(() => loadViewMode('pipeline'));
   // CRM QE KPI year (a number or ALL_YEARS), persisted per browser; defaults to the current year.
   const [kpiYear, setKpiYearState] = useState(() => loadPipelineYear(new Date().getFullYear()));
@@ -787,11 +790,13 @@ function App() {
     <div className={`app-shell page-${page}`}>
       <aside className={`sidebar${mobileNav ? ' sidebar-open' : ''}`} aria-label="Navegación principal">
         <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /><span className="brand-name">{APP_NAME}</span></div>
-        <div className="workspace-label">GESTIÓN COMERCIAL</div>
-            <nav className="side-nav">
-          {NAV_GROUPS.map((group, groupIndex) => <div key={group.id} className={`nav-group nav-group-${group.id}${group.label || groupIndex > 0 ? ' nav-group-labeled' : ''}`} role="group" aria-labelledby={group.label ? `nav-group-${group.id}` : undefined}>
-            {group.label && <div className="nav-group-label" id={`nav-group-${group.id}`}>{group.label}</div>}
-            {group.items.map((item) => item.href
+        <button type="button" className={`workspace-label workspace-toggle${operationsCollapsed ? '' : ' expanded'}`} onClick={() => setOperationsCollapsed((collapsed) => !collapsed)} aria-expanded={!operationsCollapsed} aria-controls="nav-group-operations">
+          GESTIÓN <Icon name="chevron" size={13} />
+        </button>
+        <nav className="side-nav">
+          {NAV_GROUPS.map((group, groupIndex) => <div key={group.id} id={`nav-group-${group.id}`} className={`nav-group nav-group-${group.id}${group.label || groupIndex > 0 ? ' nav-group-labeled' : ''}`} role="group" aria-labelledby={group.label ? `nav-group-${group.id}-label` : undefined}>
+            {group.label && <div className="nav-group-label" id={`nav-group-${group.id}-label`}>{group.label}</div>}
+            {(group.id === 'operations' && operationsCollapsed ? [] : group.items).map((item) => item.href
               ? <a key={item.id} className="nav-item nav-item-external" href={item.href} target="_blank" rel="noopener noreferrer">
                 <Icon name={item.icon} size={18} /><span>{item.label}</span><span className="sr-only"> (se abre en una pestaña nueva)</span>
               </a>
@@ -1926,9 +1931,10 @@ function WorkspaceLinkList({ links }) {
 }
 
 function AgreementPanel({ agreements, query = '', clients, people, onEdit, onDelete }) {
+  const [detail, setDetail] = useState(null);
   const records = filterAgreements(agreements, query, clients, people);
   const emptyMessage = query.trim() ? 'No hay acuerdos marco que coincidan con la búsqueda.' : 'Todavía no hay acuerdos marco.';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId="agreements" className="data-table secondary-table" rows={records} columns={[
+  return <><section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>Acuerdos vigentes y renovaciones</h2><p>Acuerdos marco persistidos. Los contratos y aprobaciones se gestionan en los sistemas corporativos.</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId="agreements" className="data-table secondary-table" rows={records} columns={[
     { id: 'id', label: 'ID', value: (item) => item.id, render: (item) => item.id.slice(0, 8) },
     { id: 'title', label: 'Acuerdo', value: (item) => item.title, render: (item) => item.title },
     { id: 'registryId', label: 'ID registro', value: (item) => item.registryId },
@@ -1939,7 +1945,27 @@ function AgreementPanel({ agreements, query = '', clients, people, onEdit, onDel
     { id: 'assignedUserName', label: 'Asignado a', value: (item) => item.assignedUserName },
     { id: 'links', label: 'Enlaces', value: (item) => (item.links || []).map((link) => link.title).join(', '), render: (item) => <WorkspaceLinkList links={item.links} /> },
     { id: 'status', label: 'Estado', value: (item) => (item.status === 'active' ? 'Vigente' : 'Inactivo'), render: (item) => <span className={`status-pill ${item.status === 'active' ? 'green' : 'violet'}`}>{item.status === 'active' ? 'Vigente' : 'Inactivo'}</span> },
-  ]} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>;
+  ]} onRowClick={setDetail} rowAriaLabel={(item) => `Ver detalle de ${item.title}`} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div></section>{detail && <AgreementDetailsDialog agreement={detail} clients={clients} people={people} onClose={() => setDetail(null)} />}</>;
+}
+
+/** Read-only detail of a framework agreement, opened by clicking its table row. */
+function AgreementDetailsDialog({ agreement, clients = [], people = [], onClose }) {
+  const clientName = clients.find((x) => x.id === agreement.clientId)?.name;
+  const ownerName = people.find((x) => x.id === agreement.ownerId)?.name;
+  return <DetailsDialog eyebrow="DATOS COMERCIALES" title={agreement.title} onClose={onClose} rows={[
+    { label: 'ID', value: agreement.id },
+    { label: 'ID registro', value: agreement.registryId },
+    { label: 'Cliente', value: clientName },
+    { label: 'Importe', value: formatCurrency(agreement.amount) },
+    { label: 'Fin de vigencia', value: agreement.endDate },
+    { label: 'Responsable', value: ownerName },
+    { label: 'Asignado a', value: agreement.assignedUserName || agreement.assignedUserId },
+    { label: 'Estado', value: agreement.status === 'active' ? 'Vigente' : 'Inactivo' },
+    { label: 'Notas', value: agreement.notes },
+    { label: 'Enlaces', value: <WorkspaceLinkList links={agreement.links} /> },
+    { label: 'Creado', value: formatDateTime(agreement.createdAt) },
+    { label: 'Actualizado', value: formatDateTime(agreement.updatedAt) },
+  ]} />;
 }
 
 function AgreementDialog({ agreement = {}, users = [], clients, people, onQuickCreate, onClose, onSave, currentUserId = '', focusComments = false }) {
