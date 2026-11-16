@@ -182,6 +182,17 @@ const SCHEMA_STATEMENTS = [
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_talents_name ON talents(name COLLATE NOCASE)',
+  // A talent can belong to several LoBs and towers; talents.primary_tower_id marks the main tower.
+  `CREATE TABLE IF NOT EXISTS talent_lobs (
+      talent_id TEXT NOT NULL REFERENCES talents(id) ON DELETE CASCADE,
+      lob_id TEXT NOT NULL REFERENCES lobs(id), PRIMARY KEY(talent_id, lob_id)
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_talent_lobs_lob ON talent_lobs(lob_id)',
+  `CREATE TABLE IF NOT EXISTS talent_towers (
+      talent_id TEXT NOT NULL REFERENCES talents(id) ON DELETE CASCADE,
+      tower_id TEXT NOT NULL REFERENCES towers(id), PRIMARY KEY(talent_id, tower_id)
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_talent_towers_tower ON talent_towers(tower_id)',
   // Read-only activity catalog: one row per activity, l1..l7 keep the raw cell text (✅, ⚪, text or '').
   `CREATE TABLE IF NOT EXISTS activity_catalog (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '',
@@ -319,6 +330,10 @@ export function applySchema(db) {
   if (!towerColumns.includes('lob_id')) {
     db.exec('ALTER TABLE towers ADD COLUMN lob_id TEXT REFERENCES lobs(id)');
   }
+  // "Tower principal" of a talent: the tower accountable for its billability. NULL when the
+  // talent has no towers; otherwise one of its talent_towers rows (enforced by the API).
+  const talentColumns = db.prepare('PRAGMA table_info(talents)').all().map((row) => row.name);
+  if (!talentColumns.includes('primary_tower_id')) db.exec('ALTER TABLE talents ADD COLUMN primary_tower_id TEXT REFERENCES towers(id)');
   const opportunityAdditions = [
     ['origin', "TEXT NOT NULL DEFAULT ''"],
     ['probability', 'INTEGER'],
@@ -399,6 +414,7 @@ export function applySchema(db) {
     'CREATE INDEX IF NOT EXISTS idx_opportunities_archived ON opportunities(archived_at)',
     'CREATE INDEX IF NOT EXISTS idx_initiatives_archived ON initiatives(archived_at)',
     'CREATE INDEX IF NOT EXISTS idx_towers_lob ON towers(lob_id)',
+    'CREATE INDEX IF NOT EXISTS idx_talents_primary_tower ON talents(primary_tower_id)',
   ]) {
     db.exec(statement);
   }

@@ -63,6 +63,63 @@ describe('People and Proyectos API', () => {
     assert.equal((await call('PATCH', `/api/talents/${created.body.record.id}`, { name: 'X' })).status, 404);
   });
 
+  test('talents belong to several LoBs and towers with one main tower', async () => {
+    const person = (await call('POST', '/api/people', { name: 'Responsable Talento' })).body.record;
+    const lobA = (await call('POST', '/api/lobs', { name: 'LoB Talento A' })).body.record;
+    const lobB = (await call('POST', '/api/lobs', { name: 'LoB Talento B' })).body.record;
+    const towerA = (await call('POST', '/api/towers', { name: 'Tower Talento A', responsibleId: person.id })).body.record;
+    const towerB = (await call('POST', '/api/towers', { name: 'Tower Talento B', responsibleId: person.id })).body.record;
+
+    const badLob = await call('POST', '/api/talents', { name: 'Talento Org', lobIds: ['nope'] });
+    assert.equal(badLob.status, 400);
+    assert.equal(badLob.body.error.field, 'lobIds');
+    const noPrimary = await call('POST', '/api/talents', { name: 'Talento Org', towerIds: [towerA.id, towerB.id] });
+    assert.equal(noPrimary.status, 400);
+    assert.equal(noPrimary.body.error.field, 'primaryTowerId');
+    const foreignPrimary = await call('POST', '/api/talents', { name: 'Talento Org', towerIds: [towerA.id], primaryTowerId: towerB.id });
+    assert.equal(foreignPrimary.body.error.field, 'primaryTowerId');
+
+    const created = await call('POST', '/api/talents', { name: 'Talento Org', lobIds: [lobB.id, lobA.id], towerIds: [towerB.id, towerA.id], primaryTowerId: towerB.id });
+    assert.equal(created.status, 201);
+    const talentId = created.body.record.id;
+    assert.deepEqual(created.body.record.lobNames, ['LoB Talento A', 'LoB Talento B']);
+    assert.deepEqual(created.body.record.towerIds, [towerA.id, towerB.id]);
+    assert.equal(created.body.record.primaryTowerName, 'Tower Talento B');
+    const listed = (await call('GET', '/api/talents')).body.records.find((row) => row.id === talentId);
+    assert.deepEqual(listed.towerNames, ['Tower Talento A', 'Tower Talento B']);
+
+    for (const path of [`/api/towers/${towerA.id}`, `/api/lobs/${lobA.id}`]) {
+      const response = await call('DELETE', path);
+      assert.equal(response.status, 409, path);
+      assert.match(response.body.error.message, /1 talento/);
+    }
+
+    // Dropping the main tower from the list without choosing another one is rejected.
+    const orphan = await call('PATCH', `/api/talents/${talentId}`, { towerIds: [towerA.id] });
+    assert.equal(orphan.body.error.field, 'primaryTowerId');
+    const moved = await call('PATCH', `/api/talents/${talentId}`, { towerIds: [towerA.id], primaryTowerId: towerA.id });
+    assert.equal(moved.status, 200);
+    assert.deepEqual(moved.body.record.towerIds, [towerA.id]);
+    // Fields left out of a PATCH keep their stored relations.
+    const renamed = await call('PATCH', `/api/talents/${talentId}`, { location: 'Ciudad Org' });
+    assert.deepEqual(renamed.body.record.lobIds.length, 2);
+    assert.equal(renamed.body.record.primaryTowerId, towerA.id);
+    const events = app.db.prepare("SELECT detail FROM entity_events WHERE entity_type = 'talent' AND entity_id = ? AND action = 'updated' ORDER BY id").all(talentId);
+    assert.deepEqual(JSON.parse(events[0].detail).fields, ['primaryTowerId', 'towerIds']);
+
+    assert.equal((await call('DELETE', `/api/towers/${towerB.id}`)).status, 200);
+    const cleared = await call('PATCH', `/api/talents/${talentId}`, { lobIds: [], towerIds: [], primaryTowerId: '' });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(cleared.body.record.towerIds, []);
+    assert.equal(cleared.body.record.primaryTowerId, null);
+    assert.equal((await call('DELETE', `/api/towers/${towerA.id}`)).status, 200);
+
+    assert.equal((await call('PATCH', `/api/talents/${talentId}`, { lobIds: [lobA.id] })).status, 200);
+    assert.equal((await call('DELETE', `/api/talents/${talentId}`)).status, 200);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM talent_lobs WHERE talent_id = ?').get(talentId).count, 0);
+    assert.equal((await call('DELETE', `/api/lobs/${lobA.id}`)).status, 200);
+  });
+
   test('talent skills reference a talent and a catalog activity with levels 1..4', async () => {
     const talent = (await call('POST', '/api/talents', { name: 'Talento Skills' })).body.record;
     const noActivity = await call('POST', '/api/talent-skills', { talentId: talent.id, activityId: 'nope', currentLevel: 2 });

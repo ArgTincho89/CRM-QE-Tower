@@ -153,6 +153,46 @@ function stringList(key, label, { maxItems = 30, maxLength = 60 } = {}) {
   };
 }
 
+/**
+ * Many-to-many link of a resource to a master table through a join table. The body carries
+ * `key` (array of master ids); records expose `key` and `namesKey` sorted by master name.
+ */
+function relation(key, namesKey, label, { table, owner, column, master }) {
+  return {
+    key,
+    namesKey,
+    parse(value, db) {
+      if (value === undefined || value === null || value === '') return [];
+      if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item === '')) {
+        throw validationError(`El campo «${label}» debe ser una lista de registros.`, key);
+      }
+      const ids = [...new Set(value)];
+      const lookup = db.prepare(`SELECT id FROM ${master} WHERE id = ?`);
+      if (ids.some((id) => !lookup.get(id))) throw validationError(`Alguno de los registros seleccionados en «${label}» no existe.`, key);
+      return ids;
+    },
+    /** Map of owner id → [{ id, name }], for one owner or (without `ownerId`) all of them. */
+    load(db, ownerId = null) {
+      const rows = db.prepare(`SELECT ${table}.${owner} AS owner_id, ${master}.id, ${master}.name FROM ${table}
+        JOIN ${master} ON ${master}.id = ${table}.${column}
+        ${ownerId === null ? '' : `WHERE ${table}.${owner} = ?`} ORDER BY ${master}.name COLLATE NOCASE`).all(...(ownerId === null ? [] : [ownerId]));
+      const byOwner = new Map();
+      for (const row of rows) byOwner.set(row.owner_id, [...(byOwner.get(row.owner_id) || []), { id: row.id, name: row.name }]);
+      return byOwner;
+    },
+    replace(db, ownerId, ids) {
+      db.prepare(`DELETE FROM ${table} WHERE ${owner} = ?`).run(ownerId);
+      const insert = db.prepare(`INSERT INTO ${table} (${owner}, ${column}) VALUES (?, ?)`);
+      for (const id of ids) insert.run(ownerId, id);
+    },
+    remove(db, ownerId) {
+      db.prepare(`DELETE FROM ${table} WHERE ${owner} = ?`).run(ownerId);
+    },
+  };
+}
+
+const sameIds = (left, right) => left.length === right.length && left.every((id) => right.includes(id));
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
@@ -169,17 +209,29 @@ const RESOURCES = {
     entityType: 'talent',
     subject: 'el talento',
     notFound: 'El talento no existe.',
-    select: 'SELECT talents.* FROM talents',
+    select: `SELECT talents.*, primary_tower.name AS primary_tower_name FROM talents
+      LEFT JOIN towers AS primary_tower ON primary_tower.id = talents.primary_tower_id`,
     order: 'ORDER BY talents.name COLLATE NOCASE',
     fields: [
       ['name', text('name', 'Nombre', { max: 120, required: true })],
       ['location', text('location', 'Ubicación', { max: 120 })],
       ['category', oneOf('category', 'Categoría', TALENT_CATEGORIES)],
       ['profile', oneOf('profile', 'Perfil', TALENT_PROFILES)],
+      ['primary_tower_id', reference('primaryTowerId', 'Tower principal', 'towers')],
     ],
-    validate(db, values, id) {
+    relations: [
+      relation('lobIds', 'lobNames', 'LoBs', { table: 'talent_lobs', owner: 'talent_id', column: 'lob_id', master: 'lobs' }),
+      relation('towerIds', 'towerNames', 'Towers', { table: 'talent_towers', owner: 'talent_id', column: 'tower_id', master: 'towers' }),
+    ],
+    validate(db, values, id, relations) {
       const found = db.prepare('SELECT id FROM talents WHERE name = ? COLLATE NOCASE').get(values.name);
       if (found && found.id !== id) throw new HttpError(409, 'duplicate_record', 'Ya existe un talento con ese nombre.', 'name');
+      // The main tower (accountable for billability) must be one of the talent's towers.
+      const towerIds = relations.towerIds;
+      if (towerIds.length > 0 && !values.primary_tower_id) throw validationError('Selecciona la Tower principal entre las towers del talento.', 'primaryTowerId');
+      if (values.primary_tower_id && !towerIds.includes(values.primary_tower_id)) {
+        throw validationError('La Tower principal debe ser una de las towers del talento.', 'primaryTowerId');
+      }
     },
     deleteChecks: [
       ['SELECT COUNT(*) AS count FROM talent_skills WHERE talent_id = $id', 'skill', 'skills'],
@@ -330,13 +382,27 @@ const RESOURCES = {
   },
 };
 
-function toRecord(resource, row) {
+/** `loaded` is `[[relation, Map(ownerId → [{ id, name }])]]` from loadRelations. */
+function toRecord(resource, row, loaded = []) {
   const record = mapRow(row);
+  for (const [rel, byOwner] of loaded) {
+    const items = byOwner.get(row.id) || [];
+    record[rel.key] = items.map((item) => item.id);
+    record[rel.namesKey] = items.map((item) => item.name);
+  }
   return resource.map ? resource.map(record) : record;
+}
+
+function loadRelations(db, resource, ownerId = null) {
+  return (resource.relations || []).map((rel) => [rel, rel.load(db, ownerId)]);
 }
 
 function getRow(db, resource, id) {
   return db.prepare(`${resource.select} WHERE ${resource.table}.id = ?`).get(id);
+}
+
+function getRecord(db, resource, id) {
+  return toRecord(resource, getRow(db, resource, id), loadRelations(db, resource, id));
 }
 
 function appendEvent(db, resource, { id, user, action, detail = {}, now }) {
@@ -347,7 +413,8 @@ function appendEvent(db, resource, { id, user, action, detail = {}, now }) {
 function listResource(ctx, req, res, resource) {
   requireUser(ctx, req);
   const rows = ctx.db.prepare(`${resource.select} ${resource.order}`).all();
-  sendJson(res, 200, { records: rows.map((row) => toRecord(resource, row)) });
+  const loaded = loadRelations(ctx.db, resource);
+  sendJson(res, 200, { records: rows.map((row) => toRecord(resource, row, loaded)) });
 }
 
 async function createResource(ctx, req, res, resource) {
@@ -358,13 +425,15 @@ async function createResource(ctx, req, res, resource) {
   withTransaction(ctx.db, () => {
     const values = {};
     for (const [column, parser] of resource.fields) values[column] = parser.parse(body[parser.key], ctx.db);
-    resource.validate?.(ctx.db, values, null);
+    const relations = Object.fromEntries((resource.relations || []).map((rel) => [rel.key, rel.parse(body[rel.key], ctx.db)]));
+    resource.validate?.(ctx.db, values, null, relations);
     const columns = ['id', ...Object.keys(values), 'created_at', 'updated_at'];
     ctx.db.prepare(`INSERT INTO ${resource.table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
       .run(id, ...Object.values(values), now, now);
+    for (const rel of resource.relations || []) rel.replace(ctx.db, id, relations[rel.key]);
     appendEvent(ctx.db, resource, { id, user, action: 'created', now });
   });
-  sendJson(res, 201, { record: toRecord(resource, getRow(ctx.db, resource, id)) });
+  sendJson(res, 201, { record: getRecord(ctx.db, resource, id) });
 }
 
 async function updateResource(ctx, req, res, resource, rawId) {
@@ -379,14 +448,24 @@ async function updateResource(ctx, req, res, resource, rawId) {
     for (const [column, parser] of resource.fields) {
       if (Object.hasOwn(body, parser.key)) merged[column] = parser.parse(body[parser.key], ctx.db);
     }
-    resource.validate?.(ctx.db, merged, id);
+    // Relations missing from the body keep their stored ids (partial update).
+    const relations = {};
+    const changedRelations = [];
+    for (const rel of resource.relations || []) {
+      const stored = (rel.load(ctx.db, id).get(id) || []).map((item) => item.id);
+      relations[rel.key] = Object.hasOwn(body, rel.key) ? rel.parse(body[rel.key], ctx.db) : stored;
+      if (!sameIds(relations[rel.key], stored)) changedRelations.push(rel);
+    }
+    resource.validate?.(ctx.db, merged, id, relations);
     const changed = resource.fields.map(([column]) => column).filter((column) => merged[column] !== existing[column]);
-    if (changed.length === 0) return;
-    ctx.db.prepare(`UPDATE ${resource.table} SET ${changed.map((column) => `${column} = ?`).join(', ')}, updated_at = ? WHERE id = ?`)
+    if (changed.length === 0 && changedRelations.length === 0) return;
+    ctx.db.prepare(`UPDATE ${resource.table} SET ${changed.map((column) => `${column} = ?, `).join('')}updated_at = ? WHERE id = ?`)
       .run(...changed.map((column) => merged[column]), now, id);
-    appendEvent(ctx.db, resource, { id, user, action: 'updated', detail: { fields: changed.map(camelCase) }, now });
+    for (const rel of changedRelations) rel.replace(ctx.db, id, relations[rel.key]);
+    const fields = [...changed.map(camelCase), ...changedRelations.map((rel) => rel.key)];
+    appendEvent(ctx.db, resource, { id, user, action: 'updated', detail: { fields }, now });
   });
-  sendJson(res, 200, { record: toRecord(resource, getRow(ctx.db, resource, id)) });
+  sendJson(res, 200, { record: getRecord(ctx.db, resource, id) });
 }
 
 function deleteResource(ctx, req, res, resource, rawId) {
@@ -404,6 +483,7 @@ function deleteResource(ctx, req, res, resource, rawId) {
       throw new HttpError(409, `${resource.entityType}_in_use`, `No se puede eliminar ${resource.subject} «${resource.describe(row)}»: tiene vínculos con ${joinSpanish(parts)}.`);
     }
     ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(resource.entityType, id);
+    for (const rel of resource.relations || []) rel.remove(ctx.db, id);
     ctx.db.prepare(`DELETE FROM ${resource.table} WHERE id = ?`).run(id);
   });
   sendJson(res, 200, { deleted: true });

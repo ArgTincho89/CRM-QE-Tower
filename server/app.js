@@ -226,6 +226,12 @@ const MASTER_DELETE_RULES = {
         'iniciativas',
       ],
       ['SELECT COUNT(*) AS count FROM assignments WHERE tower_id = $id', 'asignación de talento', 'asignaciones de talento'],
+      [
+        `SELECT COUNT(*) AS count FROM talents
+          WHERE primary_tower_id = $id OR id IN (SELECT talent_id FROM talent_towers WHERE tower_id = $id)`,
+        'talento',
+        'talentos',
+      ],
     ],
   },
   lobs: {
@@ -236,6 +242,7 @@ const MASTER_DELETE_RULES = {
       ['SELECT COUNT(*) AS count FROM opportunity_lobs WHERE lob_id = $id', 'oportunidad', 'oportunidades'],
       ['SELECT COUNT(*) AS count FROM initiative_lobs WHERE lob_id = $id', 'iniciativa', 'iniciativas'],
       ['SELECT COUNT(*) AS count FROM assignments WHERE lob_id = $id', 'asignación de talento', 'asignaciones de talento'],
+      ['SELECT COUNT(*) AS count FROM talent_lobs WHERE lob_id = $id', 'talento', 'talentos'],
     ],
   },
   services: {
