@@ -33,8 +33,8 @@ export const NAV_GROUPS = [
     items: [
       { id: 'sharepointQaSolTech', label: 'SharePoint QA Sol&Tech', icon: 'external', href: 'https://seidor.sharepoint.com/teams/QASolTech/SitePages/Home.aspx' },
       { id: 'qaAcceleratorsDemos', label: 'QA-Aceleradores-Demos', icon: 'external', href: 'https://seidor-my.sharepoint.com/:f:/r/personal/jgonzalez24_seidor_es/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fjgonzalez24%5Fseidor%5Fes%2FDocuments%2F01%2E%20QA%20%2D%20Quality%20Assurance%20Drive%2F99%2E%20SEIDOR%2F00%2E%20QE%20Tower%20Core%2F03%2E%20Aceleradores%20%2D%20Demos%2F01%2E%20QA%2DAceleradores%2DDemos&share=cgpB9Mi1maZqRZbK6VUMHsPkEgUDWZYwmdcEWVCpSUcYiuKjDg' },
-      { id: 'resource-quality-gates', label: 'Modelo de gobernanza de Quality Gates', icon: 'book', resource: '/resources/quality-gates.html' },
       { id: 'resource-normativa-calidad', label: 'Normativa de calidad', icon: 'book', resource: '/resources/normativa-calidad.html' },
+      { id: 'resource-quality-gates', label: 'Modelo de gobernanza de Quality Gates', icon: 'book', resource: '/resources/quality-gates.html' },
       { id: 'resource-agentic-quality-engineering', label: 'Agentic Quality Engineering', icon: 'book', resource: '/resources/agentic-quality-engineering.html' },
     ],
   },

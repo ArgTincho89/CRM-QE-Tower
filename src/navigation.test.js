@@ -58,6 +58,11 @@ describe('resources group', () => {
     }
   });
 
+  test('quality standards come before the quality gates governance model', () => {
+    const documents = resources.items.filter((item) => item.resource).map((item) => item.id);
+    assert.deepEqual(documents, ['resource-normativa-calidad', 'resource-quality-gates', 'resource-agentic-quality-engineering']);
+  });
+
   test('the internal documents open in-app pages backed by /resources/', () => {
     assert.deepEqual(Object.fromEntries(Object.entries(RESOURCE_PAGES).map(([id, item]) => [id, [item.label, item.resource]])), {
       'resource-quality-gates': ['Modelo de gobernanza de Quality Gates', '/resources/quality-gates.html'],
