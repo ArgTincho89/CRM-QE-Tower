@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, migrateResolutionDate, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
+import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, migrateResolutionDate, migrateTalentRelations, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
 import { createTempDatabase } from './testing.js';
 
 function count(db, table) {
@@ -763,6 +763,57 @@ test('the resolution date migration copies the close date once and never overwri
     applySchema(temp.db);
     assert.equal(resolution('OP-000001'), '');
     assert.equal(temp.db.prepare('SELECT expected_close_date FROM opportunities WHERE id = ?').get('OP-000001').expected_close_date, '2026-03-31');
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('the talent relations backfill derives LoBs, towers and the primary tower from assignments', () => {
+  const temp = createTempDatabase();
+  try {
+    const stamp = '2026-01-01';
+    const insertTower = temp.db.prepare('INSERT INTO towers (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)');
+    insertTower.run('T-1', 'Tower One', stamp, stamp);
+    insertTower.run('T-2', 'Tower Two', stamp, stamp);
+    const insertLob = temp.db.prepare('INSERT INTO lobs (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)');
+    insertLob.run('L-1', 'LoB One', stamp, stamp);
+    insertLob.run('L-2', 'LoB Two', stamp, stamp);
+    const insertTalent = temp.db.prepare('INSERT INTO talents (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)');
+    insertTalent.run('TA-1', 'Alpha', stamp, stamp);
+    insertTalent.run('TA-2', 'Beta', stamp, stamp);
+    const insertAssignment = temp.db.prepare(
+      'INSERT INTO assignments (id, talent_id, tower_id, lob_id, percentage, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    // Alpha is split across two towers; Tower Two wins on the summed percentage.
+    insertAssignment.run('AS-1', 'TA-1', 'T-1', 'L-1', 20, stamp, stamp);
+    insertAssignment.run('AS-2', 'TA-1', 'T-2', 'L-2', 50, stamp, stamp);
+    insertAssignment.run('AS-3', 'TA-1', 'T-2', null, 10, stamp, stamp);
+    // Beta already chose a primary tower: the backfill must not replace it.
+    insertAssignment.run('AS-4', 'TA-2', 'T-1', null, 30, stamp, stamp);
+    insertAssignment.run('AS-5', 'TA-2', 'T-2', null, 90, stamp, stamp);
+    temp.db.prepare("UPDATE talents SET primary_tower_id = 'T-1' WHERE id = 'TA-2'").run();
+    // Simulate a database that predates the migration.
+    temp.db.prepare('DELETE FROM schema_meta WHERE key = ?').run('talent_relations_backfill_v1');
+    migrateTalentRelations(temp.db);
+
+    const towersOf = (id) => temp.db.prepare('SELECT tower_id FROM talent_towers WHERE talent_id = ? ORDER BY tower_id').all(id).map((row) => row.tower_id);
+    const lobsOf = (id) => temp.db.prepare('SELECT lob_id FROM talent_lobs WHERE talent_id = ? ORDER BY lob_id').all(id).map((row) => row.lob_id);
+    const primaryOf = (id) => temp.db.prepare('SELECT primary_tower_id FROM talents WHERE id = ?').get(id).primary_tower_id;
+    assert.deepEqual(towersOf('TA-1'), ['T-1', 'T-2']);
+    assert.deepEqual(lobsOf('TA-1'), ['L-1', 'L-2']);
+    assert.equal(primaryOf('TA-1'), 'T-2');
+    assert.deepEqual(towersOf('TA-2'), ['T-1', 'T-2']);
+    assert.deepEqual(lobsOf('TA-2'), []);
+    assert.equal(primaryOf('TA-2'), 'T-1');
+    assert.ok(temp.db.prepare('SELECT value FROM schema_meta WHERE key = ?').get('talent_relations_backfill_v1'));
+
+    // Guarded: later boots never re-derive relations or overwrite a user edit.
+    insertAssignment.run('AS-6', 'TA-2', null, 'L-1', 5, stamp, stamp);
+    temp.db.prepare("UPDATE talents SET primary_tower_id = 'T-2' WHERE id = 'TA-1'").run();
+    migrateTalentRelations(temp.db);
+    assert.deepEqual(lobsOf('TA-2'), []);
+    assert.equal(primaryOf('TA-1'), 'T-2');
+    assert.equal(temp.db.prepare('SELECT COUNT(*) AS count FROM talent_towers WHERE talent_id = ?').get('TA-2').count, 2);
   } finally {
     temp.cleanup();
   }

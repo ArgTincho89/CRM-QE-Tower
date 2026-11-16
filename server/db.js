@@ -280,6 +280,7 @@ const WORKSPACE_LINKS_AGREEMENTS_MARKER = 'workspace_links_agreements_v1';
 const SIX_DIGIT_IDS_MARKER = 'six_digit_ids_v1';
 const NOTIFICATION_MENTION_KIND_MARKER = 'notification_mention_kind_v1';
 const RESOLUTION_DATE_MARKER = 'resolution_date_from_close_v1';
+const TALENT_RELATIONS_MARKER = 'talent_relations_backfill_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -435,6 +436,8 @@ export function runMigrations(db) {
   migrateLegacyEvolution(db);
   // Last: it renames ids that the migrations above may have copied into join tables.
   migrateSixDigitIds(db);
+  // After the id renames, so the derived relations reference the final master ids.
+  migrateTalentRelations(db);
 }
 
 function migrateLegacyEvolution(db) {
@@ -568,6 +571,48 @@ export function migrateResolutionDate(db) {
               WHERE (resolution_date IS NULL OR resolution_date = '')
                 AND expected_close_date IS NOT NULL AND expected_close_date <> ''`);
     db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(RESOLUTION_DATE_MARKER, new Date().toISOString());
+  });
+}
+
+/**
+ * Backfills the talent relations added with "People" multi-LoB/tower support from the existing
+ * assignments: every tower and LoB a talent was assigned to becomes a relation, and the tower with
+ * the highest summed assignment percentage becomes its primary tower. Guarded by `schema_meta`, so
+ * it runs once per database; talents that already have a primary tower keep it, and later edits are
+ * never overwritten. Rows that point at missing masters are skipped instead of breaking boot.
+ */
+export function migrateTalentRelations(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(TALENT_RELATIONS_MARKER)) return;
+  withTransaction(db, () => {
+    db.exec(`
+      INSERT OR IGNORE INTO talent_towers (talent_id, tower_id)
+      SELECT DISTINCT assignments.talent_id, assignments.tower_id
+        FROM assignments
+       WHERE assignments.tower_id IS NOT NULL AND assignments.tower_id <> ''
+         AND EXISTS (SELECT 1 FROM towers WHERE towers.id = assignments.tower_id)
+    `);
+    db.exec(`
+      INSERT OR IGNORE INTO talent_lobs (talent_id, lob_id)
+      SELECT DISTINCT assignments.talent_id, assignments.lob_id
+        FROM assignments
+       WHERE assignments.lob_id IS NOT NULL AND assignments.lob_id <> ''
+         AND EXISTS (SELECT 1 FROM lobs WHERE lobs.id = assignments.lob_id)
+    `);
+    // Deterministic tie-break on the tower id, so two equal towers always resolve the same way.
+    db.exec(`
+      UPDATE talents SET primary_tower_id = (
+        SELECT assignments.tower_id
+          FROM assignments
+         WHERE assignments.talent_id = talents.id
+           AND assignments.tower_id IS NOT NULL AND assignments.tower_id <> ''
+           AND EXISTS (SELECT 1 FROM towers WHERE towers.id = assignments.tower_id)
+         GROUP BY assignments.tower_id
+         ORDER BY SUM(assignments.percentage) DESC, assignments.tower_id ASC
+         LIMIT 1
+      )
+      WHERE primary_tower_id IS NULL
+    `);
+    db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(TALENT_RELATIONS_MARKER, new Date().toISOString());
   });
 }
 
