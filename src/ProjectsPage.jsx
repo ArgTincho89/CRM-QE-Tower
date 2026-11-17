@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { listOperationRecords } from './api.js';
 import { PROJECT_TABS } from './navigation.js';
 import {
-  DEFAULT_DELIVERY_PROJECT_STATUS, DELIVERY_PROJECT_FORM_FIELDS, DELIVERY_PROJECT_STATUSES, DELIVERY_TARGETS, NAQ_LEVELS, PROJECT_FORM_FIELDS, PROJECT_TYPES,
-  TESTING_SCOPE_DEFAULTS, filterRecords, mergeOptions, safeExternalUrl, validateDeliveryProjectForm, validateProjectForm,
+  AUTOMATION_STATES, DEFAULT_DELIVERY_PROJECT_STATUS, DELIVERY_PROJECT_FORM_FIELDS, DELIVERY_PROJECT_STATUSES, DELIVERY_TARGETS, NAQ_LEVELS, PROJECT_FORM_FIELDS, PROJECT_PHASES,
+  PROJECT_STATUSES, PROJECT_TYPES, QA_SERVICE_TYPES, RISK_LEVELS, TESTING_SCOPE_DEFAULTS, filterRecords, mergeOptions, safeExternalUrl, validateDeliveryProjectForm, validateProjectForm,
 } from './people.js';
 import { loadProjectTab, saveProjectTab } from './preferences.js';
 import { normalizeWorkspaceLinks, toWorkspaceLinkForm } from './workspaceLinks.js';
@@ -12,22 +12,19 @@ import { DetailsDialog, RecordDialog, RecordPanel, TabStrip, formatDateTime, use
 
 const EYEBROW = 'PROYECTOS';
 
-// Generic suggestions of the free-text fields; the values already stored are added to each list.
-const SUGGESTIONS = {
-  riskLevel: ['Low', 'Medium', 'High', 'Critical'],
-  status: ['Not Started', 'In Progress', 'On Hold', 'Done'],
-  automation: ['Not Started', 'In Progress', 'Done', 'Not Applicable'],
-  phase: [],
-  qaServiceType: [],
-};
+/** Select fields of the NAQ portfolio with the SharePoint form options, in table/dialog order. */
+const CHOICE_FIELDS = [
+  ['qaServiceType', 'Tipo de servicio QA', QA_SERVICE_TYPES],
+  ['phase', 'Fase', PROJECT_PHASES],
+  ['riskLevel', 'Nivel de riesgo', RISK_LEVELS],
+  ['automation', 'Automatización', AUTOMATION_STATES],
+  ['status', 'Estado', PROJECT_STATUSES],
+];
 
-/** Free-text fields of the NAQ portfolio with suggestions, in table/dialog order. */
-const COMBO_FIELDS = [['qaServiceType', 'Tipo de servicio QA'], ['phase', 'Fase'], ['riskLevel', 'Nivel de riesgo'], ['automation', 'Automatización'], ['status', 'Estado']];
-
-function ProjectLink({ url }) {
+function ProjectLink({ url, text }) {
   const href = safeExternalUrl(url);
   if (!href) return url ? <span title="Enlace no válido">{url}</span> : '—';
-  return <a href={href} target="_blank" rel="noopener noreferrer">Abrir proyecto<span className="sr-only"> (se abre en una pestaña nueva)</span></a>;
+  return <a href={href} target="_blank" rel="noopener noreferrer">{text || 'Abrir proyecto'}<span className="sr-only"> (se abre en una pestaña nueva)</span></a>;
 }
 
 const scopeText = (row) => (row.testingScope || []).join(', ');
@@ -49,13 +46,15 @@ function clientNameOptions(clients, current) {
 
 function NaqPortfolioPanel({ clients, onNotice, onUnauthorized }) {
   const collection = useCollection(() => listOperationRecords('projects'), { onUnauthorized });
+  const talents = useCollection(() => listOperationRecords('talents'), { onUnauthorized });
   const [query, setQuery] = useState('');
   const [detail, setDetail] = useState(null);
   const actions = useRecordActions('projects', { reload: collection.reload, onNotice, describe: (row) => row.applicationName, noun: 'la aplicación', eyebrow: EYEBROW });
   const records = collection.records;
   const editing = actions.editing;
   const rows = filterRecords(records, query, ['code', 'applicationName', 'client', 'naq', 'projectType', 'deliveryTarget', 'testingScope', 'qaServiceType', 'phase', 'riskLevel', 'automation', 'status', 'qaOwner', 'comments']);
-  const suggestions = (key) => mergeOptions(SUGGESTIONS[key] || [], records.map((record) => record[key]));
+  // "QA Owner" is a person: talents of People plus any name already stored.
+  const ownerOptions = mergeOptions(talents.records.map((talent) => talent.name), records.map((record) => record.qaOwner));
   const textColumn = (id, label) => ({ id, label, value: (row) => row[id] });
   const dateColumn = (id, label) => ({ id, label, type: 'date', value: (row) => row[id] });
 
@@ -65,8 +64,8 @@ function NaqPortfolioPanel({ clients, onNotice, onUnauthorized }) {
         textColumn('code', 'ID'), textColumn('applicationName', 'Aplicación'), textColumn('version', 'Versión'), textColumn('client', 'Cliente'), textColumn('naq', 'NAQ'),
         textColumn('projectType', 'Tipo de proyecto'), textColumn('deliveryTarget', 'Delivery target'),
         { id: 'testingScope', label: 'Alcance de pruebas', sortable: false, value: scopeText, render: (row) => (row.testingScope?.length ? <span className="ops-chips">{row.testingScope.map((item) => <span key={item} className="status-pill ops-chip">{item}</span>)}</span> : '—') },
-        ...COMBO_FIELDS.map(([id, label]) => textColumn(id, label)),
-        { id: 'projectUrl', label: 'URL del proyecto', value: (row) => row.projectUrl, render: (row) => <ProjectLink url={row.projectUrl} /> },
+        ...CHOICE_FIELDS.map(([id, label]) => textColumn(id, label)),
+        { id: 'projectUrl', label: 'URL del proyecto', value: (row) => row.projectUrlText || row.projectUrl, render: (row) => <ProjectLink url={row.projectUrl} text={row.projectUrlText} /> },
         textColumn('qaOwner', 'Responsable QA'),
         dateColumn('qaEntryDate', 'Fecha de entrada QA'),
         dateColumn('targetReleaseDate', 'Fecha objetivo de release'),
@@ -87,10 +86,11 @@ function NaqPortfolioPanel({ clients, onNotice, onUnauthorized }) {
         { id: 'naq', label: 'NAQ', type: 'select', placeholder: 'Sin NAQ', options: mergeOptions(NAQ_LEVELS, [editing.naq]) },
         { id: 'projectType', label: 'Tipo de proyecto', type: 'select', placeholder: 'Sin tipo', options: mergeOptions(PROJECT_TYPES, [editing.projectType]), hint: 'Tipologías del modelo de Quality Gates.' },
         { id: 'deliveryTarget', label: 'Delivery target', type: 'select', placeholder: 'Sin delivery target', options: mergeOptions(DELIVERY_TARGETS, [editing.deliveryTarget]) },
-        ...COMBO_FIELDS.map(([id, label]) => ({ id, label, type: 'combo', options: suggestions(id) })),
-        { id: 'testingScope', label: 'Alcance de pruebas', type: 'checklist', options: mergeOptions(TESTING_SCOPE_DEFAULTS, records.map((record) => record.testingScope || [])) },
-        { id: 'qaOwner', label: 'Responsable QA', type: 'combo', options: suggestions('qaOwner') },
+        ...CHOICE_FIELDS.map(([id, label, options]) => ({ id, label, type: 'select', placeholder: 'Sin valor', options: mergeOptions(options, [editing[id]]) })),
+        { id: 'testingScope', label: 'Alcance de pruebas', type: 'checklist', options: mergeOptions(TESTING_SCOPE_DEFAULTS, editing.testingScope || []) },
+        { id: 'qaOwner', label: 'Responsable QA', type: 'combo', options: ownerOptions, hint: 'Talento de People o nombre/correo.' },
         { id: 'projectUrl', label: 'URL del proyecto', type: 'url', wide: true, hint: 'Solo enlaces http:// o https://.' },
+        { id: 'projectUrlText', label: 'Texto del enlace', hint: 'Opcional. Si se deja vacío se muestra «Abrir proyecto».' },
         { id: 'qaEntryDate', label: 'Fecha de entrada QA', type: 'date' },
         { id: 'targetReleaseDate', label: 'Fecha objetivo de release', type: 'date' },
         { id: 'createdDate', label: 'Fecha de creación', type: 'date' },
@@ -108,8 +108,8 @@ function NaqPortfolioPanel({ clients, onNotice, onUnauthorized }) {
       { label: 'Tipo de proyecto', value: detail.projectType },
       { label: 'Delivery target', value: detail.deliveryTarget },
       { label: 'Alcance de pruebas', value: scopeText(detail) },
-      ...COMBO_FIELDS.map(([id, label]) => ({ label, value: detail[id] })),
-      { label: 'URL del proyecto', value: detail.projectUrl ? <ProjectLink url={detail.projectUrl} /> : '' },
+      ...CHOICE_FIELDS.map(([id, label]) => ({ label, value: detail[id] })),
+      { label: 'URL del proyecto', value: detail.projectUrl ? <ProjectLink url={detail.projectUrl} text={detail.projectUrlText} /> : '' },
       { label: 'Responsable QA', value: detail.qaOwner },
       { label: 'Fecha de entrada QA', value: detail.qaEntryDate },
       { label: 'Fecha objetivo de release', value: detail.targetReleaseDate },

@@ -60,17 +60,19 @@ describe('resources group', () => {
     assert.deepEqual(RESOURCE_LINKS.map((item) => item.label), [
       'SharePoint QA Sol&Tech',
       'QA-Aceleradores-Demos',
+      'Lista de vacaciones',
       'Normativa de calidad',
       'Modelo de gobernanza de Quality Gates',
       'Agentic Quality Engineering',
     ]);
   });
 
-  test('the SharePoint entries are external links, not pages', () => {
+  test('the SharePoint and SuccessFactors entries are external links, not pages', () => {
     const external = RESOURCE_LINKS.filter((item) => item.href);
-    assert.deepEqual(external.map((item) => item.label), ['SharePoint QA Sol&Tech', 'QA-Aceleradores-Demos']);
+    assert.deepEqual(external.map((item) => item.label), ['SharePoint QA Sol&Tech', 'QA-Aceleradores-Demos', 'Lista de vacaciones']);
     assert.equal(external[0].href, 'https://seidor.sharepoint.com/teams/QASolTech/SitePages/Home.aspx');
     assert.equal(external[1].href, 'https://seidor-my.sharepoint.com/:f:/r/personal/jgonzalez24_seidor_es/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fjgonzalez24%5Fseidor%5Fes%2FDocuments%2F01%2E%20QA%20%2D%20Quality%20Assurance%20Drive%2F99%2E%20SEIDOR%2F00%2E%20QE%20Tower%20Core%2F03%2E%20Aceleradores%20%2D%20Demos%2F01%2E%20QA%2DAceleradores%2DDemos&share=cgpB9Mi1maZqRZbK6VUMHsPkEgUDWZYwmdcEWVCpSUcYiuKjDg');
+    assert.equal(external[2].href, 'https://performancemanager.successfactors.eu/xi/ui/ect/pages/absence/timeOff.xhtml?_s.crb=p%2bUYj8U6P2icWMOQDd2Yo05%2bE6toTfQBmM8gYlqqDUQ%3d');
     for (const item of external) {
       assert.equal(PAGE_ITEMS.includes(item), false);
       assert.deepEqual(resolveNavigationTarget(item.id), { page: 'pipeline', view: null });

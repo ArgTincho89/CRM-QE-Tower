@@ -25,7 +25,13 @@ export const CAREER_LEVELS = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7'];
 export const PLAN_STATUS_DEFAULTS = ['No iniciada', 'En curso', 'Completada'];
 
 /** Generic testing scopes offered in the project dialog, merged with the values already stored. */
-export const TESTING_SCOPE_DEFAULTS = ['Functional', 'API', 'E2E', 'Regression', 'Performance', 'Security', 'Accessibility', 'Mobile'];
+// Option lists of the NAQ portfolio, as defined by the SharePoint form (QE-OC-NAQ_Fields_Values).
+export const TESTING_SCOPE_DEFAULTS = ['Functional', 'API', 'E2E', 'Regression', 'Performance', 'Security', 'Accessibility', 'IA'];
+export const QA_SERVICE_TYPES = ['Full QA', 'QA Support', 'Automation', 'Auditor'];
+export const PROJECT_PHASES = ['Pressales', 'Win', 'Lost'];
+export const RISK_LEVELS = ['Low', 'Medium', 'High', 'Critical'];
+export const AUTOMATION_STATES = ['Not Required', 'Planned', 'In Progress', 'Implemented'];
+export const PROJECT_STATUSES = ['Planned', 'In Progress', 'On Hold', 'Completed', 'Cancelled'];
 
 export const ASSIGNMENT_LIMIT = 100;
 
@@ -259,7 +265,7 @@ export const PERFORMANCE_FORM_FIELDS = ['talentId', 'year', 'objective', 'status
 export const PERFORMANCE_MAX_OBJECTIVES = 50;
 export const COURSE_FORM_FIELDS = ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'estimatedHours', 'url', 'validityMonths', 'noExpiry', 'approxPrice', 'description'];
 export const PLAN_FORM_FIELDS = ['talentId', 'task', 'courseId', 'courseName', 'family', 'estimatedHours', 'dedicatedHours', 'progress', 'status', 'startDate', 'plannedEndDate', 'actualEndDate', 'evidence', 'nextStep', 'expiryDate'];
-export const PROJECT_FORM_FIELDS = ['code', 'applicationName', 'version', 'client', 'naq', 'projectType', 'deliveryTarget', 'testingScope', 'qaServiceType', 'phase', 'riskLevel', 'automation', 'status', 'projectUrl', 'qaOwner', 'qaEntryDate', 'targetReleaseDate', 'createdDate', 'attachments', 'comments'];
+export const PROJECT_FORM_FIELDS = ['code', 'applicationName', 'version', 'client', 'naq', 'projectType', 'deliveryTarget', 'testingScope', 'qaServiceType', 'phase', 'riskLevel', 'automation', 'status', 'projectUrl', 'projectUrlText', 'qaOwner', 'qaEntryDate', 'targetReleaseDate', 'createdDate', 'attachments', 'comments'];
 
 /**
  * Main tower after the talent's tower list changes: kept while still selected, otherwise the

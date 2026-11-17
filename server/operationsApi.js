@@ -612,6 +612,7 @@ const RESOURCES = {
       ['automation', text('automation', 'Automatización', { max: 120 })],
       ['status', text('status', 'Estado', { max: 120 })],
       ['project_url', url('projectUrl', 'URL del proyecto')],
+      ['project_url_text', text('projectUrlText', 'Texto del enlace', { max: 200 })],
       ['qa_owner', text('qaOwner', 'Responsable QA', { max: 200 })],
       ['qa_entry_date', date('qaEntryDate', 'Fecha de entrada QA')],
       ['target_release_date', date('targetReleaseDate', 'Fecha objetivo de release')],

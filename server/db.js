@@ -416,6 +416,9 @@ export function applySchema(db) {
   for (const [name, declaration] of [['description', "TEXT NOT NULL DEFAULT ''"], ['approx_price', 'REAL'], ['no_expiry', 'INTEGER NOT NULL DEFAULT 0']]) {
     if (!catalogColumns.includes(name)) db.exec(`ALTER TABLE training_catalog ADD COLUMN ${name} ${declaration}`);
   }
+  // NAQ portfolio "Project URL" is a hyperlink: URL plus an optional display text.
+  const projectColumns = db.prepare('PRAGMA table_info(projects)').all().map((row) => row.name);
+  if (!projectColumns.includes('project_url_text')) db.exec("ALTER TABLE projects ADD COLUMN project_url_text TEXT NOT NULL DEFAULT ''");
   const opportunityAdditions = [
     ['origin', "TEXT NOT NULL DEFAULT ''"],
     ['probability', 'INTEGER'],
