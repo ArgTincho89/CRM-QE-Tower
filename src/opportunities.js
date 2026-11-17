@@ -31,6 +31,14 @@ export function validateOpportunityResult({ stage, outcome, resolutionDate, clos
   return '';
 }
 
+/** Final opportunity stage; opportunities there are closed and no longer count as active. */
+export const RESULT_OPPORTUNITY_STAGE = 'result';
+
+/** True for an opportunity still in play: not archived and not in the Resultado stage. */
+export function isActiveOpportunity(item) {
+  return Boolean(item) && !item.archivedAt && !item.archived && item.stage !== RESULT_OPPORTUNITY_STAGE;
+}
+
 export const MISSING_OPPORTUNITY_TYPE_LABEL = 'Sin tipo';
 
 /**

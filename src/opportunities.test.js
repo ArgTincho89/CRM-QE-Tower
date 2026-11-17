@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative, validateOpportunityClient, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
+import { applyOriginChange, describeOpportunityOutcome, describeOpportunityType, filterOpportunityRecords, isActiveOpportunity, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative, validateOpportunityClient, validateOpportunityResult, validateOpportunityType, validateOriginInitiative } from './opportunities.js';
 
 describe('staffing opportunities', () => {
   test('only Pliego and Oferta require a client', () => {
@@ -49,6 +49,17 @@ describe('opportunity result rules', () => {
     assert.match(validateOpportunityResult({ ...base, outcome: 'lost' }), /motivo/);
     assert.match(validateOpportunityResult({ ...base, outcome: 'discarded', closureReason: '   ' }), /motivo/);
     assert.equal(validateOpportunityResult({ ...base, outcome: 'lost', closureReason: 'Precio' }), '');
+  });
+});
+
+describe('isActiveOpportunity', () => {
+  test('excludes archived opportunities and those in Resultado', () => {
+    assert.equal(isActiveOpportunity({ id: 'OP-1', stage: 'qualification' }), true);
+    assert.equal(isActiveOpportunity({ id: 'OP-2' }), true);
+    assert.equal(isActiveOpportunity({ id: 'OP-3', stage: 'result' }), false);
+    assert.equal(isActiveOpportunity({ id: 'OP-4', stage: 'qualification', archivedAt: '2026-01-01' }), false);
+    assert.equal(isActiveOpportunity({ id: 'OP-5', archived: true }), false);
+    assert.equal(isActiveOpportunity(null), false);
   });
 });
 

@@ -1,6 +1,6 @@
 import { opportunityTypes } from './data.js';
 import { isActiveInitiative } from './initiatives.js';
-import { MISSING_OPPORTUNITY_TYPE_LABEL } from './opportunities.js';
+import { MISSING_OPPORTUNITY_TYPE_LABEL, isActiveOpportunity } from './opportunities.js';
 import { computePipelineQe, computeWeightedPipeline } from './pipelineSummary.js';
 
 /** Year-selector value that disables the year filter. */
@@ -73,16 +73,18 @@ export function opportunityTypeBreakdown(opportunities) {
 
 /**
  * Every KPI of the CRM QE page for one year (or ALL_YEARS), filtered by each record's
- * creation date. Archived opportunities never count; initiatives use the shared
+ * creation date. Archived opportunities never count; the "Oportunidades activas" card and its
+ * type breakdown also leave out opportunities in Resultado. Initiatives use the shared
  * active-initiative predicate (completed and archived excluded).
  */
 export function computePipelineKpis({ opportunities = [], initiatives = [], agreements = [], clients = [] } = {}, year = ALL_YEARS) {
   const yearOpportunities = filterByYear(opportunities, year).filter((item) => !item.archivedAt && !item.archived);
+  const activeOpportunities = yearOpportunities.filter(isActiveOpportunity);
   return {
     activeClients: filterByYear(clients, year).filter((item) => item.active).length,
     activeInitiatives: filterByYear(initiatives, year).filter(isActiveInitiative).length,
-    opportunities: yearOpportunities.length,
-    opportunityTypes: opportunityTypeBreakdown(yearOpportunities),
+    activeOpportunities: activeOpportunities.length,
+    opportunityTypes: opportunityTypeBreakdown(activeOpportunities),
     activeAgreements: filterByYear(agreements, year).filter((item) => item.status === 'active').length,
     pipelineQe: computePipelineQe(yearOpportunities),
     weightedPipeline: computeWeightedPipeline(yearOpportunities),

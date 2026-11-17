@@ -61,7 +61,7 @@ describe('CRM QE KPIs per year', () => {
     const kpis = computePipelineKpis({ opportunities, initiatives, agreements, clients }, 2026);
     assert.equal(kpis.activeClients, 1);
     assert.equal(kpis.activeInitiatives, 1);
-    assert.equal(kpis.opportunities, 2);
+    assert.equal(kpis.activeOpportunities, 2);
     assert.equal(kpis.activeAgreements, 1);
     assert.equal(kpis.pipelineQe, 2000 * 0.25 + 4000);
     assert.equal(kpis.weightedPipeline, 2000);
@@ -71,7 +71,7 @@ describe('CRM QE KPIs per year', () => {
     const kpis = computePipelineKpis({ opportunities, initiatives, agreements, clients }, ALL_YEARS);
     assert.equal(kpis.activeClients, 2);
     assert.equal(kpis.activeInitiatives, 2);
-    assert.equal(kpis.opportunities, 3);
+    assert.equal(kpis.activeOpportunities, 3);
     assert.equal(kpis.activeAgreements, 2);
     assert.equal(kpis.pipelineQe, 500 + 500 + 4000);
     assert.equal(kpis.weightedPipeline, 400 + 2000);
@@ -79,13 +79,20 @@ describe('CRM QE KPIs per year', () => {
 
   test('a year without weighted opportunities reports null', () => {
     const kpis = computePipelineKpis({ opportunities }, 2024);
-    assert.equal(kpis.opportunities, 0);
+    assert.equal(kpis.activeOpportunities, 0);
     assert.equal(kpis.pipelineQe, 0);
     assert.equal(kpis.weightedPipeline, null);
   });
 
   test('the opportunity type breakdown follows the year filter', () => {
     const kpis = computePipelineKpis({ opportunities }, 2026);
+    assert.deepEqual(kpis.opportunityTypes.map(({ label, count }) => [label, count]), [['Pliego', 0], ['Oferta', 1], ['Staffing', 0], ['Sin tipo', 1]]);
+  });
+
+  test('opportunities in Resultado are not active and stay out of the card and its breakdown', () => {
+    const closed = { id: 'OP-5', createdAt: '2026-09-01T10:00:00.000Z', amount: '8.000 €', qaPercent: 100, probability: 100, opportunityType: 'tender', stage: 'result' };
+    const kpis = computePipelineKpis({ opportunities: [...opportunities, closed] }, 2026);
+    assert.equal(kpis.activeOpportunities, 2);
     assert.deepEqual(kpis.opportunityTypes.map(({ label, count }) => [label, count]), [['Pliego', 0], ['Oferta', 1], ['Staffing', 0], ['Sin tipo', 1]]);
   });
 

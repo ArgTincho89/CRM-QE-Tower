@@ -84,7 +84,7 @@ export function isMasterDataTab(tabId) {
 export const PEOPLE_TABS = [
   { id: 'talentList', label: 'Listado de personas' },
   { id: 'talentSkills', label: 'Skills x talento' },
-  { id: 'activityCatalog', label: 'QE - Catálogo de actividades por niveles' },
+  { id: 'activityCatalog', label: 'Catálogo de actividades por niveles' },
   { id: 'assignments', label: 'Asignaciones' },
   { id: 'training', label: 'Formación' },
 ];
@@ -92,8 +92,8 @@ export const DEFAULT_PEOPLE_TAB = PEOPLE_TABS[0].id;
 
 /** Sub-tabs of People > Formación. */
 export const TRAINING_TABS = [
-  { id: 'trainingCatalog', label: 'QE - Catálogo de formación' },
-  { id: 'trainingPlan', label: 'QE - Plan de formación' },
+  { id: 'trainingCatalog', label: 'Catálogo de formación' },
+  { id: 'trainingPlan', label: 'Plan de formación' },
 ];
 export const DEFAULT_TRAINING_TAB = TRAINING_TABS[0].id;
 

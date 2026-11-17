@@ -113,18 +113,22 @@ export function monthGrid(year, month) {
   return weeks;
 }
 
-/** First and last date shown by a view around the anchor date. */
+/** Unbounded range of the agenda: it lists every event, past and future. */
+export const AGENDA_RANGE = Object.freeze({ from: '0000-01-01', to: '9999-12-31' });
+
+/** Heading of the agenda view, which is not tied to one period. */
+export const AGENDA_TITLE = 'Todos los eventos';
+
+/** First and last date shown by a view around the anchor date (the agenda ignores the anchor). */
 export function visibleRange(view, anchor) {
+  if (view === 'agenda') return { ...AGENDA_RANGE };
   const { year, month } = parseIsoDate(anchor);
   if (view === 'week') {
     const dates = weekDates(anchor);
     return { from: dates[0], to: dates[6] };
   }
-  if (view === 'month') {
-    const weeks = monthGrid(year, month);
-    return { from: weeks[0][0].date, to: weeks.at(-1)[6].date };
-  }
-  return { from: isoDateFromParts(year, month, 1), to: isoDateFromParts(year, month, daysInMonth(year, month)) };
+  const weeks = monthGrid(year, month);
+  return { from: weeks[0][0].date, to: weeks.at(-1)[6].date };
 }
 
 /**
@@ -145,8 +149,9 @@ export function monthTitle(year, month) {
   return `${capitalize(SPANISH_MONTHS[month])} ${year}`;
 }
 
-/** Heading of a view: the month for month/agenda, the date span for a week. */
+/** Heading of a view: the month, the date span for a week, or "Todos los eventos" for the agenda. */
 export function periodTitle(view, anchor) {
+  if (view === 'agenda') return AGENDA_TITLE;
   const { year, month } = parseIsoDate(anchor);
   if (view !== 'week') return monthTitle(year, month);
   const dates = weekDates(anchor);
@@ -226,8 +231,31 @@ export function splitCellEvents(events, limit = MONTH_CELL_EVENT_LIMIT) {
   return { visible: list.slice(0, limit - 1), hidden: list.length - (limit - 1) };
 }
 
-/** Agenda: the days of the range that have events, in date order, as `{ date, events }`. */
-export function agendaDays(events, from, to) {
+/**
+ * Agenda: the days that have events, in date order, as `{ date, events }`. Without a range it
+ * covers every event (past and future).
+ */
+export function agendaDays(events, from = AGENDA_RANGE.from, to = AGENDA_RANGE.to) {
   const grouped = groupEventsByDay(eventsInRange(events, from, to));
   return [...grouped.keys()].sort().map((date) => ({ date, events: grouped.get(date) }));
+}
+
+/** Agenda days grouped under their month, in date order: `{ key: 'YYYY-MM', title, days }`. */
+export function agendaMonths(events) {
+  const months = [];
+  for (const day of agendaDays(events)) {
+    const key = day.date.slice(0, 7);
+    if (months.at(-1)?.key !== key) {
+      const { year, month } = parseIsoDate(day.date);
+      months.push({ key, title: monthTitle(year, month), days: [] });
+    }
+    months.at(-1).days.push(day);
+  }
+  return months;
+}
+
+/** Agenda day to scroll to for `today`: the first one on or after it, else the last one ('' when empty). */
+export function agendaStartDay(days, today) {
+  const list = days || [];
+  return list.find((day) => day.date >= today)?.date || list.at(-1)?.date || '';
 }

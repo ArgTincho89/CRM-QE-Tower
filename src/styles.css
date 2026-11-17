@@ -24,7 +24,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .sidebar { width: 270px; position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; flex-direction: column; padding: 23px 14px 13px; background: #fff; border-right: 1px solid #e9edf3; }
 .brand { display: flex; align-items: center; height: 50px; padding-left: 2px; }
 .brand-logo { display: block; width: auto; height: 50px; transform: translateY(-2px); }
-.workspace-label { margin: 35px 0 12px 10px; color: #a0a9b8; font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.workspace-label { margin: 35px 0 12px 10px; color: #a0a9b8; font-size: 15px; font-weight: 500; letter-spacing: 0; text-transform: none; }
 .side-nav { display: grid; gap: 4px; min-height: 0; overflow-y: auto; }
 .nav-group { display: grid; gap: 4px; }
 .nav-group-labeled { margin-top: 14px; padding-top: 12px; border-top: 1px solid #edf0f4; }
@@ -694,8 +694,10 @@ button.kpi-card-main:focus-visible { outline: 2px solid #1268d5; outline-offset:
 .calendar-week-day header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: #6f7d91; font-size: 12px; }
 .calendar-week-day header strong { display: inline-grid; min-width: 26px; height: 26px; place-items: center; border-radius: 999px; color: #1f2d42; font-size: 14px; }
 .calendar-agenda { display: grid; gap: 8px; }
+.calendar-agenda-month { display: grid; gap: 8px; }
+.calendar-agenda-month-title { margin: 8px 0 0; color: #1c2738; font-size: 15px; font-weight: 700; }
 .calendar-agenda-day { padding: 8px 10px; border: 1px solid #e8edf3; border-radius: 6px; scroll-margin-top: 80px; }
-.calendar-agenda-day h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: #2b3a52; font-size: 14px; text-transform: capitalize; }
+.calendar-agenda-day h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: #2b3a52; font-size: 14px; text-transform: capitalize; }
 .calendar-agenda-focus { border-color: #1268d5; box-shadow: 0 0 0 2px #1268d533; }
 .calendar-today-pill { padding: 1px 7px; border-radius: 999px; background: #1268d5; color: #fff; font-size: 11px; text-transform: none; }
 .calendar-agenda-events { display: grid; gap: 2px; }
@@ -845,7 +847,10 @@ a.button { text-decoration: none; }
 }
 
 /* Collapsible sidebar heading, clickable rows and read-only detail dialogs. */
-.workspace-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.workspace-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: inherit; font-family: inherit; font-size: 15px; font-weight: 500; letter-spacing: 0; text-transform: none; cursor: pointer; }
+/* Service descriptions: one truncated line with a fixed max width; the title tooltip has the full text. */
+.data-table td.cell-truncate-wrap { max-width: 360px; }
+.cell-truncate { display: block; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-toggle svg { transition: transform .15s ease; }
 .workspace-toggle.expanded svg { transform: rotate(90deg); }
 .workspace-toggle:hover { color: #234a79; }

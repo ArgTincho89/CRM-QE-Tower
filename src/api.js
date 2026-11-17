@@ -87,7 +87,6 @@ export const deleteService = (id) => request(`/services/${encodeURIComponent(id)
 export const listServiceYears = () => request('/service-years');
 export const createServiceYear = (body) => request('/service-years', { method: 'POST', body });
 // Removes the year only while it has no services; otherwise the server answers 409.
-export const deleteServiceYear = (year) => request(`/service-years/${encodeURIComponent(year)}`, { method: 'DELETE' });
 export const listLobs = () => request('/lobs');
 export const createLob = (body) => request('/lobs', { method: 'POST', body });
 export const updateLob = (id, body) => request(`/lobs/${encodeURIComponent(id)}`, { method: 'PATCH', body });

@@ -2,12 +2,12 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { clampActiveIndex, edgeEnabledIndex, filterOptions, isAssignable, reduceDropdownKey, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityContractTypes, opportunityMarketScopes, opportunityOrigins, opportunityOutcomes, opportunityServiceTypes, opportunityTypes, proposals, stages } from './data.js';
 import { REUSABLE_REASON_LIMIT, contractTypeLabel, formatAiScore, marketScopeLabel, parseAiScore, serviceTypeLabel } from './opportunityFields.js';
-import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
+import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isActiveOpportunity, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
 import { MASTER_DATA_TABS, NAV_GROUPS, RESOURCE_LINKS, RESOURCE_PAGES, resolveNavigationTarget } from './navigation.js';
 import { canNavigateBack, createNavigationEntry, navigationHash, navigationState, parseNavigationHash, parseNavigationState, readNavigationEntry } from './navigationHistory.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
-import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
+import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, isActiveInitiative, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
 import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLinks, safeWorkspaceUrl, toWorkspaceLinkForm } from './workspaceLinks.js';
 import { filterAgreements } from './agreements.js';
 import { computeWeightedAmount } from './pipelineSummary.js';
@@ -16,7 +16,7 @@ import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, s
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
 import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, MISSING_OPTION_FILTER, NOT_REUSABLE_FILTER, OPEN_OUTCOME_FILTER, REUSABLE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
-import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, deleteServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
+import { getVersion, getMe, login, logout, listOpportunities, listArchivedOpportunities, createOpportunity, updateOpportunity, archiveOpportunity, deleteOpportunity, restoreOpportunity, listClients, createClient, updateClient, deactivateClient, deleteClient, listTowers, createTower, updateTower, deleteTower, listServices, createService, updateService, deactivateService, deleteService, listServiceYears, createServiceYear, listLobs, createLob, updateLob, deactivateLob, deleteLob, listPeople, createPerson, updatePerson, deactivatePerson, deletePerson, listInitiatives, listArchivedInitiatives, createInitiative, updateInitiative, archiveInitiative, restoreInitiative, deleteInitiative, convertInitiative, listAgreements, createAgreement, updateAgreement, deleteAgreement, listActions, createAction, updateAction, createActionComment, listInitiativeEvents, listUsers, listNotifications, markNotificationRead, markAllNotificationsRead } from './api.js';
 import AuthScreen from './AuthScreen.jsx';
 import CalendarPage from './Calendar.jsx';
 import CardHistory from './CardHistory.jsx';
@@ -713,19 +713,6 @@ function App() {
       : `Ejercicio ${year} creado.`);
   };
 
-  // Only an empty year can be deleted; the server's 409 message explains why otherwise.
-  const removeServiceYear = async (year) => {
-    if (!window.confirm(`¿Eliminar el ejercicio ${year}? Solo es posible si no tiene servicios.`)) return;
-    try {
-      await deleteServiceYear(year);
-      await reloadServiceCatalog();
-      setSelectedServiceYear(null);
-      showNotice(`Ejercicio ${year} eliminado.`);
-    } catch (err) {
-      showNotice(err?.message || 'No se pudo eliminar el ejercicio.', 'error');
-    }
-  };
-
   const removeAgreement = async (record) => {
     if (!window.confirm(`¿Eliminar definitivamente el acuerdo marco «${record.title}»? Esta acción no se puede deshacer.`)) return;
     try {
@@ -870,12 +857,14 @@ function App() {
   const resourcePage = RESOURCE_PAGES[page] || null;
   const kpiYears = availableYears([opportunities, initiatives, agreements, clients], serviceYears.currentYear, kpiYear);
   const kpis = computePipelineKpis({ opportunities, initiatives, agreements, clients }, kpiYear);
+  // Sidebar badges: active records only (completed initiatives, closed opportunities and archived ones excluded).
+  const navCounts = { initiatives: initiatives.filter(isActiveInitiative).length, pipeline: opportunities.filter(isActiveOpportunity).length };
   const showingArchivedOpportunities = view === 'table' && archivedView;
   const pipelineResultCount = view === 'kanban'
     ? advancedFilteredPipelineCards.length
     : showingArchivedOpportunities ? filteredArchivedOpportunities.length : filteredPipelineOpportunities.length;
 
-  const renderSecondaryPage = (pageId) => <SecondaryPage page={pageId} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} onDeleteServiceYear={removeServiceYear} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />;
+  const renderSecondaryPage = (pageId) => <SecondaryPage page={pageId} opportunities={opportunities} clients={clients} towers={towers} services={services} serviceYears={serviceYears} activeServiceYear={activeServiceYear} onSelectServiceYear={setSelectedServiceYear} onNewServiceYear={() => setCreatingServiceYear(true)} lobs={lobs} people={people} initiatives={initiatives} agreements={agreements} query={query} onNavigate={navigate} user={user} onLogout={handleLogout} onEditInitiative={setEditingInitiative} onEditMaster={(kind, record) => setMasterEditing({ kind, ...record })} onDeactivateMaster={deactivateMaster} onDeleteMaster={deleteMaster} onEditAgreement={setEditingAgreement} onDeleteAgreement={removeAgreement} />;
 
   return (
     <div className={`app-shell page-${page}`}>
@@ -892,7 +881,7 @@ function App() {
                 <Icon name={item.icon} size={18} /><span>{item.label}</span><span className="sr-only"> (se abre en una pestaña nueva)</span>
               </a>
               : <button key={item.id} className={`nav-item${page === item.id ? ' selected' : ''}`} onClick={() => navigate(item.id)} aria-current={page === item.id ? 'page' : undefined}>
-              <Icon name={item.icon} size={18} /><span>{item.label}</span>{item.id === 'pipeline' && <span className="nav-count">{opportunities.length}</span>}
+              <Icon name={item.icon} size={18} /><span>{item.label}</span>{navCounts[item.id] !== undefined && <span className="nav-count">{navCounts[item.id]}</span>}
             </button>)}
           </div>)}
         </nav>
@@ -930,11 +919,11 @@ function App() {
             <section className="kpi-grid" aria-label="Indicadores principales">
               <Kpi icon="users" color="blue" label="Clientes activos" value={String(kpis.activeClients)} detail="Registros activos" onClick={() => navigate('clients')} actionLabel="Ver clientes" />
               <Kpi icon="share" color="teal" label="Iniciativas activas" value={String(kpis.activeInitiatives)} detail="Sin completadas ni archivadas" onClick={() => navigate('initiatives')} actionLabel="Ver iniciativas" />
-              <Kpi icon="target" color="violet" label="Oportunidades" value={String(kpis.opportunities)} detail={opportunityBreakdownOpen ? 'Desglose por tipo' : 'Pulsa para ver el desglose por tipo'} onClick={() => setOpportunityBreakdownOpen((open) => !open)} expanded={opportunityBreakdownOpen} controlsId="kpi-opportunity-breakdown" actionLabel={opportunityBreakdownOpen ? 'Ocultar desglose por tipo' : 'Ver desglose por tipo'}>
+              <Kpi icon="target" color="violet" label="Oportunidades activas" value={String(kpis.activeOpportunities)} detail={opportunityBreakdownOpen ? 'Desglose por tipo' : 'Pulsa para ver el desglose por tipo'} onClick={() => setOpportunityBreakdownOpen((open) => !open)} expanded={opportunityBreakdownOpen} controlsId="kpi-opportunity-breakdown" actionLabel={opportunityBreakdownOpen ? 'Ocultar desglose por tipo' : 'Ver desglose por tipo'}>
                 {opportunityBreakdownOpen && <ul className="kpi-breakdown" id="kpi-opportunity-breakdown" aria-label="Oportunidades por tipo">{kpis.opportunityTypes.map((item) => <li key={item.id}><span className={`status-pill opportunity-type-pill ${item.tone}${item.id === 'none' ? ' missing' : ''}`}>{item.label}</span><strong>{item.count}</strong></li>)}</ul>}
               </Kpi>
-              <Kpi icon="arrow" color="orange" label="Propuestas externas" value={String(proposals.filter((item) => item.type === 'Externa').length)} detail="Datos de referencia" onClick={() => navigate('proposals')} actionLabel="Ver propuestas" />
               <Kpi icon="layers" color="blue" label="Acuerdos Marco" value={String(kpis.activeAgreements)} detail="Registros activos" onClick={() => navigate('agreements')} actionLabel="Ver acuerdos marco" />
+              <Kpi icon="arrow" color="orange" label="Propuestas / estimaciones" value={String(proposals.filter((item) => item.type === 'Externa').length)} detail="Datos de referencia" onClick={() => navigate('proposals')} actionLabel="Ver propuestas" />
               <PipelineQeKpi pipelineQe={kpis.pipelineQe} weightedPipeline={kpis.weightedPipeline} />
             </section>
             <div className="pipeline-toolbar">
@@ -1341,12 +1330,12 @@ function ResourcePage({ title, src, onBack }) {
   </>;
 }
 
-function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
+function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
   if (page === 'home') return <section className="secondary-home"><div className="welcome-panel"><div><div className="eyebrow">ACTIVIDAD COMERCIAL</div><h2>Buen día, {user?.name?.split(' ')[0] || 'equipo'}</h2><p>Resumen de los registros actuales de CRM QE.</p></div><button className="button button-primary" onClick={() => onNavigate('pipeline')}>Ir al pipeline <Icon name="arrow" size={16} /></button></div><div className="secondary-grid"><SummaryCard title="Oportunidades recientes" action="Ver pipeline" onAction={() => onNavigate('pipeline')}><div className="recent-list">{opportunities.slice(0, 4).map((item) => <div className="recent-item" key={item.id}><span className="recent-dot" /><span><strong>{item.title}</strong><small>{item.account || 'Sin cliente'} · {item.tower || 'Sin tower'}</small></span><b>{item.amount}</b></div>)}{opportunities.length === 0 && <p className="empty-state">Todavía no hay oportunidades.</p>}</div></SummaryCard><SummaryCard title="Siguientes pasos" action="Ver iniciativas" onAction={() => onNavigate('initiatives')}><div className="task-list"><p>Las notas y acciones pendientes se registran en cada iniciativa u oportunidad.</p></div></SummaryCard></div></section>;
   if (page === 'settings') return <div className="settings-note"><div className="kpi-icon blue"><Icon name="settings" /></div><div><h2>Cuenta y sesión</h2><dl className="account-details"><div><dt>Nombre</dt><dd>{user?.name}</dd></div><div><dt>Email</dt><dd>{user?.email}</dd></div><div><dt>Rol</dt><dd>{user?.role === 'admin' ? 'Administrador' : 'Miembro'}</dd></div></dl><p className="settings-help">El tablero es compartido por todos los usuarios autenticados, que tienen los mismos permisos para consultar y modificar sus registros. Cada acción sobre una tarjeta queda registrada en su historial.</p><button className="button button-secondary" onClick={onLogout}>Cerrar sesión</button></div></div>;
   if (page === 'clients') return <MasterPanel title="Clientes" records={clients} kind="clients" headers={['Cliente', 'Sector']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'towers') return <MasterPanel title="Towers" records={towers} kind="towers" headers={['Tower', 'Responsable', 'LoB']} onEdit={onEditMaster} onDelete={onDeleteMaster} />;
-  if (page === 'services') return <ServicesPanel services={services} serviceYears={serviceYears} activeYear={activeServiceYear} onSelectYear={onSelectServiceYear} onNewYear={onNewServiceYear} onDeleteYear={onDeleteServiceYear} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
+  if (page === 'services') return <ServicesPanel services={services} serviceYears={serviceYears} activeYear={activeServiceYear} onSelectYear={onSelectServiceYear} onNewYear={onNewServiceYear} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'lobs') return <MasterPanel title="LoB" records={lobs} kind="lobs" headers={['LoB', 'Descripción']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'people') return <MasterPanel title="Responsables" records={people} kind="people" headers={['Nombre', 'Email']} onEdit={onEditMaster} onDeactivate={onDeactivateMaster} onDelete={onDeleteMaster} />;
   if (page === 'proposals') return <DataPanel tableId="proposals" types={['text', 'text', 'text', 'text', 'amount', 'text', 'text']} title="Preventa y estimaciones" description="Cada propuesta conserva su propio estado y queda vinculada a una oportunidad cuando existe." headers={['ID', 'Propuesta / estimación', 'Cliente', 'Tipo', 'Importe', 'Estado', 'Oportunidad vinculada']} rows={proposals.map((item) => [item.id, item.title, item.client, item.type, item.amount, item.status, item.opportunity])} />;
@@ -1801,14 +1790,33 @@ function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDe
     : kind === 'lobs'
       ? 'Una LoB no se puede desactivar ni eliminar mientras alguna tower u oportunidad la referencie.'
       : hasLifecycle ? 'Desactivar conserva el registro y sus vínculos. Eliminar solo es posible si no tiene vínculos.' : 'Cada tower tiene un responsable asignado. Las towers vinculadas no se pueden eliminar.';
-  return <section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId={`master-${kind}`} rows={records} columns={[
-    ...columns.map((field, index) => ({ id: field, label: headers[index], value: (record) => record[field] })),
+  // Services: the description stays on one truncated line (full text in the tooltip) and a row click opens its read-only detail.
+  const isServices = kind === 'services';
+  const [detail, setDetail] = useState(null);
+  const columnFor = (field, index) => (isServices && field === 'description'
+    ? { id: field, label: headers[index], value: (record) => record[field], cellClassName: 'cell-truncate-wrap', render: (record) => (record.description ? <span className="cell-truncate" title={record.description}>{record.description}</span> : '—') }
+    : { id: field, label: headers[index], value: (record) => record[field] });
+  return <><section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId={`master-${kind}`} rows={records} columns={[
+    ...columns.map(columnFor),
     ...(hasLifecycle ? [{ id: 'status', label: 'Estado', value: (record) => (record.active ? 'Activo' : 'Inactivo') }] : []),
-  ]} actions={{ label: 'Acciones', className: 'master-actions', render: (record) => <><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>;
+  ]} onRowClick={isServices ? setDetail : null} rowAriaLabel={isServices ? (record) => `Ver detalle de ${record.name}` : null} actions={{ label: 'Acciones', className: 'master-actions', render: (record) => <><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>{detail && <ServiceDetailsDialog service={detail} onClose={() => setDetail(null)} />}</>;
 }
 
-/** Services of one fiscal year, with year tabs and the year create/delete actions. */
-function ServicesPanel({ services, serviceYears, activeYear, onSelectYear, onNewYear, onDeleteYear, onEdit, onDeactivate, onDelete }) {
+/** Read-only detail of one service of the Datos Maestros catalog. */
+function ServiceDetailsDialog({ service, onClose }) {
+  return <DetailsDialog eyebrow="DATOS MAESTROS" title={service.name} onClose={onClose} rows={[
+    { label: 'ID', value: service.id },
+    { label: 'Servicio', value: service.name },
+    { label: 'Descripción', value: service.description },
+    { label: 'Ejercicio', value: service.year },
+    { label: 'Estado', value: service.active ? 'Activo' : 'Inactivo' },
+    { label: 'Creado', value: formatDateTime(service.createdAt) },
+    { label: 'Actualizado', value: formatDateTime(service.updatedAt) },
+  ]} />;
+}
+
+/** Services of one fiscal year, with year tabs and the new-year action. */
+function ServicesPanel({ services, serviceYears, activeYear, onSelectYear, onNewYear, onEdit, onDeactivate, onDelete }) {
   const years = yearNumbers(serviceYears.years);
   return <div className="service-years">
     <div className="service-year-bar">
@@ -1818,7 +1826,6 @@ function ServicesPanel({ services, serviceYears, activeYear, onSelectYear, onNew
       </div>
       <div className="service-year-actions">
         <button type="button" className="button button-secondary" onClick={onNewYear}><Icon name="plus" size={16} /> Nuevo ejercicio</button>
-        {activeYear !== null && <button type="button" className="button button-secondary button-danger" onClick={() => onDeleteYear(activeYear)}>Eliminar ejercicio</button>}
       </div>
     </div>
     {activeYear !== null && !years.includes(serviceYears.currentYear) && <p className="form-error" role="status">No existe el ejercicio {serviceYears.currentYear}: crea el ejercicio (o cópialo del anterior) para poder asignar servicios a iniciativas y oportunidades.</p>}

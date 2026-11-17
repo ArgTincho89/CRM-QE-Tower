@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  CALENDAR_EVENT_TYPES, CALENDAR_VIEWS, SPANISH_WEEKDAYS, agendaDays, buildCalendarEvents, dayHeading, filterEventsByType,
-  groupEventsByDay, monthGrid, parseIsoDate, periodTitle, shiftAnchor, splitCellEvents, toLocalIsoDate, visibleRange, weekDates,
+  CALENDAR_EVENT_TYPES, CALENDAR_VIEWS, SPANISH_WEEKDAYS, agendaMonths, agendaStartDay, buildCalendarEvents, dayHeading, filterEventsByType,
+  groupEventsByDay, monthGrid, parseIsoDate, periodTitle, shiftAnchor, splitCellEvents, toLocalIsoDate, weekDates,
 } from './calendar.js';
 
 // Below this width the month grid is too cramped, so the calendar opens in the agenda.
@@ -37,6 +37,8 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
   const [enabledTypes, setEnabledTypes] = useState(() => new Set(CALENDAR_EVENT_TYPES.map((type) => type.id)));
   // Day opened from a "+N más" link: the agenda scrolls to it and highlights it.
   const [focusDay, setFocusDay] = useState('');
+  // Bumped by "Hoy" so the agenda scrolls back to today even when nothing else changed.
+  const [scrollRequest, setScrollRequest] = useState(0);
 
   const allEvents = useMemo(
     () => buildCalendarEvents({ initiatives, opportunities, agreements }),
@@ -45,10 +47,15 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
   const events = useMemo(() => filterEventsByType(allEvents, enabledTypes), [allEvents, enabledTypes]);
   const eventsByDay = useMemo(() => groupEventsByDay(events), [events]);
 
+  // The agenda lists every event (past and future) under month headings.
+  const agenda = useMemo(() => agendaMonths(events), [events]);
+
+  // The agenda opens on the day picked from "+N más", or on the first day from today onwards.
   useEffect(() => {
-    if (view !== 'agenda' || !focusDay) return;
-    document.getElementById(`calendar-agenda-${focusDay}`)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
-  }, [view, focusDay]);
+    if (view !== 'agenda') return;
+    const target = focusDay || agendaStartDay(agenda.flatMap((group) => group.days), today);
+    if (target) document.getElementById(`calendar-agenda-${target}`)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  }, [view, focusDay, scrollRequest]);
 
   const changeView = (next) => {
     setView(next);
@@ -61,6 +68,7 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
   const goToday = () => {
     setAnchor(today);
     setFocusDay('');
+    setScrollRequest((count) => count + 1);
   };
   const openDay = (date) => {
     setAnchor(date);
@@ -75,15 +83,16 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
   });
 
   const { month } = parseIsoDate(anchor);
-  const range = visibleRange(view, anchor);
   const dayNumber = (date) => parseIsoDate(date).day;
 
   return <section className="calendar-page" aria-label="Calendario">
     <div className="calendar-toolbar">
       <div className="calendar-nav">
         <button type="button" className="button button-secondary" onClick={goToday}>Hoy</button>
-        <button type="button" className="icon-button calendar-arrow" onClick={() => move(-1)} aria-label="Periodo anterior">‹</button>
-        <button type="button" className="icon-button calendar-arrow" onClick={() => move(1)} aria-label="Periodo siguiente">›</button>
+        {view !== 'agenda' && <>
+          <button type="button" className="icon-button calendar-arrow" onClick={() => move(-1)} aria-label="Periodo anterior">‹</button>
+          <button type="button" className="icon-button calendar-arrow" onClick={() => move(1)} aria-label="Periodo siguiente">›</button>
+        </>}
         <h2 className="calendar-title" aria-live="polite">{periodTitle(view, anchor)}</h2>
       </div>
       <div className="calendar-views" role="group" aria-label="Vista del calendario">
@@ -121,11 +130,14 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
     </div>}
 
     {view === 'agenda' && <div className="calendar-agenda">
-      {agendaDays(events, range.from, range.to).map((day) => <section key={day.date} id={`calendar-agenda-${day.date}`} className={`calendar-agenda-day${day.date === focusDay ? ' calendar-agenda-focus' : ''}${day.date === today ? ' calendar-cell-today' : ''}`}>
-        <h3>{dayHeading(day.date)}{day.date === today && <span className="calendar-today-pill">Hoy</span>}</h3>
-        <div className="calendar-agenda-events">{day.events.map((event) => <CalendarEvent key={event.key} event={event} onOpen={onOpenEvent} />)}</div>
+      {agenda.map((group) => <section key={group.key} className="calendar-agenda-month" aria-label={group.title}>
+        <h3 className="calendar-agenda-month-title">{group.title}</h3>
+        {group.days.map((day) => <section key={day.date} id={`calendar-agenda-${day.date}`} className={`calendar-agenda-day${day.date === focusDay ? ' calendar-agenda-focus' : ''}${day.date === today ? ' calendar-cell-today' : ''}`}>
+          <h4>{dayHeading(day.date)}{day.date === today && <span className="calendar-today-pill">Hoy</span>}</h4>
+          <div className="calendar-agenda-events">{day.events.map((event) => <CalendarEvent key={event.key} event={event} onOpen={onOpenEvent} />)}</div>
+        </section>)}
       </section>)}
-      {agendaDays(events, range.from, range.to).length === 0 && <p className="empty-state">No hay eventos en este periodo.</p>}
+      {agenda.length === 0 && <p className="empty-state">No hay eventos.</p>}
     </div>}
   </section>;
 }

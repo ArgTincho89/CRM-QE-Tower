@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
-  addDays, agendaDays, buildCalendarEvents, dayHeading, daysInMonth, eventsInRange, filterEventsByType, groupEventsByDay,
+  AGENDA_TITLE, addDays, agendaDays, agendaMonths, agendaStartDay, buildCalendarEvents, dayHeading, daysInMonth, eventsInRange, filterEventsByType, groupEventsByDay,
   monthGrid, monthTitle, parseIsoDate, periodTitle, shiftAnchor, splitCellEvents, startOfWeek, toLocalIsoDate,
   visibleRange, weekDates, weekdayIndex,
 } from './calendar.js';
@@ -95,7 +95,7 @@ describe('calendar navigation', () => {
   test('visible ranges per view', () => {
     assert.deepEqual(visibleRange('month', '2026-11-15'), { from: '2026-10-26', to: '2026-12-06' });
     assert.deepEqual(visibleRange('week', '2026-11-15'), { from: '2026-11-09', to: '2026-11-15' });
-    assert.deepEqual(visibleRange('agenda', '2026-02-10'), { from: '2026-02-01', to: '2026-02-28' });
+    assert.deepEqual(visibleRange('agenda', '2026-02-10'), { from: '0000-01-01', to: '9999-12-31' });
   });
 
   test('moving by month clamps the day and crosses years', () => {
@@ -109,6 +109,7 @@ describe('calendar navigation', () => {
   test('titles are in Spanish', () => {
     assert.equal(monthTitle(2026, 10), 'Noviembre 2026');
     assert.equal(periodTitle('month', '2026-03-05'), 'Marzo 2026');
+    assert.equal(periodTitle('agenda', '2026-03-05'), AGENDA_TITLE);
     assert.equal(periodTitle('week', '2026-11-11'), '9 – 15 noviembre 2026');
     assert.equal(periodTitle('week', '2026-12-01'), '30 noviembre – 6 diciembre 2026');
     assert.equal(periodTitle('week', '2026-12-30'), '28 diciembre 2026 – 3 enero 2027');
@@ -159,9 +160,43 @@ describe('calendar events', () => {
       { id: 'OP-2', title: 'Último', stage: 'proposal', nextActionDate: '2026-03-31' },
       { id: 'OP-3', title: 'Fuera', stage: 'proposal', nextActionDate: '2026-04-01' },
     ] }, today);
-    const { from, to } = visibleRange('agenda', '2026-03-15');
-    assert.deepEqual(eventsInRange(events, from, to).map((event) => event.recordId), ['OP-1', 'OP-2']);
-    assert.deepEqual(agendaDays(events, from, to).map((day) => day.date), ['2026-03-01', '2026-03-31']);
+    assert.deepEqual(eventsInRange(events, '2026-03-01', '2026-03-31').map((event) => event.recordId), ['OP-1', 'OP-2']);
+    assert.deepEqual(agendaDays(events, '2026-03-01', '2026-03-31').map((day) => day.date), ['2026-03-01', '2026-03-31']);
+  });
+
+  test('the agenda lists every event, past and far future, whatever the anchor month', () => {
+    const events = buildCalendarEvents({
+      opportunities: [{ id: 'OP-1', title: 'Pasada', stage: 'proposal', nextActionDate: '2025-01-15' }],
+      agreements: [
+        { id: 'AM-1', title: 'Marco largo', status: 'active', endDate: '2031-06-30' },
+        { id: 'AM-2', title: 'Marco', status: 'active', endDate: '2026-11-30' },
+      ],
+    }, today);
+    const { from, to } = visibleRange('agenda', '2026-11-15');
+    assert.deepEqual(agendaDays(events, from, to).map((day) => day.date), ['2025-01-15', '2026-11-30', '2031-06-30']);
+    assert.deepEqual(agendaDays(events).map((day) => day.date), ['2025-01-15', '2026-11-30', '2031-06-30']);
+  });
+
+  test('agenda days are grouped under month headings in date order', () => {
+    const events = buildCalendarEvents({ opportunities: [
+      { id: 'OP-1', title: 'A', stage: 'proposal', nextActionDate: '2026-03-31' },
+      { id: 'OP-2', title: 'B', stage: 'proposal', nextActionDate: '2026-03-01' },
+      { id: 'OP-3', title: 'C', stage: 'proposal', nextActionDate: '2027-01-02' },
+    ] }, today);
+    const months = agendaMonths(events);
+    assert.deepEqual(months.map((month) => [month.key, month.title, month.days.map((day) => day.date)]), [
+      ['2026-03', 'Marzo 2026', ['2026-03-01', '2026-03-31']],
+      ['2027-01', 'Enero 2027', ['2027-01-02']],
+    ]);
+    assert.deepEqual(agendaMonths([]), []);
+  });
+
+  test('the agenda starts on the first day from today, else on the last one', () => {
+    const days = [{ date: '2025-01-15' }, { date: '2026-11-30' }, { date: '2031-06-30' }];
+    assert.equal(agendaStartDay(days, '2026-11-17'), '2026-11-30');
+    assert.equal(agendaStartDay(days, '2026-11-30'), '2026-11-30');
+    assert.equal(agendaStartDay(days, '2032-01-01'), '2031-06-30');
+    assert.equal(agendaStartDay([], '2026-11-17'), '');
   });
 
   test('type filters and day grouping', () => {

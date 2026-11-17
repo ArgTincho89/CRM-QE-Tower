@@ -221,7 +221,7 @@ function ActivityMatrixPanel({ collection }) {
   const matrix = buildActivityMatrix(collection.records);
   const rows = filterRecords(matrix, query, ['name', 'category', (row) => row.cells.map((cell) => cell.label).join(' ')]);
   return <section className="secondary-panel">
-    <div className="secondary-panel-heading"><div><h2>QE - Catálogo de actividades por niveles</h2><p>Actividades esperadas en cada nivel de carrera. Solo lectura.</p></div><span className="record-count">{rows.length} actividades</span></div>
+    <div className="secondary-panel-heading"><div><h2>Catálogo de actividades por niveles</h2><p>Actividades esperadas en cada nivel de carrera. Solo lectura.</p></div><span className="record-count">{rows.length} actividades</span></div>
     <div className="ops-toolbar">
       <SearchBox value={query} onChange={setQuery} label="Buscar actividades" />
       <ul className="ops-legend" aria-label="Leyenda">
@@ -291,7 +291,7 @@ function TrainingCatalogPanel({ collection, reloadPlan, onNotice }) {
   const editing = actions.editing;
   const suggestions = (key) => mergeOptions([], collection.records.map((row) => row[key]));
   return <>
-    <RecordPanel title="QE - Catálogo de formación" description="Formaciones y certificaciones disponibles. No se puede eliminar una formación usada en el plan de formación." tableId="people-training-catalog"
+    <RecordPanel title="Catálogo de formación" description="Formaciones y certificaciones disponibles. No se puede eliminar una formación usada en el plan de formación." tableId="people-training-catalog"
       columns={[
         { id: 'name', label: 'Formación', value: (row) => row.name, cellClassName: 'ops-wrap' },
         ...COURSE_TEXT_FIELDS.map(([key, label]) => ({ id: key, label, value: (row) => row[key] })),
@@ -327,7 +327,7 @@ function TrainingPlanPanel({ collection, courses, talents, onNotice }) {
   const statusOptions = mergeOptions(PLAN_STATUS_DEFAULTS, collection.records.map((row) => row.status));
   const dateColumn = (id, label) => ({ id, label, type: 'date', value: (row) => row[id] });
   return <>
-    <RecordPanel title="QE - Plan de formación" description="Formación planificada por persona. El curso puede venir del catálogo o escribirse libremente." tableId="people-training-plan"
+    <RecordPanel title="Plan de formación" description="Formación planificada por persona. El curso puede venir del catálogo o escribirse libremente." tableId="people-training-plan"
       columns={[
         { id: 'talentName', label: 'QA', value: (row) => row.talentName },
         { id: 'task', label: 'Tarea', value: (row) => row.task },
