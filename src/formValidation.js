@@ -14,7 +14,7 @@ export const OPPORTUNITY_FORM_FIELDS = [
   'amount', 'addedValue', 'servicesAddedValue', 'qaPercent', 'probability',
 ];
 export const INITIATIVE_FORM_FIELDS = ['title'];
-export const AGREEMENT_FORM_FIELDS = ['title', 'amount'];
+export const AGREEMENT_FORM_FIELDS = ['title', 'amount', 'nextActionDate'];
 export const MASTER_FORM_FIELDS = ['name', 'responsibleId'];
 export const SERVICE_YEAR_FORM_FIELDS = ['year'];
 

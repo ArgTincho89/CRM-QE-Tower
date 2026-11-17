@@ -3,7 +3,7 @@ import {
   CALENDAR_EVENT_TYPES, CALENDAR_VIEWS, SPANISH_WEEKDAYS, agendaMonths, agendaStartDay, buildCalendarEvents, dayHeading, filterEventsByType,
   groupEventsByDay, monthGrid, parseIsoDate, periodTitle, shiftAnchor, splitCellEvents, toLocalIsoDate, weekDates,
 } from './calendar.js';
-import { listOperationRecords } from './api.js';
+import { listOperationRecords, listScheduledActions } from './api.js';
 
 // Below this width the month grid is too cramped, so the calendar opens in the agenda.
 const NARROW_SCREEN_QUERY = '(max-width: 720px)';
@@ -28,11 +28,13 @@ function CalendarEvent({ event, onOpen }) {
 }
 
 /**
- * "Calendario": read-only, all-day view of next actions (initiatives and opportunities) and
- * framework agreement end dates, plus the end of People assignments, in month, week or agenda views.
- * Clicking an event opens its record (assignments open People > Asignaciones).
+ * "Calendario": read-only, all-day view of next action dates (initiatives, opportunities and
+ * framework agreements), pending actions with a due date, framework agreement end dates and the end
+ * of People assignments, in month, week or agenda views. Clicking an event opens its record (actions
+ * open their record; assignments open People > Asignaciones). `actionsVersion` changes whenever an
+ * action is edited elsewhere, so the scheduled actions are reloaded.
  */
-export default function CalendarPage({ initiatives, opportunities, agreements, onOpenEvent }) {
+export default function CalendarPage({ initiatives, opportunities, agreements, onOpenEvent, actionsVersion = 0 }) {
   const today = toLocalIsoDate(new Date());
   const [view, setView] = useState(initialView);
   const [anchor, setAnchor] = useState(today);
@@ -50,9 +52,17 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
     return () => { cancelled = true; };
   }, []);
 
+  // Pending actions with a due date; like assignments, simply omitted on failure.
+  const [actions, setActions] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    listScheduledActions().then((payload) => { if (!cancelled) setActions(payload?.actions || []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [actionsVersion]);
+
   const allEvents = useMemo(
-    () => buildCalendarEvents({ initiatives, opportunities, agreements, assignments }),
-    [initiatives, opportunities, agreements, assignments],
+    () => buildCalendarEvents({ initiatives, opportunities, agreements, assignments, actions }),
+    [initiatives, opportunities, agreements, assignments, actions],
   );
   const events = useMemo(() => filterEventsByType(allEvents, enabledTypes), [allEvents, enabledTypes]);
   const eventsByDay = useMemo(() => groupEventsByDay(events), [events]);

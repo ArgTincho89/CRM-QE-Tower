@@ -33,6 +33,17 @@ const NOTIFICATION_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id)',
 ];
 
+// "Notas y acciones" of opportunities, initiatives and framework agreements. `due_date` is the
+// optional ISO date of an action ('' when unset). Shared by the CREATE statement and the rebuild
+// that widens the `entity_type` CHECK (SQLite cannot alter a CHECK constraint in place).
+const RECORD_ACTION_COLUMNS = `id TEXT PRIMARY KEY,
+       entity_type TEXT NOT NULL CHECK(entity_type IN ('initiative','opportunity','agreement')),
+       entity_id TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'action' CHECK(kind IN ('note','action')),
+       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','note')),
+       user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
+       created_at TEXT NOT NULL, completed_at TEXT, due_date TEXT NOT NULL DEFAULT ''`;
+const RECORD_ACTIONS_INDEX = 'CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)';
+
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS users (
      id TEXT PRIMARY KEY,
@@ -97,13 +108,7 @@ const SCHEMA_STATEMENTS = [
       owner_id TEXT REFERENCES people(id), end_date TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
-  `CREATE TABLE IF NOT EXISTS record_actions (
-       id TEXT PRIMARY KEY, entity_type TEXT NOT NULL CHECK(entity_type IN ('initiative','opportunity')),
-       entity_id TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'action' CHECK(kind IN ('note','action')),
-       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','note')),
-       user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
-       created_at TEXT NOT NULL, completed_at TEXT
-     )`,
+  `CREATE TABLE IF NOT EXISTS record_actions (${RECORD_ACTION_COLUMNS})`,
   `CREATE TABLE IF NOT EXISTS record_action_comments (
        id TEXT PRIMARY KEY, action_id TEXT NOT NULL REFERENCES record_actions(id) ON DELETE CASCADE,
        user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
@@ -297,6 +302,7 @@ const RESOLUTION_DATE_MARKER = 'resolution_date_from_close_v1';
 const TALENT_RELATIONS_MARKER = 'talent_relations_backfill_v1';
 const TALENT_PROFILES_MARKER = 'talent_profiles_multi_v1';
 const TALENT_SORT_ORDER_MARKER = 'talent_sort_order_v1';
+const RECORD_ACTIONS_AGREEMENTS_MARKER = 'record_actions_agreements_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -423,11 +429,16 @@ export function applySchema(db) {
     ['notes', "TEXT NOT NULL DEFAULT ''"],
     ['registry_id', "TEXT NOT NULL DEFAULT ''"],
     ASSIGNED_USER_COLUMN,
+    // Optional "Fecha próxima acción" (ISO date), like opportunities and initiatives.
+    ['next_action_date', "TEXT NOT NULL DEFAULT ''"],
   ];
   for (const [name, declaration] of agreementAdditions) {
     if (!agreementColumns.includes(name)) db.exec(`ALTER TABLE framework_agreements ADD COLUMN ${name} ${declaration}`);
   }
-  db.exec('CREATE INDEX IF NOT EXISTS idx_record_actions_entity ON record_actions(entity_type, entity_id, created_at)');
+  // Optional due date of an action; added before runMigrations so the CHECK rebuild copies it.
+  const recordActionColumns = db.prepare('PRAGMA table_info(record_actions)').all().map((row) => row.name);
+  if (!recordActionColumns.includes('due_date')) db.exec("ALTER TABLE record_actions ADD COLUMN due_date TEXT NOT NULL DEFAULT ''");
+  db.exec(RECORD_ACTIONS_INDEX);
   db.exec('CREATE INDEX IF NOT EXISTS idx_record_action_comments_action ON record_action_comments(action_id, created_at)');
   for (const statement of [
     'CREATE INDEX IF NOT EXISTS idx_opportunity_towers_tower ON opportunity_towers(tower_id)',
@@ -456,6 +467,7 @@ export function runMigrations(db) {
   // Runs first: the legacy migration below seeds services, which needs the per-year shape.
   migrateServiceYears(db);
   migrateWorkspaceLinkAgreements(db);
+  migrateRecordActionAgreements(db);
   migrateNotificationMentionKind(db);
   migrateResolutionDate(db);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_year_name ON services(year, name COLLATE NOCASE)');
@@ -581,6 +593,41 @@ export function migrateWorkspaceLinkAgreements(db) {
         if (broken.length > 0) throw new Error(`Workspace link migration left ${broken.length} broken foreign key reference(s).`);
       }
       db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(WORKSPACE_LINKS_AGREEMENTS_MARKER, new Date().toISOString());
+    });
+  } finally {
+    if (needsRebuild && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+/**
+ * Lets framework agreements own record actions ("Notas y acciones"). Guarded by `schema_meta`, so
+ * it runs once per database. When `record_actions` still has the CHECK that only allows
+ * opportunities and initiatives, the table is rebuilt inside one transaction with the widened
+ * CHECK: same rowids, ids and column values (including `due_date`, added by applySchema first),
+ * and its index is recreated. `record_action_comments` keeps referencing `record_actions` by name,
+ * so its foreign key stays valid; the foreign key check proves it. A fresh database already has
+ * the new CHECK, so only the marker is written.
+ */
+export function migrateRecordActionAgreements(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(RECORD_ACTIONS_AGREEMENTS_MARKER)) return;
+  const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'record_actions'").get()?.sql ?? '';
+  const needsRebuild = !tableSql.includes("'agreement'");
+  // SQLite ignores this pragma inside a transaction, so it is switched around the rebuild.
+  const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
+  if (needsRebuild) db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    withTransaction(db, () => {
+      if (needsRebuild) {
+        const columns = 'id, entity_type, entity_id, text, kind, status, user_id, user_name, created_at, completed_at, due_date';
+        db.exec(`CREATE TABLE record_actions_next (${RECORD_ACTION_COLUMNS})`);
+        db.exec(`INSERT INTO record_actions_next (rowid, ${columns}) SELECT rowid, ${columns} FROM record_actions`);
+        db.exec('DROP TABLE record_actions');
+        db.exec('ALTER TABLE record_actions_next RENAME TO record_actions');
+        db.exec(RECORD_ACTIONS_INDEX);
+        const broken = ['record_actions', 'record_action_comments'].flatMap((table) => db.prepare(`PRAGMA foreign_key_check(${table})`).all());
+        if (broken.length > 0) throw new Error(`Record action migration left ${broken.length} broken foreign key reference(s).`);
+      }
+      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(RECORD_ACTIONS_AGREEMENTS_MARKER, new Date().toISOString());
     });
   } finally {
     if (needsRebuild && foreignKeys) db.exec('PRAGMA foreign_keys = ON');

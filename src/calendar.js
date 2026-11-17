@@ -2,6 +2,7 @@
 // all arithmetic runs on UTC day numbers, so daylight saving changes never shift or repeat a day.
 import { initiativeUrgency, isInitiativeCompleted } from './initiatives.js';
 import { assignmentProjectLabel } from './people.js';
+import { truncateActionText } from './recordActions.js';
 
 export const CALENDAR_VIEWS = [
   { id: 'month', label: 'Mes' },
@@ -14,8 +15,16 @@ export const CALENDAR_EVENT_TYPES = [
   { id: 'initiative', label: 'Iniciativa', tone: 'teal' },
   { id: 'opportunity', label: 'Oportunidad', tone: 'violet' },
   { id: 'agreement', label: 'Acuerdo Marco', tone: 'amber' },
+  { id: 'action', label: 'Acción', tone: 'blue' },
+  { id: 'agreementEnd', label: 'Fin de acuerdo', tone: 'brown' },
   { id: 'assignment', label: 'Fin de asignación', tone: 'rose' },
 ];
+
+/** Event types that place a record on its "Fecha próxima acción". */
+const NEXT_ACTION_TYPES = ['initiative', 'opportunity', 'agreement'];
+
+/** Singular label of each record type that owns actions, for the action event description. */
+const RECORD_TYPE_LABELS = { initiative: 'Iniciativa', opportunity: 'Oportunidad', agreement: 'Acuerdo Marco' };
 
 /** Events a month cell shows before collapsing the rest into "+N más". */
 export const MONTH_CELL_EVENT_LIMIT = 3;
@@ -175,30 +184,54 @@ function isClosedOpportunity(item) {
 }
 
 /**
- * All-day calendar events: open initiatives by next action date, open opportunities by next
- * action date and active framework agreements by end date ("Fin de vigencia"). Archived records,
- * completed initiatives and closed opportunities (Resultado with an outcome) never show, nor do
- * records without a valid date. Initiative events carry their urgency ('due' / 'soon' / 'none').
- * People assignments with an end date ("Fecha fin") show on that day as "Fin de asignación:
- * <talento> en <cliente / tower / LoB>".
+ * All-day calendar events:
+ * - Open initiatives, open opportunities and active framework agreements on their "Fecha próxima
+ *   acción" (`nextActionDate`). Archived records, completed initiatives, closed opportunities
+ *   (Resultado with an outcome) and inactive agreements never show, nor do invalid dates.
+ *   Initiative events carry their urgency ('due' / 'soon' / 'none').
+ * - Active agreements also show their end date ("Fin de vigencia") as a separate "Fin de acuerdo".
+ * - Pending actions with a due date (`actions`: `{ id, text, dueDate, entityType, entityId }`) as
+ *   "Acción: <texto truncado> — <título del registro>", only when their record shows (see above).
+ *   When an action lands on the same day as its record's next action event, the record event is
+ *   dropped: the action event says the same thing and more.
+ * - People assignments with an end date ("Fecha fin") as "Fin de asignación: <talento> en
+ *   <cliente / tower / LoB>".
  */
-export function buildCalendarEvents({ initiatives = [], opportunities = [], agreements = [], assignments = [] } = {}, today = new Date()) {
+export function buildCalendarEvents({ initiatives = [], opportunities = [], agreements = [], assignments = [], actions = [] } = {}, today = new Date()) {
   const events = [];
   const push = (type, record, date, extra = {}) => {
     if (!parseIsoDate(date)) return;
     events.push({ key: `${type}:${record.id}`, type, recordId: record.id, title: record.title || '', label: `${record.id} · ${record.title || ''}`, date: String(date).trim(), urgency: 'none', ...extra });
   };
+  // Records whose actions may show, keyed "<entityType>:<id>".
+  const visibleRecords = new Map();
   for (const item of initiatives || []) {
     if (!item || item.archivedAt || isInitiativeCompleted(item)) continue;
+    visibleRecords.set(`initiative:${item.id}`, item);
     push('initiative', item, item.nextActionDate, { urgency: initiativeUrgency(item, today) });
   }
   for (const item of opportunities || []) {
     if (!item || item.archivedAt || item.archived || isClosedOpportunity(item)) continue;
+    visibleRecords.set(`opportunity:${item.id}`, item);
     push('opportunity', item, item.nextActionDate);
   }
   for (const item of agreements || []) {
     if (!item || item.archivedAt || (item.status && item.status !== 'active')) continue;
-    push('agreement', item, item.endDate);
+    visibleRecords.set(`agreement:${item.id}`, item);
+    push('agreement', item, item.nextActionDate);
+    const endLabel = `Fin de acuerdo: ${item.id} · ${item.title || ''}`;
+    push('agreementEnd', item, item.endDate, { entityType: 'agreement', label: endLabel, description: endLabel });
+  }
+  const actionDays = new Set();
+  for (const action of actions || []) {
+    if (!action || (action.status && action.status !== 'pending') || (action.kind && action.kind !== 'action')) continue;
+    const record = visibleRecords.get(`${action.entityType}:${action.entityId}`);
+    if (!record || !parseIsoDate(action.dueDate)) continue;
+    const date = String(action.dueDate).trim();
+    const label = `Acción: ${truncateActionText(action.text)} — ${record.title || record.id}`;
+    const description = `Acción: ${String(action.text ?? '').trim()} — ${RECORD_TYPE_LABELS[action.entityType]} ${record.id} · ${record.title || ''}`;
+    events.push({ key: `action:${action.id}`, type: 'action', entityType: action.entityType, recordId: record.id, title: String(action.text ?? ''), label, description, date, urgency: 'none' });
+    actionDays.add(`${action.entityType}:${record.id}:${date}`);
   }
   for (const item of assignments || []) {
     if (!item) continue;
@@ -206,9 +239,12 @@ export function buildCalendarEvents({ initiatives = [], opportunities = [], agre
     push('assignment', item, item.endDate, { title: label, label, description: label });
   }
   const typeOrder = CALENDAR_EVENT_TYPES.map((type) => type.id);
-  return events.sort((a, b) => a.date.localeCompare(b.date)
-    || typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type)
-    || a.recordId.localeCompare(b.recordId));
+  return events
+    .filter((event) => !(NEXT_ACTION_TYPES.includes(event.type) && actionDays.has(`${event.type}:${event.recordId}:${event.date}`)))
+    .sort((a, b) => a.date.localeCompare(b.date)
+      || typeOrder.indexOf(a.type) - typeOrder.indexOf(b.type)
+      || a.recordId.localeCompare(b.recordId)
+      || a.key.localeCompare(b.key));
 }
 
 /** Events whose type is enabled in `enabledTypes` (a Set or array of type ids). */

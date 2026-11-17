@@ -23,6 +23,7 @@ import { COMPLETED_INITIATIVE_STAGE, initiativeCategories, initiativePriorities,
 import { formatCurrency } from '../src/money.js';
 import { isIsoDate, parseAiScore, validateOpportunityFields } from '../src/opportunityFields.js';
 import { extractMentionIds, newMentionIds } from '../src/mentions.js';
+import { earliestPendingDueDate, RECORD_ACTION_ENTITY_TYPES } from '../src/recordActions.js';
 import { buildAssignmentMessage, buildMentionMessage } from '../src/notifications.js';
 import {
   HttpError,
@@ -523,7 +524,7 @@ const AGREEMENT_ENTITY_TYPE = 'agreement';
 
 function mapAgreement(row, db) {
   const links = db ? loadWorkspaceLinks(db, AGREEMENT_ENTITY_TYPE, row.id) : [];
-  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, amount: Number(row.amount) || 0, notes: row.notes || '', registryId: row.registry_id || '', assignedUserId: row.assigned_user_id || '', assignedUserName: row.assigned_user_name || '', links, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
+  return { id: row.id, title: row.title, clientId: row.client_id || '', ownerId: row.owner_id || '', endDate: row.end_date, nextActionDate: row.next_action_date || '', amount: Number(row.amount) || 0, notes: row.notes || '', registryId: row.registry_id || '', assignedUserId: row.assigned_user_id || '', assignedUserName: row.assigned_user_name || '', links, status: row.status, createdAt: row.created_at, updatedAt: row.updated_at };
 }
 
 function mapEvent(row) {
@@ -1397,6 +1398,7 @@ async function patchOpportunity(ctx, req, res, rawId) {
   if (existing.archived_at) throw new HttpError(409, 'record_archived', 'Restaura la oportunidad antes de editarla.');
 
   const body = await readJson(req);
+  ignoreDerivedNextActionDate(ctx.db, 'opportunity', id, body);
 
   const changes = {};
   const changedFields = [];
@@ -1926,6 +1928,7 @@ async function mutateInitiative(ctx, req, res, rawId = null) {
     if (existing.archived_at) {
       throw new HttpError(409, 'record_archived', 'Restaura la iniciativa antes de editarla.');
     }
+    ignoreDerivedNextActionDate(ctx.db, 'initiative', id, body);
     const parsers = {
       title: (value) => parseTextField(value, 'title', 160),
       category: parseInitiativeCategory,
@@ -2026,13 +2029,14 @@ async function createAgreement(ctx, req, res) {
   const registryId = parseRegistryId(body.registryId);
   const links = parseWorkspaceLinks(body.links);
   const assignedUserId = parseAssignedUserId(ctx.db, body.assignedUserId);
-  const insert = ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,amount,notes,registry_id,assigned_user_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+  const nextActionDate = parseOptionalDate(body.nextActionDate, 'nextActionDate');
+  const insert = ctx.db.prepare('INSERT INTO framework_agreements (id,title,client_id,owner_id,end_date,next_action_date,amount,notes,registry_id,assigned_user_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
   let id;
   for (let attempt = 0; ; attempt += 1) {
     try {
       id = withTransaction(ctx.db, () => {
         const nextId = nextAgreementId(ctx.db);
-        insert.run(nextId, title, clientId, ownerId, endDate, amount, notes, registryId, assignedUserId, 'active', now, now);
+        insert.run(nextId, title, clientId, ownerId, endDate, nextActionDate, amount, notes, registryId, assignedUserId, 'active', now, now);
         replaceWorkspaceLinks(ctx.db, AGREEMENT_ENTITY_TYPE, nextId, links, user, now);
         appendEntityEvent(ctx.db, { type: AGREEMENT_ENTITY_TYPE, id: nextId, user, action: 'created', now });
         notifyAssignment(ctx.db, { recipientId: assignedUserId, actor: user, entityType: AGREEMENT_ENTITY_TYPE, entityId: nextId, entityTitle: title, now });
@@ -2064,11 +2068,13 @@ async function updateAgreement(ctx, req, res, rawId) {
   const existing = ctx.db.prepare('SELECT * FROM framework_agreements WHERE id = ?').get(id);
   if (!existing) throw new HttpError(404, 'not_found', 'El acuerdo marco no existe.');
   const body = await readJson(req);
+  ignoreDerivedNextActionDate(ctx.db, AGREEMENT_ENTITY_TYPE, id, body);
   const parsers = {
     title: ['title', (value) => parseTextField(value, 'title', 160)],
     clientId: ['client_id', (value) => optionalId(ctx.db, 'clients', value, 'cliente')],
     ownerId: ['owner_id', (value) => optionalId(ctx.db, 'people', value, 'responsable')],
     endDate: ['end_date', parseAgreementEndDate],
+    nextActionDate: ['next_action_date', (value) => parseOptionalDate(value, 'nextActionDate')],
     amount: ['amount', parseAgreementAmount],
     notes: ['notes', (value) => parseShortText(value, AGREEMENT_NOTES_LIMIT)],
     registryId: ['registry_id', parseRegistryId],
@@ -2104,13 +2110,62 @@ async function updateAgreement(ctx, req, res, rawId) {
   sendJson(res, 200, { agreement: getAgreementForDisplay(ctx.db, id) });
 }
 
+/** Table of each entity type that owns record actions ("Notas y acciones"). */
+const ACTION_ENTITY_TABLES = { opportunity: 'opportunities', initiative: 'initiatives', agreement: 'framework_agreements' };
+
+function assertActionEntity(db, type, id) {
+  if (!db.prepare(`SELECT id FROM ${ACTION_ENTITY_TABLES[type]} WHERE id = ?`).get(id)) throw new HttpError(404, 'not_found', 'El registro no existe.');
+}
+
+function mapRecordAction(row, comments = []) {
+  return { id: row.id, text: row.text, kind: row.kind, status: row.status, dueDate: row.due_date || '', userName: row.user_name, createdAt: row.created_at, completedAt: row.completed_at, comments };
+}
+
+/** Earliest due date of the record's pending actions ('' when none); see src/recordActions.js. */
+function pendingActionDueDate(db, type, id) {
+  const rows = db.prepare("SELECT kind, status, due_date FROM record_actions WHERE entity_type = ? AND entity_id = ? AND kind = 'action' AND status = 'pending'").all(type, id);
+  return earliestPendingDueDate(rows.map((row) => ({ kind: row.kind, status: row.status, dueDate: row.due_date })));
+}
+
+/**
+ * Keeps "Fecha próxima acción" in sync with the record's actions: while some pending action has a
+ * due date, the earliest one (overdue first) is stored; otherwise the current (manual) value stays.
+ * Returns the record's resulting next action date.
+ */
+function syncNextActionDate(db, type, id) {
+  const table = ACTION_ENTITY_TABLES[type];
+  const current = db.prepare(`SELECT next_action_date FROM ${table} WHERE id = ?`).get(id)?.next_action_date ?? '';
+  const derived = pendingActionDueDate(db, type, id);
+  if (!derived || derived === current) return current;
+  db.prepare(`UPDATE ${table} SET next_action_date = ? WHERE id = ?`).run(derived, id);
+  return derived;
+}
+
+/**
+ * While the next action date is derived from dated pending actions it is read-only: a value sent
+ * with a record update is dropped, so saving an open form never overwrites the derived date.
+ */
+function ignoreDerivedNextActionDate(db, type, id, body) {
+  if (body && Object.hasOwn(body, 'nextActionDate') && pendingActionDueDate(db, type, id)) delete body.nextActionDate;
+}
+
+/** Optional due date of an action: '' or a valid ISO date. Notes never have one. */
+function parseActionDueDate(value) {
+  return parseOptionalDate(value, 'dueDate');
+}
+
+/** Pending actions with a due date, across every record, for the calendar. */
+function listScheduledActions(ctx, req, res) {
+  requireUser(ctx, req);
+  const rows = ctx.db.prepare(`SELECT * FROM record_actions
+    WHERE kind = 'action' AND status = 'pending' AND due_date <> '' ORDER BY due_date, created_at, id`).all();
+  sendJson(res, 200, { actions: rows.map((row) => ({ ...mapRecordAction(row), entityType: row.entity_type, entityId: row.entity_id })) });
+}
+
 function listActions(ctx, req, res, type, rawId) {
   requireUser(ctx, req);
   const id = decodeId(rawId);
-  const exists = type === 'initiative'
-    ? ctx.db.prepare('SELECT id FROM initiatives WHERE id = ?').get(id)
-    : ctx.db.prepare('SELECT id FROM opportunities WHERE id = ?').get(id);
-  if (!exists) throw new HttpError(404, 'not_found', 'El registro no existe.');
+  assertActionEntity(ctx.db, type, id);
   const rows = ctx.db.prepare('SELECT * FROM record_actions WHERE entity_type = ? AND entity_id = ? ORDER BY created_at DESC').all(type, id);
   const comments = ctx.db.prepare(`SELECT c.id, c.action_id, c.text, c.user_name, c.created_at
     FROM record_action_comments c JOIN record_actions a ON a.id = c.action_id
@@ -2121,7 +2176,7 @@ function listActions(ctx, req, res, type, rawId) {
     actionComments.push({ id: comment.id, text: comment.text, userName: comment.user_name, createdAt: comment.created_at });
     commentsByAction.set(comment.action_id, actionComments);
   }
-  sendJson(res, 200, { actions: rows.map((row) => ({ id: row.id, text: row.text, kind: row.kind, status: row.status, userName: row.user_name, createdAt: row.created_at, completedAt: row.completed_at, comments: commentsByAction.get(row.id) ?? [] })) });
+  sendJson(res, 200, { actions: rows.map((row) => mapRecordAction(row, commentsByAction.get(row.id) ?? [])) });
 }
 
 function listEntityEvents(ctx, req, res, type, rawId) {
@@ -2140,32 +2195,52 @@ async function createAction(ctx, req, res, type, rawId) {
   const text = parseTextField(body.text, 'acción', 500);
   const kind = body.kind === 'note' ? 'note' : 'action';
   const status = kind === 'note' ? 'note' : 'pending';
+  const dueDate = kind === 'action' ? parseActionDueDate(body.dueDate) : '';
   const now = ctx.now().toISOString();
   const actionId = randomUUID();
-  withTransaction(ctx.db, () => {
-    const table = type === 'initiative' ? 'initiatives' : 'opportunities';
-    if (!ctx.db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) throw new HttpError(404, 'not_found', 'El registro no existe.');
-    ctx.db.prepare('INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_id,user_name,created_at) VALUES (?,?,?,?,?,?,?,?,?)').run(actionId, type, id, text, kind, status, user.id, user.name, now);
+  const nextActionDate = withTransaction(ctx.db, () => {
+    assertActionEntity(ctx.db, type, id);
+    ctx.db.prepare('INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_id,user_name,created_at,due_date) VALUES (?,?,?,?,?,?,?,?,?,?)').run(actionId, type, id, text, kind, status, user.id, user.name, now, dueDate);
     appendEntityEvent(ctx.db, { type, id, user, action: 'action_added', detail: { actionId }, now });
+    return syncNextActionDate(ctx.db, type, id);
   });
-  sendJson(res, 201, { action: { id: actionId, text, kind, status, userName: user.name, createdAt: now, completedAt: null, comments: [] } });
+  sendJson(res, 201, { action: { id: actionId, text, kind, status, dueDate, userName: user.name, createdAt: now, completedAt: null, comments: [] }, nextActionDate });
 }
 
+/**
+ * PATCH an action: `status` ('pending' / 'completed') and/or `dueDate` ('' or an ISO date; only
+ * for actions, not notes). The parent's "Fecha próxima acción" is re-synced in the same transaction
+ * and returned as `nextActionDate`.
+ */
 async function updateAction(ctx, req, res, rawActionId) {
   const user = requireUser(ctx, req);
   const actionId = decodeId(rawActionId);
   const body = await readJson(req);
+  const hasStatus = Object.hasOwn(body, 'status');
+  const hasDueDate = Object.hasOwn(body, 'dueDate');
   const status = body.status === 'completed' ? 'completed' : body.status === 'pending' ? 'pending' : null;
-  if (!status) throw validationError('El estado debe ser pending o completed.');
+  if ((hasStatus || !hasDueDate) && !status) throw validationError('El estado debe ser pending o completed.');
+  const dueDate = hasDueDate ? parseActionDueDate(body.dueDate) : null;
   const now = ctx.now().toISOString();
-  const result = withTransaction(ctx.db, () => {
+  const { row, nextActionDate } = withTransaction(ctx.db, () => {
     const existing = ctx.db.prepare('SELECT * FROM record_actions WHERE id = ?').get(actionId);
     if (!existing) throw new HttpError(404, 'not_found', 'La acción no existe.');
-    ctx.db.prepare('UPDATE record_actions SET status = ?, completed_at = ? WHERE id = ?').run(status, status === 'completed' ? now : null, actionId);
-    appendEntityEvent(ctx.db, { type: existing.entity_type, id: existing.entity_id, user, action: status === 'completed' ? 'action_completed' : 'action_reopened', detail: { actionId }, now });
-    return { id: actionId, text: existing.text, kind: existing.kind, status, userName: existing.user_name, createdAt: existing.created_at, completedAt: status === 'completed' ? now : null };
+    if (hasDueDate && existing.kind !== 'action') throw validationError('Solo las acciones tienen fecha.', 'dueDate');
+    if (status && status !== existing.status) {
+      ctx.db.prepare('UPDATE record_actions SET status = ?, completed_at = ? WHERE id = ?').run(status, status === 'completed' ? now : null, actionId);
+      appendEntityEvent(ctx.db, { type: existing.entity_type, id: existing.entity_id, user, action: status === 'completed' ? 'action_completed' : 'action_reopened', detail: { actionId }, now });
+    }
+    if (hasDueDate && dueDate !== existing.due_date) {
+      ctx.db.prepare('UPDATE record_actions SET due_date = ? WHERE id = ?').run(dueDate, actionId);
+      appendEntityEvent(ctx.db, { type: existing.entity_type, id: existing.entity_id, user, action: 'action_due_date_changed', detail: { actionId, from: existing.due_date, to: dueDate }, now });
+    }
+    return {
+      row: ctx.db.prepare('SELECT * FROM record_actions WHERE id = ?').get(actionId),
+      nextActionDate: syncNextActionDate(ctx.db, existing.entity_type, existing.entity_id),
+    };
   });
-  sendJson(res, 200, { action: { ...result, comments: ctx.db.prepare('SELECT id, text, user_name AS userName, created_at AS createdAt FROM record_action_comments WHERE action_id = ? ORDER BY created_at, id').all(actionId) } });
+  const comments = ctx.db.prepare('SELECT id, text, user_name AS userName, created_at AS createdAt FROM record_action_comments WHERE action_id = ? ORDER BY created_at, id').all(actionId);
+  sendJson(res, 200, { action: mapRecordAction(row, comments), nextActionDate });
 }
 
 async function createActionComment(ctx, req, res, rawActionId) {
@@ -2467,7 +2542,7 @@ const OPPORTUNITY_EVENTS_PATTERN = /^\/api\/opportunities\/([^/]+)\/events$/;
 const MASTER_ITEM_PATTERN = /^\/api\/(clients|towers|people|services|lobs)\/([^/]+)$/;
 const SERVICE_YEAR_ITEM_PATTERN = /^\/api\/service-years\/([^/]+)$/;
 const SERVICE_YEAR_COPY_PATTERN = /^\/api\/service-years\/([^/]+)\/copy-from\/([^/]+)$/;
-const ACTIONS_PATTERN =/^\/api\/(initiatives|opportunities)\/([^/]+)\/actions$/;
+const ACTIONS_PATTERN = /^\/api\/(initiatives|opportunities|agreements)\/([^/]+)\/actions$/;
 const ACTION_ITEM_PATTERN = /^\/api\/actions\/([^/]+)$/;
 const ACTION_COMMENTS_PATTERN = /^\/api\/actions\/([^/]+)\/comments$/;
 const INITIATIVE_ITEM_PATTERN = /^\/api\/initiatives\/([^/]+)$/;
@@ -2628,7 +2703,7 @@ async function handleApi(ctx, req, res, pathname, query) {
   }
   const actionList = ACTIONS_PATTERN.exec(pathname);
   if (actionList) {
-    const type = actionList[1] === 'initiatives' ? 'initiative' : 'opportunity';
+    const type = RECORD_ACTION_ENTITY_TYPES[actionList[1]];
     if (req.method === 'GET') return listActions(ctx, req, res, type, actionList[2]);
     if (req.method === 'POST') return createAction(ctx, req, res, type, actionList[2]);
     return rejectMethod(res, 'GET', 'POST');
@@ -2637,6 +2712,10 @@ async function handleApi(ctx, req, res, pathname, query) {
   if (initiativeEvents) {
     if (req.method !== 'GET') return rejectMethod(res, 'GET');
     return listEntityEvents(ctx, req, res, 'initiative', initiativeEvents[1]);
+  }
+  if (pathname === '/api/actions') {
+    if (req.method !== 'GET') return rejectMethod(res, 'GET');
+    return listScheduledActions(ctx, req, res);
   }
   const actionItem = ACTION_ITEM_PATTERN.exec(pathname);
   if (actionItem) {

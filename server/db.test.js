@@ -701,6 +701,50 @@ test('a legacy notifications table is rebuilt once to allow the mention kind, ke
   }
 });
 
+test('a legacy record_actions table is rebuilt once to allow agreements and gains due_date, keeping rows and comments', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-record-actions-'));
+  const dbPath = path.join(dir, 'app.db');
+  try {
+    const seeded = openDatabase(dbPath);
+    seeded.exec(`
+      PRAGMA foreign_keys = OFF;
+      DROP TABLE record_actions;
+      CREATE TABLE record_actions (
+        id TEXT PRIMARY KEY, entity_type TEXT NOT NULL CHECK(entity_type IN ('initiative','opportunity')),
+        entity_id TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'action' CHECK(kind IN ('note','action')),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','completed','note')),
+        user_id TEXT REFERENCES users(id) ON DELETE SET NULL, user_name TEXT NOT NULL,
+        created_at TEXT NOT NULL, completed_at TEXT
+      );
+      INSERT INTO users VALUES ('u-1','ada@example.com','Ada','hash','admin','2026-01-01');
+      INSERT INTO record_actions (id,entity_type,entity_id,text,kind,status,user_id,user_name,created_at,completed_at) VALUES
+        ('a-2','initiative','IN-000001','Segunda','action','completed','u-1','Ada','2026-01-02','2026-01-03'),
+        ('a-1','opportunity','OP-000001','Primera','action','pending','u-1','Ada','2026-01-01',NULL);
+      INSERT INTO record_action_comments (id,action_id,user_id,user_name,text,created_at) VALUES ('c-1','a-1','u-1','Ada','Hola','2026-01-01');
+      DELETE FROM schema_meta WHERE key = 'record_actions_agreements_v1';
+    `);
+    closeDatabase(seeded);
+
+    const db = openDatabase(dbPath);
+    assert.deepEqual(db.prepare('SELECT rowid, id, status, completed_at, due_date FROM record_actions ORDER BY rowid').all().map((row) => [row.rowid, row.id, row.status, row.completed_at, row.due_date]),
+      [[1, 'a-2', 'completed', '2026-01-03', ''], [2, 'a-1', 'pending', null, '']]);
+    db.exec("INSERT INTO record_actions (id,entity_type,entity_id,text,user_name,created_at,due_date) VALUES ('a-3','agreement','AM-000001','Renovar','Ada','2026-01-04','2026-02-01')");
+    assert.throws(() => db.exec("INSERT INTO record_actions (id,entity_type,entity_id,text,user_name,created_at) VALUES ('a-4','other','X','x','Ada','x')"), /CHECK constraint failed/);
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_record_actions_entity'").get());
+    assert.equal(Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
+    // Action comments still cascade with their action.
+    db.exec("DELETE FROM record_actions WHERE id = 'a-1'");
+    assert.equal(count(db, 'record_action_comments'), 0);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'record_actions_agreements_v1'").get().count, 1);
+    assert.equal(count(reopened, 'record_actions'), 2);
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
 test('the monthly_reports table is created idempotently and keeps stored snapshots', () => {
   const temp = createTempDatabase();
   try {

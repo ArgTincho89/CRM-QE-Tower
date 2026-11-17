@@ -142,9 +142,57 @@ describe('calendar events', () => {
 
   test('builds one event per open record with a valid date, labelled "ID · Título"', () => {
     const events = buildCalendarEvents(data, today);
-    assert.deepEqual(events.map((event) => event.key), ['opportunity:OP-000001', 'initiative:IN-000001', 'agreement:AM-000001', 'initiative:IN-000005']);
+    assert.deepEqual(events.map((event) => event.key), ['opportunity:OP-000001', 'initiative:IN-000001', 'agreementEnd:AM-000001', 'initiative:IN-000005']);
     assert.equal(events[0].label, 'OP-000001 · Abierta');
     assert.equal(events[0].recordId, 'OP-000001');
+  });
+
+  test('framework agreements show on their next action date, plus a separate "Fin de acuerdo"', () => {
+    const events = buildCalendarEvents({ agreements: [
+      { id: 'AM-1', title: 'Marco', status: 'active', nextActionDate: '2026-11-20', endDate: '2026-12-31' },
+      { id: 'AM-2', title: 'Inactivo', status: 'inactive', nextActionDate: '2026-11-20', endDate: '2026-12-31' },
+    ] }, today);
+    assert.deepEqual(events.map((event) => [event.key, event.date]), [['agreement:AM-1', '2026-11-20'], ['agreementEnd:AM-1', '2026-12-31']]);
+    assert.equal(events[1].label, 'Fin de acuerdo: AM-1 · Marco');
+    // The end event opens the agreement it belongs to.
+    assert.equal(events[1].entityType, 'agreement');
+    assert.equal(events[1].recordId, 'AM-1');
+  });
+
+  test('pending dated actions show as "Acción: <texto> — <registro>" and replace the record event of that day', () => {
+    const events = buildCalendarEvents({
+      opportunities: [
+        { id: 'OP-1', title: 'Renovación', stage: 'proposal', nextActionDate: '2026-11-18' },
+        { id: 'OP-2', title: 'Ganada', stage: 'result', outcome: 'won', nextActionDate: '' },
+      ],
+      initiatives: [{ id: 'IN-1', title: 'Explorar', stage: 'pending', nextActionDate: '2026-11-25' }],
+      agreements: [{ id: 'AM-1', title: 'Marco', status: 'active', nextActionDate: '', endDate: '' }],
+      actions: [
+        { id: 'a1', text: 'Llamar al cliente para revisar la propuesta final', dueDate: '2026-11-18', entityType: 'opportunity', entityId: 'OP-1' },
+        { id: 'a2', text: 'Revisar anexo', dueDate: '2026-11-30', entityType: 'opportunity', entityId: 'OP-1' },
+        { id: 'a3', text: 'Preparar demo', dueDate: '2026-11-19', entityType: 'initiative', entityId: 'IN-1' },
+        { id: 'a4', text: 'Renovar', dueDate: '2026-11-21', entityType: 'agreement', entityId: 'AM-1' },
+        { id: 'a5', text: 'Cerrada', dueDate: '2026-11-21', entityType: 'opportunity', entityId: 'OP-2' },
+        { id: 'a6', text: 'Sin registro', dueDate: '2026-11-21', entityType: 'opportunity', entityId: 'OP-9' },
+        { id: 'a7', text: 'Fecha rota', dueDate: '2026-02-30', entityType: 'opportunity', entityId: 'OP-1' },
+        { id: 'a8', text: 'Completada', dueDate: '2026-11-22', status: 'completed', entityType: 'opportunity', entityId: 'OP-1' },
+      ],
+    }, today);
+    // OP-1's own event on 2026-11-18 is replaced by the action of that day; IN-1 keeps its event.
+    assert.deepEqual(events.map((event) => [event.key, event.date]), [
+      ['action:a1', '2026-11-18'],
+      ['action:a3', '2026-11-19'],
+      ['action:a4', '2026-11-21'],
+      ['initiative:IN-1', '2026-11-25'],
+      ['action:a2', '2026-11-30'],
+    ]);
+    assert.equal(events[0].type, 'action');
+    assert.equal(events[0].entityType, 'opportunity');
+    assert.equal(events[0].recordId, 'OP-1');
+    assert.equal(events[0].label, 'Acción: Llamar al cliente para revisar la propu… — Renovación');
+    assert.equal(events[0].description, 'Acción: Llamar al cliente para revisar la propuesta final — Oportunidad OP-1 · Renovación');
+    assert.equal(events[2].label, 'Acción: Renovar — Marco');
+    assert.deepEqual(filterEventsByType(events, ['action']).map((event) => event.key), ['action:a1', 'action:a3', 'action:a4', 'action:a2']);
   });
 
   test('assignments with an end date show as "Fin de asignación" on that day', () => {
@@ -155,7 +203,7 @@ describe('calendar events', () => {
       { id: 'AS-4', talentName: 'Sin fin', clientName: 'Cliente Uno', endDate: '' },
       { id: 'AS-5', talentName: 'Fecha mala', endDate: '2026-02-30' },
     ], agreements: [{ id: 'AM-1', title: 'Marco', status: 'active', endDate: '2026-03-10' }] }, today);
-    assert.deepEqual(events.map((event) => event.key), ['agreement:AM-1', 'assignment:AS-1', 'assignment:AS-2', 'assignment:AS-3']);
+    assert.deepEqual(events.map((event) => event.key), ['agreementEnd:AM-1', 'assignment:AS-1', 'assignment:AS-2', 'assignment:AS-3']);
     const first = events[1];
     assert.equal(first.type, 'assignment');
     assert.equal(first.date, '2026-03-10');
@@ -220,7 +268,8 @@ describe('calendar events', () => {
 
   test('type filters and day grouping', () => {
     const events = buildCalendarEvents(data, today);
-    assert.deepEqual(filterEventsByType(events, ['agreement']).map((event) => event.recordId), ['AM-000001']);
+    assert.deepEqual(filterEventsByType(events, ['agreementEnd']).map((event) => event.recordId), ['AM-000001']);
+    assert.deepEqual(filterEventsByType(events, ['agreement']).map((event) => event.recordId), []);
     assert.deepEqual(filterEventsByType(events, new Set()), []);
     const grouped = groupEventsByDay([...events, { ...events[0], key: 'x', recordId: 'OP-9' }]);
     assert.equal(grouped.get('2026-11-01').length, 2);

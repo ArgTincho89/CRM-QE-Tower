@@ -1280,6 +1280,98 @@ describe('CRM API', () => {
     assert.equal(agreements.body.agreements.some((item) => item.id === agreement.body.agreement.id), true);
   });
 
+  test('framework agreements store a next action date and own notes and actions', async () => {
+    const created = await app.json('POST', '/api/agreements', { body: { title: 'Acuerdo con acciones', nextActionDate: '2026-12-01' }, cookie: session });
+    assert.equal(created.status, 201);
+    const id = created.body.agreement.id;
+    assert.equal(created.body.agreement.nextActionDate, '2026-12-01');
+    const invalid = await app.json('PATCH', `/api/agreements/${id}`, { body: { nextActionDate: '2026-02-30' }, cookie: session });
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.error.field, 'nextActionDate');
+    const cleared = await app.json('PATCH', `/api/agreements/${id}`, { body: { nextActionDate: '' }, cookie: session });
+    assert.equal(cleared.body.agreement.nextActionDate, '');
+
+    const note = await app.json('POST', `/api/agreements/${id}/actions`, { body: { text: 'Contexto', kind: 'note', dueDate: '2026-11-20' }, cookie: session });
+    assert.equal(note.status, 201);
+    // Notes never carry a due date.
+    assert.equal(note.body.action.dueDate, '');
+    const action = await app.json('POST', `/api/agreements/${id}/actions`, { body: { text: 'Renovar', dueDate: '2026-11-25' }, cookie: session });
+    assert.equal(action.body.action.dueDate, '2026-11-25');
+    assert.equal(action.body.nextActionDate, '2026-11-25');
+    const list = await app.json('GET', `/api/agreements/${id}/actions`, { cookie: session });
+    assert.deepEqual(list.body.actions.map((item) => [item.text, item.dueDate]), [['Renovar', '2026-11-25'], ['Contexto', '']]);
+    assert.equal((await app.json('GET', '/api/agreements/AM-999999/actions', { cookie: session })).status, 404);
+
+    const deleted = await app.json('DELETE', `/api/agreements/${id}`, { cookie: session });
+    assert.equal(deleted.status, 200);
+    assert.equal(app.db.prepare('SELECT COUNT(*) AS count FROM record_actions WHERE entity_type = ? AND entity_id = ?').get('agreement', id).count, 0);
+  });
+
+  test('pending dated actions drive the next action date of their record', async () => {
+    const created = await app.json('POST', '/api/initiatives', { body: { title: 'Iniciativa con agenda', category: 'Cross-selling', nextActionDate: '2026-12-31' }, cookie: session });
+    const id = created.body.initiative.id;
+    const nextActionDate = () => app.db.prepare('SELECT next_action_date FROM initiatives WHERE id = ?').get(id).next_action_date;
+
+    // An undated action keeps the manually entered date.
+    const undated = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Sin fecha' }, cookie: session });
+    assert.equal(undated.body.nextActionDate, '2026-12-31');
+    assert.equal(nextActionDate(), '2026-12-31');
+    const invalid = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Fecha rota', dueDate: '2026-02-30' }, cookie: session });
+    assert.equal(invalid.status, 400);
+
+    const later = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Más tarde', dueDate: '2026-12-10' }, cookie: session });
+    assert.equal(later.body.nextActionDate, '2026-12-10');
+    const sooner = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Antes', dueDate: '2026-11-20' }, cookie: session });
+    assert.equal(sooner.body.nextActionDate, '2026-11-20');
+    assert.equal(nextActionDate(), '2026-11-20');
+
+    // While dated pending actions exist, a next action date sent with the record is ignored.
+    const edited = await app.json('PATCH', `/api/initiatives/${id}`, { body: { nextActionDate: '2027-01-15' }, cookie: session });
+    assert.equal(edited.status, 200);
+    assert.equal(nextActionDate(), '2026-11-20');
+
+    // An overdue pending action wins: it is the most urgent one.
+    const overdue = await app.json('PATCH', `/api/actions/${later.body.action.id}`, { body: { dueDate: '2025-01-05' }, cookie: session });
+    assert.equal(overdue.status, 200);
+    assert.equal(overdue.body.action.dueDate, '2025-01-05');
+    assert.equal(overdue.body.action.status, 'pending');
+    assert.equal(overdue.body.nextActionDate, '2025-01-05');
+
+    // Completing it moves the date to the next pending one; reopening brings it back.
+    const completed = await app.json('PATCH', `/api/actions/${later.body.action.id}`, { body: { status: 'completed' }, cookie: session });
+    assert.equal(completed.body.nextActionDate, '2026-11-20');
+    const reopened = await app.json('PATCH', `/api/actions/${later.body.action.id}`, { body: { status: 'pending' }, cookie: session });
+    assert.equal(reopened.body.nextActionDate, '2025-01-05');
+
+    const scheduled = await app.json('GET', '/api/actions', { cookie: session });
+    assert.equal(scheduled.status, 200);
+    const mine = scheduled.body.actions.filter((item) => item.entityId === id);
+    assert.deepEqual(mine.map((item) => [item.text, item.dueDate, item.entityType]), [['Más tarde', '2025-01-05', 'initiative'], ['Antes', '2026-11-20', 'initiative']]);
+    assert.equal((await app.json('GET', '/api/actions')).status, 401);
+
+    // Without dated pending actions the last value stays and the field is editable again.
+    await app.json('PATCH', `/api/actions/${later.body.action.id}`, { body: { status: 'completed' }, cookie: session });
+    const undatedAgain = await app.json('PATCH', `/api/actions/${sooner.body.action.id}`, { body: { dueDate: '' }, cookie: session });
+    assert.equal(undatedAgain.body.nextActionDate, '2026-11-20');
+    const manual = await app.json('PATCH', `/api/initiatives/${id}`, { body: { nextActionDate: '2027-02-01' }, cookie: session });
+    assert.equal(manual.status, 200);
+    assert.equal(nextActionDate(), '2027-02-01');
+
+    const note = await app.json('POST', `/api/initiatives/${id}/actions`, { body: { text: 'Nota', kind: 'note' }, cookie: session });
+    assert.equal((await app.json('PATCH', `/api/actions/${note.body.action.id}`, { body: { dueDate: '2026-11-30' }, cookie: session })).status, 400);
+    assert.equal((await app.json('PATCH', `/api/actions/${note.body.action.id}`, { body: {}, cookie: session })).status, 400);
+  });
+
+  test('opportunity next action date follows its pending dated actions', async () => {
+    const created = (await app.json('POST', '/api/opportunities', { body: { ...OPPORTUNITY_PAYLOAD, title: 'Oportunidad con agenda' }, cookie: session })).body.opportunity;
+    const id = created.id;
+    const action = await app.json('POST', `/api/opportunities/${id}/actions`, { body: { text: 'Enviar propuesta', dueDate: '2026-11-28' }, cookie: session });
+    assert.equal(action.body.nextActionDate, '2026-11-28');
+    const ignored = await app.json('PATCH', `/api/opportunities/${id}`, { body: { nextActionDate: '2027-03-01' }, cookie: session });
+    assert.equal(ignored.status, 200);
+    assert.equal(ignored.body.opportunity.nextActionDate, '2026-11-28');
+  });
+
   test('initiatives follow the four-stage lifecycle, fixed categories, priority, status, and services', async () => {
     const client = await app.json('POST', '/api/clients', { body: { name: 'Cliente ciclo iniciativa' }, cookie: session });
     const services = await app.json('GET', '/api/services', { cookie: session });
