@@ -108,6 +108,8 @@ describe('form validators', () => {
   test('course, plan and project forms check numbers, links and required names', () => {
     assert.deepEqual(Object.keys(validateCourseForm({ name: '', estimatedHours: '-1', url: 'ftp://x', validityMonths: '1,5' })), ['name', 'estimatedHours', 'url', 'validityMonths']);
     assert.deepEqual(validateCourseForm({ name: 'Curso', estimatedHours: '6,0', url: 'https://example.com', validityMonths: '24' }), {});
+    assert.deepEqual(validateCourseForm({ name: 'Curso', validityMonths: '1,5', noExpiry: true, approxPrice: '99,5' }), {}, '"No expira" skips the validity');
+    assert.deepEqual(Object.keys(validateCourseForm({ name: 'Curso', approxPrice: 'caro' })), ['approxPrice']);
     assert.ok(validatePlanForm({ talentId: 't' }).courseName);
     assert.deepEqual(validatePlanForm({ talentId: 't', courseName: 'Libre', progress: '150 %', dedicatedHours: '10,5' }), {});
     assert.deepEqual(Object.keys(validateProjectForm({ applicationName: '', projectUrl: 'javascript:x' })), ['applicationName', 'projectUrl']);

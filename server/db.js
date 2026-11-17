@@ -251,6 +251,34 @@ const SCHEMA_STATEMENTS = [
     )`,
   'CREATE INDEX IF NOT EXISTS idx_training_plan_talent ON training_plan(talent_id)',
   'CREATE INDEX IF NOT EXISTS idx_training_plan_course ON training_plan(course_id)',
+  // "Certificaciones x talento": catalog certifications a talent holds or is pursuing. status is
+  // validated by the API (Obtenida / Pendiente); obtained_date is an optional ISO date and
+  // obtained_year the year when only that is known. The expiry derives from the catalog validity.
+  `CREATE TABLE IF NOT EXISTS talent_certifications (
+      id TEXT PRIMARY KEY,
+      talent_id TEXT NOT NULL REFERENCES talents(id),
+      course_id TEXT NOT NULL REFERENCES training_catalog(id),
+      status TEXT NOT NULL DEFAULT 'Obtenida',
+      obtained_date TEXT NOT NULL DEFAULT '', obtained_year INTEGER,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_talent_certifications_talent ON talent_certifications(talent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_talent_certifications_course ON talent_certifications(course_id)',
+  // "Estrategia de formación": one row per year. The list columns hold JSON arrays (business case
+  // items, investment lines, category targets, strategic axes and conclusions).
+  `CREATE TABLE IF NOT EXISTS training_strategies (
+      id TEXT PRIMARY KEY,
+      year INTEGER NOT NULL UNIQUE,
+      title TEXT NOT NULL DEFAULT '',
+      business_case TEXT NOT NULL DEFAULT '[]',
+      investment_lines TEXT NOT NULL DEFAULT '[]',
+      investment_note TEXT NOT NULL DEFAULT '',
+      category_targets TEXT NOT NULL DEFAULT '[]',
+      strategic_axes TEXT NOT NULL DEFAULT '[]',
+      conclusions TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
   // "Performance review": one row per objective of a talent in a year. status is validated by the
   // API (Pendiente / Cumplido / No cumplido); link_url is an optional http(s) link.
   `CREATE TABLE IF NOT EXISTS performance_reviews (
@@ -382,6 +410,12 @@ export function applySchema(db) {
   // The activity catalog became editable, so it tracks its last update like the other resources.
   const activityColumns = db.prepare('PRAGMA table_info(activity_catalog)').all().map((row) => row.name);
   if (!activityColumns.includes('updated_at')) db.exec("ALTER TABLE activity_catalog ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
+  // Training catalog: "Descripción", "Precio aprox" (euros, NULL when unknown) and "No expira"
+  // (1 = the certification never expires; validity_months is then NULL).
+  const catalogColumns = db.prepare('PRAGMA table_info(training_catalog)').all().map((row) => row.name);
+  for (const [name, declaration] of [['description', "TEXT NOT NULL DEFAULT ''"], ['approx_price', 'REAL'], ['no_expiry', 'INTEGER NOT NULL DEFAULT 0']]) {
+    if (!catalogColumns.includes(name)) db.exec(`ALTER TABLE training_catalog ADD COLUMN ${name} ${declaration}`);
+  }
   const opportunityAdditions = [
     ['origin', "TEXT NOT NULL DEFAULT ''"],
     ['probability', 'INTEGER'],

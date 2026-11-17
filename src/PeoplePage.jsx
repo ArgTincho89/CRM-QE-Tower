@@ -17,6 +17,9 @@ import {
   DetailsDialog, RecordDialog, RecordPanel, SearchBox, TabStrip, formatDateTime, formatNumber, numberToInput, useCollection, useRecordActions as useSharedRecordActions,
 } from './OperationsUi.jsx';
 import { FieldError, FormField, useFieldErrors } from './FormField.jsx';
+import { formatCurrency } from './money.js';
+import { ALL_YEARS, coursePlanDefaults, courseSelectOptions, filterPlanByYear, planYearOptions, validityLabel } from './training.js';
+import { TalentCertificationsPanel, TrainingStrategyPanel } from './TrainingPanels.jsx';
 
 const EYEBROW = 'PEOPLE';
 
@@ -38,21 +41,25 @@ export default function PeoplePage({ towers = [], lobs = [], clients = [], onNot
   const courses = useCollection(() => listOperationRecords('training-catalog'), options);
   const plan = useCollection(() => listOperationRecords('training-plan'), options);
   const reviews = useCollection(() => listOperationRecords('performance-reviews'), options);
+  const certifications = useCollection(() => listOperationRecords('talent-certifications'), options);
+  const strategies = useCollection(() => listOperationRecords('training-strategies'), options);
   const selectTab = (id) => { setTab(id); savePeopleTab(id); };
   const selectTrainingTab = (id) => { setTrainingTab(id); saveTrainingTab(id); };
   // Talent names appear in every other table, so a talent change reloads them too.
-  const reloadTalents = () => { talents.reload(); skills.reload(); assignments.reload(); plan.reload(); reviews.reload(); };
+  const reloadTalents = () => { talents.reload(); skills.reload(); assignments.reload(); plan.reload(); reviews.reload(); certifications.reload(); };
   const reloadActivities = () => { activities.reload(); skills.reload(); };
   const shared = { onNotice, talents: talents.records };
 
   return <TabStrip tabs={PEOPLE_TABS} active={tab} onSelect={selectTab} label="People">
-    {tab === 'talentList' && <TalentsPanel collection={talents} reload={reloadTalents} towers={towers} lobs={lobs} skills={skills.records} assignments={assignments.records} plan={plan.records} reviews={reviews.records} {...shared} />}
+    {tab === 'talentList' && <TalentsPanel collection={talents} reload={reloadTalents} towers={towers} lobs={lobs} skills={skills.records} assignments={assignments.records} plan={plan.records} reviews={reviews.records} certifications={certifications.records} {...shared} />}
     {tab === 'talentSkills' && <SkillsPanel collection={skills} activities={activities.records} {...shared} />}
     {tab === 'activityCatalog' && <ActivityMatrixPanel collection={activities} reload={reloadActivities} onNotice={onNotice} />}
     {tab === 'assignments' && <AssignmentsPanel collection={assignments} towers={towers} lobs={lobs} clients={clients} {...shared} />}
     {tab === 'training' && <TabStrip tabs={TRAINING_TABS} active={trainingTab} onSelect={selectTrainingTab} label="Formación" className="ops-subtabs">
-      {trainingTab === 'trainingCatalog' && <TrainingCatalogPanel collection={courses} reloadPlan={plan.reload} onNotice={onNotice} />}
+      {trainingTab === 'trainingCatalog' && <TrainingCatalogPanel collection={courses} reloadPlan={() => { plan.reload(); certifications.reload(); }} onNotice={onNotice} />}
       {trainingTab === 'trainingPlan' && <TrainingPlanPanel collection={plan} courses={courses.records} {...shared} />}
+      {trainingTab === 'talentCertifications' && <TalentCertificationsPanel collection={certifications} courses={courses.records} eyebrow={EYEBROW} {...shared} />}
+      {trainingTab === 'trainingStrategy' && <TrainingStrategyPanel collection={strategies} certifications={certifications.records} courses={courses.records} plan={plan.records} eyebrow={EYEBROW} onNotice={onNotice} />}
     </TabStrip>}
     {tab === 'performanceReview' && <PerformanceReviewPanel collection={reviews} {...shared} />}
   </TabStrip>;
@@ -74,7 +81,7 @@ function AvailabilityPill({ value }) {
   return <span className={`status-pill ${tone}`}>{formatNumber(value, { suffix: ' %' })}</span>;
 }
 
-function TalentsPanel({ collection, reload, towers, lobs, skills = [], assignments = [], plan = [], reviews = [], onNotice }) {
+function TalentsPanel({ collection, reload, towers, lobs, skills = [], assignments = [], plan = [], reviews = [], certifications = [], onNotice }) {
   const [query, setQuery] = useState('');
   const [onlyAvailable, setOnlyAvailable] = useState(false);
   const [profileFilter, setProfileFilter] = useState('');
@@ -141,7 +148,7 @@ function TalentsPanel({ collection, reload, towers, lobs, skills = [], assignmen
     : { firstName: '', lastName: '', secondLastName: '', name: '', location: '', category: '', profiles: [],
         lobIds: [], towerIds: [], primaryTowerId: '' };
   return <>
-    <RecordPanel title="Listado de personas" description="Talentos del equipo QE. Arrastra el asa ⠿ (o Alt + flecha arriba/abajo) para cambiar el orden. Un talento con skills, asignaciones, plan de formación o performance review no se puede eliminar." tableId="people-talents"
+    <RecordPanel title="Listado de personas" description="Talentos del equipo QE. Arrastra el asa ⠿ (o Alt + flecha arriba/abajo) para cambiar el orden. Un talento con skills, asignaciones, plan de formación, certificaciones o performance review no se puede eliminar." tableId="people-talents"
       columns={[
         { id: 'index', label: 'Nº', sortable: false, pinnedFirst: true, value: () => '', render: (_row, index) => index + 1, cellClassName: 'ops-index' },
         { id: 'name', label: 'Nombre', value: (row) => row.name },
@@ -176,12 +183,13 @@ function TalentsPanel({ collection, reload, towers, lobs, skills = [], assignmen
       })}
       onSave={actions.save} onClose={() => actions.setEditing(null)} />}
     {actions.deleteDialog}
-    {detail && <TalentDetailsDialog talent={detail} skills={skills} assignments={assignments} plan={plan} reviews={reviews} availability={availabilityOf(detail)} onClose={() => setDetail(null)} />}
+    {detail && <TalentDetailsDialog talent={detail} skills={skills} assignments={assignments} plan={plan} reviews={reviews} certifications={certifications} availability={availabilityOf(detail)} onClose={() => setDetail(null)} />}
   </>;
 }
 
 /** Read-only "Listado de personas" detail: the talent plus what hangs from it in the other tabs. */
-function TalentDetailsDialog({ talent, skills = [], assignments = [], plan = [], reviews = [], availability, onClose }) {
+function TalentDetailsDialog({ talent, skills = [], assignments = [], plan = [], reviews = [], certifications = [], availability, onClose }) {
+  const talentCertifications = certifications.filter((item) => item.talentId === talent.id);
   const talentSkills = skills.filter((item) => item.talentId === talent.id);
   const talentAssignments = assignments.filter((item) => item.talentId === talent.id);
   const talentPlan = plan.filter((item) => item.talentId === talent.id);
@@ -200,6 +208,7 @@ function TalentDetailsDialog({ talent, skills = [], assignments = [], plan = [],
     { label: 'Skills registradas', value: talentSkills.length },
     { label: 'Asignaciones', value: talentAssignments.length ? `${talentAssignments.length} · ${formatNumber(assignedPercentage, { suffix: ' %' })}` : 0 },
     { label: 'Plan de formación', value: talentPlan.length },
+    { label: 'Certificaciones', value: talentCertifications.length ? talentCertifications.map((item) => `${item.courseName} (${item.status})`).join(', ') : 0 },
     { label: 'Objetivos de performance review', value: talentReviews.length },
     { label: 'Creado', value: formatDateTime(talent.createdAt) },
     { label: 'Actualizado', value: formatDateTime(talent.updatedAt) },
@@ -365,46 +374,74 @@ function ExternalLink({ url, label = 'Abrir' }) {
   return href ? <a href={href} target="_blank" rel="noopener noreferrer">{label}<span className="sr-only"> (se abre en una pestaña nueva)</span></a> : '—';
 }
 
+const priceText = (value) => (value === null || value === undefined || value === '' ? '' : formatCurrency(value));
+
 function TrainingCatalogPanel({ collection, reloadPlan, onNotice }) {
   const [query, setQuery] = useState('');
+  const [detail, setDetail] = useState(null);
   const reload = () => { collection.reload(); reloadPlan(); };
   const actions = useRecordActions('training-catalog', { reload, onNotice, describe: (row) => row.name, noun: 'la formación' });
-  const rows = filterRecords(collection.records, query, ['name', 'family', 'istqbCategory', 'types', 'provider', 'level']);
+  const rows = filterRecords(collection.records, query, ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'description']);
   const editing = actions.editing;
   const suggestions = (key) => mergeOptions([], collection.records.map((row) => row[key]));
   return <>
-    <RecordPanel title="Catálogo de formación" description="Formaciones y certificaciones disponibles. No se puede eliminar una formación usada en el plan de formación." tableId="people-training-catalog"
+    <RecordPanel title="Catálogo de formación" description="Formaciones y certificaciones disponibles. Pulsa una fila para ver su detalle. No se puede eliminar una formación usada en el plan de formación o en «Certificaciones x talento»." tableId="people-training-catalog"
       columns={[
         { id: 'name', label: 'Formación', value: (row) => row.name, cellClassName: 'ops-wrap' },
         ...COURSE_TEXT_FIELDS.map(([key, label]) => ({ id: key, label, value: (row) => row[key] })),
+        { id: 'description', label: 'Descripción', value: (row) => row.description, render: (row) => row.description ? <span className="ops-clamp" title={row.description}>{row.description}</span> : '—', cellClassName: 'ops-wrap' },
+        { id: 'approxPrice', label: 'Precio aprox', type: 'number', value: (row) => row.approxPrice, render: (row) => priceText(row.approxPrice) || '—' },
         { id: 'estimatedHours', label: 'Horas Estimadas', type: 'number', value: (row) => row.estimatedHours, render: (row) => formatNumber(row.estimatedHours) || '—' },
         { id: 'url', label: 'Enlace', value: (row) => row.url, render: (row) => <ExternalLink url={row.url} /> },
-        { id: 'validityMonths', label: 'Vigencia/Meses', type: 'number', value: (row) => row.validityMonths },
+        // "No expira" sorts after every finite validity.
+        { id: 'validityMonths', label: 'Vigencia/Meses', type: 'number', value: (row) => (row.noExpiry ? 100000 : row.validityMonths), render: (row) => (row.noExpiry ? 'No expira' : formatNumber(row.validityMonths) || '—') },
       ]}
       rows={rows} totalCount={collection.records.length} query={query} onQueryChange={setQuery} searchLabel="Buscar formaciones"
       createLabel="Crear certificación" onCreate={() => actions.setEditing({})} onEdit={actions.setEditing} onDelete={actions.remove}
+      onRowClick={setDetail} rowAriaLabel={(row) => `Ver detalle de ${row.name}`}
       emptyMessage="Todavía no hay formaciones en el catálogo." loading={collection.loading} error={collection.error} onRetry={collection.reload} />
     {editing && <RecordDialog eyebrow={EYEBROW} title={editing.id ? 'Editar formación' : 'Crear certificación'}
       fields={[
         { id: 'name', label: 'Formación', required: true, wide: true },
         ...COURSE_TEXT_FIELDS.map(([key, label]) => ({ id: key, label, type: 'combo', options: suggestions(key) })),
         { id: 'estimatedHours', label: 'Horas Estimadas', type: 'number' },
-        { id: 'validityMonths', label: 'Vigencia/Meses', type: 'number', hint: 'Opcional. Meses de validez del certificado.' },
+        { id: 'approxPrice', label: 'Precio aprox (€)', type: 'number', hint: 'Opcional. Precio orientativo en euros.' },
+        { id: 'validityMonths', label: 'Vigencia (meses)', type: 'number', disabled: (values) => values.noExpiry,
+          hint: 'Opcional. Meses de validez del certificado.' },
+        { id: 'noExpiry', label: 'No expira', type: 'checkbox', hint: 'La certificación no caduca: la vigencia se deja vacía.',
+          onChange: (checked) => (checked ? { validityMonths: '' } : {}) },
         { id: 'url', label: 'Enlace', type: 'url', wide: true },
+        { id: 'description', label: 'Descripción', type: 'textarea', wide: true },
       ]}
       initialValues={{
         name: editing.name || '', ...Object.fromEntries(COURSE_TEXT_FIELDS.map(([key]) => [key, editing[key] || ''])),
-        estimatedHours: numberToInput(editing.estimatedHours), validityMonths: numberToInput(editing.validityMonths), url: editing.url || '',
+        estimatedHours: numberToInput(editing.estimatedHours), validityMonths: editing.noExpiry ? '' : numberToInput(editing.validityMonths), url: editing.url || '',
+        noExpiry: Boolean(editing.noExpiry), approxPrice: numberToInput(editing.approxPrice), description: editing.description || '',
       }}
       validate={validateCourseForm} formFields={COURSE_FORM_FIELDS} onSave={actions.save} onClose={() => actions.setEditing(null)} />}
     {actions.deleteDialog}
+    {detail && <DetailsDialog eyebrow={EYEBROW} title={detail.name} onClose={() => setDetail(null)} rows={[
+      { label: 'Formación', value: detail.name },
+      ...COURSE_TEXT_FIELDS.map(([key, label]) => ({ label, value: detail[key] })),
+      { label: 'Descripción', value: detail.description },
+      { label: 'Precio aprox', value: priceText(detail.approxPrice) },
+      { label: 'Horas estimadas', value: formatNumber(detail.estimatedHours) },
+      { label: 'Vigencia', value: validityLabel(detail) },
+      { label: 'Enlace', value: detail.url ? <ExternalLink url={detail.url} label={detail.url} /> : '' },
+      { label: 'Creado', value: formatDateTime(detail.createdAt) },
+      { label: 'Actualizado', value: formatDateTime(detail.updatedAt) },
+    ]} />}
   </>;
 }
 
 function TrainingPlanPanel({ collection, courses, talents, onNotice }) {
+  const currentYear = new Date().getFullYear();
   const [query, setQuery] = useState('');
+  const [yearFilter, setYearFilter] = useState(String(currentYear));
   const actions = useRecordActions('training-plan', { reload: collection.reload, onNotice, describe: (row) => `${row.talentName} · ${row.courseLabel}`, noun: 'la fila del plan' });
-  const rows = filterRecords(collection.records, query, ['talentName', 'task', 'courseLabel', 'family', 'status', 'evidence', 'nextStep']);
+  const yearOptions = planYearOptions(collection.records, currentYear);
+  const yearRows = filterPlanByYear(collection.records, yearFilter);
+  const rows = filterRecords(yearRows, query, ['talentName', 'task', 'courseLabel', 'family', 'status', 'evidence', 'nextStep']);
   const editing = actions.editing;
   const courseById = new Map(courses.map((course) => [course.id, course]));
   const statusOptions = mergeOptions(PLAN_STATUS_DEFAULTS, collection.records.map((row) => row.status));
@@ -427,14 +464,22 @@ function TrainingPlanPanel({ collection, courses, talents, onNotice }) {
         { id: 'nextStep', label: 'Próximo Paso', value: (row) => row.nextStep, cellClassName: 'ops-wrap' },
         dateColumn('expiryDate', 'Fecha de caducidad'),
       ]}
-      rows={rows} totalCount={collection.records.length} query={query} onQueryChange={setQuery} searchLabel="Buscar en el plan de formación"
+      rows={rows} totalCount={yearRows.length} query={query} onQueryChange={setQuery} searchLabel="Buscar en el plan de formación"
       createLabel="Nueva fila del plan" onCreate={() => actions.setEditing({})} onEdit={actions.setEditing} onDelete={actions.remove}
-      emptyMessage="Todavía no hay formación planificada." loading={collection.loading} error={collection.error} onRetry={collection.reload} />
+      emptyMessage={collection.records.length === 0 ? 'Todavía no hay formación planificada.' : 'No hay filas del plan en el año seleccionado.'} loading={collection.loading} error={collection.error} onRetry={collection.reload}>
+      <div className="ops-filters" role="group" aria-label="Filtros del plan de formación">
+        <label className="filter-select ops-filter-select"><span>Año (fecha inicio)</span><select value={yearFilter} onChange={(event) => setYearFilter(event.target.value)}>
+          {yearOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select></label>
+        {yearFilter !== ALL_YEARS && <span className="field-hint">Filas cuya «Fecha Inicio» es de ese año; «Sin fecha» agrupa las filas sin fecha de inicio.</span>}
+      </div>
+    </RecordPanel>
     {editing && <RecordDialog eyebrow={EYEBROW} title={editing.id ? 'Editar fila del plan' : 'Nueva fila del plan'}
       fields={[
         { id: 'talentId', label: 'QA (persona)', type: 'select', required: true, wide: true, placeholder: 'Selecciona una persona', options: talentOptions(talents) },
-        { id: 'courseId', label: 'Curso/Certificado del catálogo', type: 'select', wide: true, placeholder: 'Otro (fuera del catálogo)', options: courses.map((course) => ({ value: course.id, label: course.name })),
-          onChange: (value, values) => (value && courseById.get(value) ? { family: values.family || courseById.get(value).family || '', estimatedHours: values.estimatedHours || numberToInput(courseById.get(value).estimatedHours) } : {}) },
+        // Formaciones first; picking a course always brings its family and hours (still editable).
+        { id: 'courseId', label: 'Curso/Certificado del catálogo', type: 'select', wide: true, placeholder: 'Otro (fuera del catálogo)', options: courseSelectOptions(courses),
+          onChange: (value) => coursePlanDefaults(value ? courseById.get(value) : null) },
         { id: 'courseName', label: 'Curso/Certificado (texto libre)', wide: true, required: true, visible: (values) => !values.courseId, hint: 'Si el curso no está en el catálogo, escribe su nombre.' },
         { id: 'task', label: 'Tarea' },
         { id: 'family', label: 'Familia', type: 'combo', options: mergeOptions([], [...courses.map((course) => course.family), ...collection.records.map((row) => row.family)]) },

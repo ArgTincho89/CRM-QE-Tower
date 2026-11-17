@@ -228,6 +228,75 @@ describe('People and Proyectos API', () => {
     assert.equal(list.body.records.length, 2);
   });
 
+  test('training catalog stores description, approximate price and "No expira" (which clears the validity)', async () => {
+    const created = await call('POST', '/api/training-catalog', { name: 'Cert Sin Caducidad', validityMonths: '36', noExpiry: true, description: 'Texto ficticio', approxPrice: '165,5' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.record.noExpiry, true);
+    assert.equal(created.body.record.validityMonths, null);
+    assert.equal(created.body.record.description, 'Texto ficticio');
+    assert.equal(created.body.record.approxPrice, 165.5);
+    const updated = await call('PATCH', `/api/training-catalog/${created.body.record.id}`, { noExpiry: false, validityMonths: '24' });
+    assert.equal(updated.body.record.noExpiry, false);
+    assert.equal(updated.body.record.validityMonths, 24);
+    const bad = await call('POST', '/api/training-catalog', { name: 'Cert Mala', noExpiry: 'quizá' });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body.error.field, 'noExpiry');
+  });
+
+  test('talent certifications link a talent and a catalog certification and guard both deletes', async () => {
+    const talent = (await call('POST', '/api/talents', { name: 'Talento Certificado' })).body.record;
+    const course = (await call('POST', '/api/training-catalog', { name: 'Cert Ficticia CT', istqbCategory: 'Foundation', validityMonths: '12' })).body.record;
+    const missing = await call('POST', '/api/talent-certifications', { talentId: talent.id });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.error.field, 'courseId');
+    const created = await call('POST', '/api/talent-certifications', { talentId: talent.id, courseId: course.id, obtainedDate: '2025-03-10', obtainedYear: '2020' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.record.status, 'Obtenida');
+    assert.equal(created.body.record.obtainedYear, 2025, 'the date year wins');
+    assert.equal(created.body.record.courseName, 'Cert Ficticia CT');
+    assert.equal(created.body.record.validityMonths, 12);
+    const duplicate = await call('POST', '/api/talent-certifications', { talentId: talent.id, courseId: course.id, status: 'Pendiente' });
+    assert.equal(duplicate.status, 409);
+    const badStatus = await call('PATCH', `/api/talent-certifications/${created.body.record.id}`, { status: 'Caducada' });
+    assert.equal(badStatus.status, 400);
+
+    const talentLinks = await call('GET', `/api/talents/${talent.id}/links`);
+    assert.equal(talentLinks.body.blocked, true);
+    assert.match(talentLinks.body.message, /1 certificación/);
+    assert.equal((await call('DELETE', `/api/training-catalog/${course.id}`)).status, 409);
+    assert.equal((await call('DELETE', `/api/talent-certifications/${created.body.record.id}`)).status, 200);
+    assert.equal((await call('DELETE', `/api/talents/${talent.id}`)).status, 200);
+  });
+
+  test('training strategies keep one row per year with validated line items', async () => {
+    const created = await call('POST', '/api/training-strategies', {
+      year: '2031', title: 'Estrategia ficticia',
+      businessCase: [{ concept: 'Objetivo', detail: 'Detalle' }, { concept: '', detail: '' }],
+      investmentLines: [{ line: 'Línea A', priority: 'Alta', unitPrice: '200', vouchers: 3 }],
+      categoryTargets: [{ category: 'Foundation', target: '10' }],
+      strategicAxes: [{ axis: 'Eje', decision: 'Decisión' }],
+      conclusions: ['Una', '  '],
+    });
+    assert.equal(created.status, 201);
+    const record = created.body.record;
+    assert.deepEqual(record.businessCase, [{ concept: 'Objetivo', detail: 'Detalle' }], 'empty rows are dropped');
+    assert.deepEqual(record.investmentLines, [{ line: 'Línea A', priority: 'Alta', unitPrice: 200, vouchers: 3 }]);
+    assert.deepEqual(record.categoryTargets, [{ category: 'Foundation', target: 10 }]);
+    assert.deepEqual(record.conclusions, ['Una']);
+    const duplicate = await call('POST', '/api/training-strategies', { year: 2031 });
+    assert.equal(duplicate.status, 409);
+    assert.equal(duplicate.body.error.field, 'year');
+    const badLine = await call('PATCH', `/api/training-strategies/${record.id}`, { investmentLines: [{ line: '', unitPrice: 5 }] });
+    assert.equal(badLine.status, 400);
+    assert.equal(badLine.body.error.field, 'investmentLines');
+    const badNumber = await call('PATCH', `/api/training-strategies/${record.id}`, { investmentLines: [{ line: 'X', unitPrice: 'mucho' }] });
+    assert.equal(badNumber.status, 400);
+    const updated = await call('PATCH', `/api/training-strategies/${record.id}`, { investmentNote: 'Nota nueva' });
+    assert.equal(updated.body.record.investmentNote, 'Nota nueva');
+    assert.deepEqual(updated.body.record.investmentLines, record.investmentLines);
+    assert.equal((await call('DELETE', `/api/training-strategies/${record.id}`)).status, 200);
+  });
+
   test('projects CRUD keeps testing scope as a list and only accepts http(s) URLs', async () => {
     const missing = await call('POST', '/api/projects', { version: '1' });
     assert.equal(missing.body.error.field, 'applicationName');

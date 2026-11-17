@@ -928,3 +928,78 @@ a.button { text-decoration: none; }
   .ops-filters { padding: 0 13px 12px; }
   .row-order-note { margin: 0 13px 10px; }
 }
+
+/* ---------------------------------------------------------------------------
+   People > Formación: catálogo, certificaciones x talento, estrategia
+   --------------------------------------------------------------------------- */
+.ops-clamp { display: -webkit-box; max-width: 320px; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.ops-checkbox-field { justify-content: flex-end; }
+.ops-checkbox-field .ops-check { min-height: 38px; font-weight: 600; }
+.ops-view-switch { display: inline-flex; gap: 4px; }
+.ops-view-switch .button.active { border-color: #1268d5; background: #edf5ff; color: #1268d5; }
+.cert-matrix th.cert-group { text-align: center; background: #f4f7fb; color: #44536a; font-size: 12px; }
+.cert-matrix th.cert-column { min-width: 92px; max-width: 140px; white-space: normal; font-size: 12px; line-height: 1.25; vertical-align: bottom; }
+.cert-matrix th[scope="row"] small.cert-recommendation { display: block; margin-top: 3px; color: #8390a1; font-size: 11px; font-weight: 500; }
+.cert-cell { min-width: 34px; min-height: 30px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 2px 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-size: 15px; line-height: 1; cursor: pointer; }
+.cert-cell small { color: #7f8997; font-size: 10px; }
+.cert-cell:hover, .cert-cell:focus-visible { border-color: #bdd3ee; background: #f4f8fd; }
+.cert-cell:focus-visible { outline: 2px solid #1268d5; outline-offset: 1px; }
+.cert-cell.empty { color: #c3cad4; }
+.cert-cell.pending { background: #f4f6f9; }
+.cert-cell.expired { background: #fff0e7; color: #c27447; }
+.strategy-toolbar-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.strategy-dashboard { display: grid; gap: 14px; padding: 0 20px 20px; }
+.strategy-title { margin: 0; color: #1f2d42; font: 700 18px/1.2 'Manrope', sans-serif; }
+.strategy-note { margin: 0; }
+.strategy-metrics { margin-bottom: 0; }
+.strategy-metric { cursor: default; }
+.strategy-metric:hover { background: #fff; border-color: #e2e9f2; }
+.strategy-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.strategy-chart { min-width: 0; margin: 0; padding: 14px; border: 1px solid #e2e9f2; border-radius: 8px; background: #fff; }
+.strategy-chart figcaption { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.strategy-chart figcaption strong { color: #1f2d42; font-size: 15px; }
+.strategy-chart figcaption span { color: #8390a1; font-size: 12px; }
+.strategy-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; padding: 0; list-style: none; color: #44536a; font-size: 12px; }
+.strategy-legend li, .strategy-pie-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.strategy-swatch { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 3px; }
+.strategy-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.strategy-svg text { fill: #657287; font-size: 11px; font-family: inherit; }
+.strategy-svg .strategy-value { fill: #1f2d42; font-weight: 700; }
+.strategy-grid line { stroke: #eef1f5; stroke-width: 1; }
+.strategy-baseline { stroke: #b8c2cf; stroke-width: 1; }
+.strategy-mark path { transition: opacity .15s; }
+.strategy-svg:hover .strategy-mark path, .strategy-svg:hover path.strategy-mark { opacity: .55; }
+.strategy-svg .strategy-mark:hover path, .strategy-svg path.strategy-mark:hover { opacity: 1; }
+.strategy-pie { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr); align-items: center; gap: 14px; }
+.strategy-pie-svg path { stroke: #fff; stroke-width: 2; stroke-linejoin: round; }
+.strategy-pie-legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: #44536a; }
+.strategy-pie-legend strong { margin-left: auto; color: #1f2d42; }
+.strategy-pie-legend small { min-width: 48px; color: #8390a1; text-align: right; }
+.strategy-chart-empty { margin: 30px 0; color: #8390a1; text-align: center; }
+.strategy-chart-data { margin-top: 6px; font-size: 12px; }
+.strategy-chart-data summary { color: #1268d5; cursor: pointer; }
+.strategy-data-table { margin-top: 6px; }
+.strategy-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.strategy-dashboard h4 { margin: 0 0 10px; color: #2b3a52; font-size: 15px; }
+.strategy-conclusions { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: #2d3b51; }
+.strategy-business-case { display: grid; gap: 10px; margin: 0; }
+.strategy-business-case div { padding: 8px 10px; border-left: 3px solid #3577cb; border-radius: 4px; background: #f8fbff; }
+.strategy-business-case dt { color: #1f2d42; font-weight: 700; font-size: 13px; }
+.strategy-business-case dd { margin: 3px 0 0; color: #44536a; font-size: 13px; }
+.strategy-investment-note { margin: 10px 0 0; color: #44536a; font-size: 13px; }
+.strategy-dialog { width: min(860px, calc(100vw - 32px)); }
+.strategy-lines { margin: 14px 0 0; padding: 10px 12px; border: 1px solid #e2e9f2; border-radius: 8px; }
+.strategy-lines legend { padding: 0 6px; color: #2b3a52; font-weight: 700; }
+.strategy-lines ol { display: grid; gap: 8px; margin: 0 0 8px; padding: 0; list-style: none; }
+.strategy-line { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)) auto; gap: 8px; align-items: end; padding-bottom: 8px; border-bottom: 1px dashed #e8ecf2; }
+.strategy-line .wide { grid-column: 1 / -2; }
+.strategy-line-remove { align-self: center; }
+@media (max-width: 900px) {
+  .strategy-charts, .strategy-columns { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .strategy-dashboard { padding: 0 13px 13px; }
+  .strategy-pie { grid-template-columns: minmax(0, 1fr); }
+  .strategy-line { grid-template-columns: minmax(0, 1fr); }
+  .strategy-line .wide { grid-column: auto; }
+}

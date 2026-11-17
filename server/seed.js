@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parseCsvRecords, parseSpanishDate, parseSpanishNumber, parseSpanishPercent } from './csv.js';
 import { withTransaction } from './db.js';
 import { CAREER_LEVELS, normalizeDeliveryTarget, normalizeNaq, parseTestingScope } from '../src/people.js';
+import { CERTIFICATION_STATUSES, matchCourseByName, matchTalentByName } from '../src/training.js';
 
 /**
  * One-time import of the private seed CSVs (content/seed, never committed). Each dataset is
@@ -13,12 +14,22 @@ import { CAREER_LEVELS, normalizeDeliveryTarget, normalizeNaq, parseTestingScope
  * - target table already has rows → nothing imported, the marker is written (user data wins);
  * - otherwise every row is imported in one transaction and the marker is written.
  * The order matters: the training plan links its rows to catalog courses by name.
+ *
+ * JSON datasets (`format: 'json'`) read one object from the file. `merge: true` datasets skip the
+ * "table already has rows" rule: they add only what is missing (matched by name), so they can run
+ * over a catalog the user already edited. The three certification datasets share the JSON file
+ * extracted from the Excel "Catálogo de Certificaciones" (private, like the CSVs).
  */
+export const CERTIFICATIONS_FILE = 'QE-Catálogo de Certificaciones.json';
+
 export const SEED_DATASETS = [
   { key: 'activityCatalog', marker: 'seed_activity_catalog_v1', file: 'QE-Catálogo de actividades por niveles.csv', table: 'activity_catalog', importRecords: importActivityCatalog },
   { key: 'trainingCatalog', marker: 'seed_training_catalog_v1', file: 'QE-Catálogo de Formación.csv', table: 'training_catalog', importRecords: importTrainingCatalog },
   { key: 'trainingPlan', marker: 'seed_training_plan_v1', file: 'QE-Plan de Formación.csv', table: 'training_plan', importRecords: importTrainingPlan },
   { key: 'projects', marker: 'seed_projects_v1', file: 'QE - NAQ Application Portfolio.csv', table: 'projects', importRecords: importProjects },
+  { key: 'certificationCatalog', marker: 'seed_certification_catalog_v1', file: CERTIFICATIONS_FILE, format: 'json', merge: true, table: 'training_catalog', importRecords: importCertificationCatalog },
+  { key: 'talentCertifications', marker: 'seed_talent_certifications_v1', file: CERTIFICATIONS_FILE, format: 'json', merge: true, table: 'talent_certifications', importRecords: importTalentCertifications },
+  { key: 'trainingStrategies', marker: 'seed_training_strategies_v1', file: CERTIFICATIONS_FILE, format: 'json', merge: true, table: 'training_strategies', importRecords: importTrainingStrategies },
 ];
 
 const nfc = (value) => String(value ?? '').normalize('NFC');
@@ -106,6 +117,100 @@ function importTrainingPlan(db, records, now) {
   return count;
 }
 
+const list = (value) => (Array.isArray(value) ? value : []);
+const cleanText = (value, max = 4000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+const finiteOrNull = (value) => (value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value));
+
+/**
+ * "06. Certif. Complementarias": adds every certification missing from the catalog (category
+ * "Extras"). An entry already in the catalog (same name, same name without its "(CODE)", or same
+ * code) is not duplicated: only its empty "Descripción" and "Precio aprox" are filled.
+ */
+function importCertificationCatalog(db, data, now) {
+  const courses = db.prepare('SELECT id, name, description, approx_price FROM training_catalog ORDER BY created_at, rowid').all();
+  const insert = db.prepare(`INSERT INTO training_catalog (id, name, family, istqb_category, types, provider, level, estimated_hours, url, validity_months,
+      description, approx_price, no_expiry, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, '', NULL, ?, NULL, ?, ?, 0, ?, ?)`);
+  const fill = db.prepare(`UPDATE training_catalog SET description = CASE WHEN description = '' THEN ? ELSE description END,
+      approx_price = COALESCE(approx_price, ?), updated_at = ? WHERE id = ?`);
+  let count = 0;
+  for (const item of list(data?.catalogExtras)) {
+    const name = cleanText(item?.name, 200);
+    if (!name) continue;
+    const description = cleanText(item.description);
+    const price = finiteOrNull(item.approxPrice);
+    const existing = matchCourseByName(name, courses);
+    if (existing) {
+      const fillsDescription = (existing.description || '') === '' && description !== '';
+      const fillsPrice = (existing.approx_price === null || existing.approx_price === undefined) && price !== null;
+      if (fillsDescription || fillsPrice) {
+        fill.run(description, price, now, existing.id);
+        if (fillsDescription) existing.description = description;
+        if (fillsPrice) existing.approx_price = price;
+        count += 1;
+      }
+      continue;
+    }
+    const id = randomUUID();
+    const url = /^https?:\/\//.test(String(item.url ?? '')) ? cleanText(item.url, 2000) : '';
+    insert.run(id, name, cleanText(item.family, 120), cleanText(item.istqbCategory, 120) || 'Extras', cleanText(item.types, 120),
+      cleanText(item.provider, 120), url, description, price, now, now);
+    courses.push({ id, name, description, approx_price: price });
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * "05. Matriz Certificaciones": one talent certification per row. Talents are matched by name in
+ * any order and without accents (never created); certifications by catalog name. Rows whose
+ * talent or certification is not found, and pairs that already exist, are skipped; the skipped
+ * count is logged (never the names).
+ */
+function importTalentCertifications(db, data, now, logger) {
+  const talents = db.prepare('SELECT id, name FROM talents').all();
+  const courses = db.prepare('SELECT id, name FROM training_catalog ORDER BY created_at, rowid').all();
+  const exists = db.prepare('SELECT id FROM talent_certifications WHERE talent_id = ? AND course_id = ?');
+  const insert = db.prepare(`INSERT INTO talent_certifications (id, talent_id, course_id, status, obtained_date, obtained_year, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, '', ?, '', ?, ?)`);
+  let count = 0;
+  let unmatched = 0;
+  for (const item of list(data?.talentCertifications)) {
+    const talent = matchTalentByName(item?.person, talents);
+    const course = matchCourseByName(item?.certification, courses);
+    if (!talent || !course) { unmatched += 1; continue; }
+    if (exists.get(talent.id, course.id)) continue;
+    const status = CERTIFICATION_STATUSES.find((value) => value.toLowerCase() === cleanText(item.status).toLowerCase()) || CERTIFICATION_STATUSES[0];
+    const year = finiteOrNull(item.year);
+    insert.run(randomUUID(), talent.id, course.id, status, year !== null && Number.isInteger(year) ? year : null, now, now);
+    count += 1;
+  }
+  if (unmatched > 0) logger.log?.(`[seed] ${unmatched} certification row(s) skipped: talent or certification not found.`);
+  return count;
+}
+
+/** "02. Business Case" / "03. Plan Inversión" / "01. Dashboard": one strategy per year not yet stored. */
+function importTrainingStrategies(db, data, now) {
+  const exists = db.prepare('SELECT id FROM training_strategies WHERE year = ?');
+  const insert = db.prepare(`INSERT INTO training_strategies (id, year, title, business_case, investment_lines, investment_note, category_targets,
+      strategic_axes, conclusions, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  let count = 0;
+  for (const item of list(data?.strategies)) {
+    const year = finiteOrNull(item?.year);
+    if (year === null || !Number.isInteger(year) || exists.get(year)) continue;
+    insert.run(randomUUID(), year, cleanText(item.title, 200),
+      JSON.stringify(list(item.businessCase).map((entry) => ({ concept: cleanText(entry?.concept, 200), detail: cleanText(entry?.detail) }))),
+      JSON.stringify(list(item.investmentLines).map((entry) => ({ line: cleanText(entry?.line, 200), priority: cleanText(entry?.priority, 120), unitPrice: finiteOrNull(entry?.unitPrice), vouchers: finiteOrNull(entry?.vouchers) }))),
+      cleanText(item.investmentNote),
+      JSON.stringify(list(item.categoryTargets).map((entry) => ({ category: cleanText(entry?.category, 120), target: finiteOrNull(entry?.target) }))),
+      JSON.stringify(list(item.strategicAxes).map((entry) => ({ axis: cleanText(entry?.axis, 200), decision: cleanText(entry?.decision, 500) }))),
+      JSON.stringify(list(item.conclusions).map((entry) => cleanText(entry, 1000)).filter(Boolean)),
+      now, now);
+    count += 1;
+  }
+  return count;
+}
+
 function importProjects(db, records, now) {
   const insert = db.prepare(`INSERT INTO projects (id, code, application_name, version, client, naq, project_type, delivery_target, testing_scope,
       qa_service_type, phase, risk_level, automation, status, project_url, qa_owner, qa_entry_date, target_release_date, comments,
@@ -150,12 +255,13 @@ export function seedFromContent(db, seedDir, { logger = console, now = new Date(
     }
     try {
       summary[dataset.key] = withTransaction(db, () => {
-        const existing = Number(db.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}`).get().count);
+        const existing = dataset.merge ? 0 : Number(db.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}`).get().count);
         if (existing > 0) {
           writeMarker.run(dataset.marker, timestamp);
           return { status: 'table_not_empty', count: 0 };
         }
-        const count = dataset.importRecords(db, readRecords(filePath), timestamp);
+        const records = dataset.format === 'json' ? JSON.parse(readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '')) : readRecords(filePath);
+        const count = dataset.importRecords(db, records, timestamp, logger);
         writeMarker.run(dataset.marker, timestamp);
         return { status: 'imported', count };
       });

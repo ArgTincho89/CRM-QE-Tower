@@ -95,6 +95,8 @@ export const DEFAULT_PEOPLE_TAB = PEOPLE_TABS[0].id;
 export const TRAINING_TABS = [
   { id: 'trainingCatalog', label: 'Catálogo de formación' },
   { id: 'trainingPlan', label: 'Plan de formación' },
+  { id: 'talentCertifications', label: 'Certificaciones x talento' },
+  { id: 'trainingStrategy', label: 'Estrategia de formación' },
 ];
 export const DEFAULT_TRAINING_TAB = TRAINING_TABS[0].id;
 

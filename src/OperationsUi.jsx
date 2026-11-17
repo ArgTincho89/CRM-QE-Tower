@@ -106,8 +106,10 @@ function MultiCheckField({ legend, options, selected, onChange, form, field, hin
 
 /**
  * Create/edit dialog generated from `fields`: `{ id, label, type, options?, required?, wide?, hint?,
- * visible?(values), compute?(values), onChange?(value, values) → patch }`. `options` may be a
- * function of the current values. Types: text, textarea, number, date, url, select, combo (free
+ * visible?(values), disabled?(values), compute?(values), onChange?(value, values) → patch }`.
+ * `options` may be a function of the current values; select options with a `group` render inside
+ * <optgroup>s (in the order given). Types: text, textarea, number, date, url, checkbox (boolean),
+ * select, combo (free
  * text with suggestions), readonly, checklist, links (Workspace links editor), multicheck (ids from fixed options) and multiselect (the
  * same ids through an accessible dropdown with search).
  * `validate(values)` returns field errors; server errors with a `field` are mapped back too.
@@ -142,9 +144,20 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
   };
   const optionsOf = (field) => (typeof field.options === 'function' ? field.options(values) : field.options) || [];
   const renderControl = (field) => {
-    const common = { value: values[field.id] ?? '', onChange: (event) => setValue(field, event.target.value), required: field.required, ...fieldErrors.fieldProps(field.id) };
+    const disabled = field.disabled ? Boolean(field.disabled(values)) : undefined;
+    const common = { value: values[field.id] ?? '', onChange: (event) => setValue(field, event.target.value), required: field.required, disabled, ...fieldErrors.fieldProps(field.id) };
     if (field.type === 'textarea') return <textarea rows="3" {...common} />;
-    if (field.type === 'select') return <select {...common}><option value="">{field.placeholder || 'Sin seleccionar'}</option>{optionsOf(field).map((option) => <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>)}</select>;
+    if (field.type === 'select') {
+      const renderOption = (option) => <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>;
+      const options = optionsOf(field);
+      const groups = [...new Set(options.map((option) => (typeof option === 'object' ? option.group : undefined)).filter(Boolean))];
+      return <select {...common}><option value="">{field.placeholder || 'Sin seleccionar'}</option>
+        {groups.length === 0
+          ? options.map(renderOption)
+          : <>{options.filter((option) => typeof option !== 'object' || !option.group).map(renderOption)}
+            {groups.map((group) => <optgroup key={group} label={group}>{options.filter((option) => typeof option === 'object' && option.group === group).map(renderOption)}</optgroup>)}</>}
+      </select>;
+    }
     if (field.type === 'combo') {
       const listId = `${baseId}-${field.id}-options`;
       return <><input {...common} list={listId} autoComplete="off" /><datalist id={listId}>{(field.options || []).map((option) => <option key={option} value={option} />)}</datalist></>;
@@ -162,6 +175,7 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
           if (field.type === 'checklist') return <ChecklistField key={field.id} legend={field.label} options={field.options || []} selected={values[field.id] || []} onChange={(next) => setValue(field, next)} />;
           if (field.type === 'links') return <div key={field.id} className="form-field wide"><WorkspaceLinksEditor links={values[field.id] || []} onChange={(next) => setValue(field, next)} disabled={saving} legend={field.label} /></div>;
           if (field.type === 'heading') return <h3 key={field.id} className="form-section-title">{field.label}</h3>;
+          if (field.type === 'checkbox') return <div key={field.id} className={`form-field ops-checkbox-field${field.wide ? ' wide' : ''}`}><label className="ops-check"><input type="checkbox" checked={Boolean(values[field.id])} onChange={(event) => setValue(field, event.target.checked)} disabled={saving} /> {field.label}</label>{field.hint && <span className="field-hint">{field.hint}</span>}</div>;
           if (field.type === 'multiselect') {
             return <MultiSelect key={field.id} className={`form-field wide ops-multiselect${field.required ? ' required' : ''}`} legend={field.label} hint={field.hint}
               options={optionsOf(field).map((option) => ({ id: optionValue(option), name: optionLabel(option), active: typeof option === 'object' ? option.active : undefined }))}

@@ -257,7 +257,7 @@ export const ASSIGNMENT_FORM_FIELDS = ['talentId', 'towerId', 'lobId', 'clientId
 export const ACTIVITY_FORM_FIELDS = ['name', 'category', ...CAREER_LEVELS.map((level) => level.toLowerCase())];
 export const PERFORMANCE_FORM_FIELDS = ['talentId', 'year', 'objective', 'status', 'linkTitle', 'linkUrl', 'notes'];
 export const PERFORMANCE_MAX_OBJECTIVES = 50;
-export const COURSE_FORM_FIELDS = ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'estimatedHours', 'url', 'validityMonths'];
+export const COURSE_FORM_FIELDS = ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'estimatedHours', 'url', 'validityMonths', 'noExpiry', 'approxPrice', 'description'];
 export const PLAN_FORM_FIELDS = ['talentId', 'task', 'courseId', 'courseName', 'family', 'estimatedHours', 'dedicatedHours', 'progress', 'status', 'startDate', 'plannedEndDate', 'actualEndDate', 'evidence', 'nextStep', 'expiryDate'];
 export const PROJECT_FORM_FIELDS = ['code', 'applicationName', 'version', 'client', 'naq', 'projectType', 'deliveryTarget', 'testingScope', 'qaServiceType', 'phase', 'riskLevel', 'automation', 'status', 'projectUrl', 'qaOwner', 'qaEntryDate', 'targetReleaseDate', 'createdDate', 'attachments', 'comments'];
 
@@ -384,9 +384,14 @@ export function validateCourseForm(form) {
   const hours = numberError(form.estimatedHours, { min: 0, max: 100000, label: 'las horas estimadas' });
   if (hours) errors.estimatedHours = hours;
   if (!isBlank(form.url) && !safeExternalUrl(form.url)) errors.url = 'El enlace debe empezar por http:// o https://.';
-  const validity = numberError(form.validityMonths, { min: 0, max: 600, label: 'la vigencia en meses' });
-  if (validity) errors.validityMonths = validity;
-  else if (!isBlank(form.validityMonths) && !Number.isInteger(toNumber(form.validityMonths))) errors.validityMonths = 'La vigencia debe ser un número entero de meses.';
+  // "No expira" disables (and clears) the validity, so it is not validated then.
+  if (!form.noExpiry) {
+    const validity = numberError(form.validityMonths, { min: 0, max: 600, label: 'la vigencia en meses' });
+    if (validity) errors.validityMonths = validity;
+    else if (!isBlank(form.validityMonths) && !Number.isInteger(toNumber(form.validityMonths))) errors.validityMonths = 'La vigencia debe ser un número entero de meses.';
+  }
+  const price = numberError(form.approxPrice, { min: 0, max: 10000000, label: 'el precio aproximado' });
+  if (price) errors.approxPrice = price;
   return errors;
 }
 

@@ -30,11 +30,31 @@ const PROJECTS_CSV = csv([
   ['7', 'App Ficticia', '1.0', 'Cliente Ficticio', 'High', 'Nuevo desarrollo', 'Integrated', '["Functional","API"]', 'Full QA', 'Win', 'High', 'In Progress', 'In Progress', 'https://example.com/p', 'Owner Ficticio', '03/08/2026', '30/09/2026', '', '01/08/2026 10:30', '0'],
 ]);
 
+const CERTIFICATIONS_JSON = JSON.stringify({
+  catalogExtras: [
+    { name: 'Curso Ficticio A (CF-A)', istqbCategory: 'Extras', description: 'Descripción ficticia', approxPrice: 99 },
+    { name: 'Cert Extra Ficticia (EX-1)', family: 'IA', istqbCategory: 'Extras', types: 'Certificación oficial', provider: 'Proveedor Y', description: 'Extra ficticia', approxPrice: 165, url: 'https://example.com/x' },
+  ],
+  talentCertifications: [
+    { person: 'Prueba Ana', certification: 'Curso Ficticio A', category: 'Foundation', status: 'Obtenida', year: 2026 },
+    { person: 'Beto Ficticio Segundo', certification: 'Cert Extra Ficticia', category: 'Extras', status: 'Pendiente', year: null },
+    { person: 'Persona Inexistente', certification: 'Curso Ficticio A', category: 'Foundation', status: 'Obtenida' },
+  ],
+  strategies: [{
+    year: 2026, title: 'Estrategia ficticia', businessCase: [{ concept: 'Objetivo', detail: 'Detalle' }],
+    investmentLines: [{ line: 'Línea A', priority: 'Alta', unitPrice: 200, vouchers: 3 }], investmentNote: 'Nota',
+    categoryTargets: [{ category: 'Foundation', target: 5 }], strategicAxes: [{ axis: 'Eje', decision: 'Decisión' }], conclusions: ['Conclusión'],
+  }],
+});
+
 const FILES = {
   activityCatalog: ACTIVITY_CSV,
   trainingCatalog: CATALOG_CSV,
   trainingPlan: PLAN_CSV,
   projects: PROJECTS_CSV,
+  certificationCatalog: CERTIFICATIONS_JSON,
+  talentCertifications: CERTIFICATIONS_JSON,
+  trainingStrategies: CERTIFICATIONS_JSON,
 };
 
 const silent = { log: () => {}, error: () => {} };
@@ -62,9 +82,10 @@ describe('seedFromContent', () => {
     const summary = seedFromContent(temp.db, seedDir, { logger: silent });
     assert.deepEqual(Object.fromEntries(Object.entries(summary).map(([key, value]) => [key, value.status])), {
       activityCatalog: 'imported', trainingCatalog: 'imported', trainingPlan: 'imported', projects: 'imported',
+      certificationCatalog: 'imported', talentCertifications: 'imported', trainingStrategies: 'imported',
     });
     assert.equal(count(temp.db, 'activity_catalog'), 2);
-    assert.equal(count(temp.db, 'training_catalog'), 2);
+    assert.equal(count(temp.db, 'training_catalog'), 3);
     assert.equal(count(temp.db, 'training_plan'), 3);
     assert.equal(count(temp.db, 'projects'), 1);
 
@@ -103,6 +124,45 @@ describe('seedFromContent', () => {
     assert.equal(freeText.progress, 131);
     assert.equal(freeText.dedicated_hours, 10.5);
     assert.equal(freeText.planned_end_date, '2026-09-30');
+  });
+
+  test('certification datasets merge into the catalog, match talents by name and never create talents', () => {
+    writeAll();
+    const logs = [];
+    seedFromContent(temp.db, seedDir, { logger: { log: (message) => logs.push(message), error: () => {} } });
+    const existing = temp.db.prepare("SELECT * FROM training_catalog WHERE name = 'Curso Ficticio A'").get();
+    assert.equal(existing.description, 'Descripción ficticia', 'an existing entry gets its empty description');
+    assert.equal(existing.approx_price, 99);
+    assert.equal(existing.istqb_category, 'Foundation', 'other values of an existing entry are kept');
+    const extra = temp.db.prepare("SELECT * FROM training_catalog WHERE name = 'Cert Extra Ficticia (EX-1)'").get();
+    assert.equal(extra.istqb_category, 'Extras');
+    assert.equal(extra.approx_price, 165);
+    assert.equal(extra.url, 'https://example.com/x');
+
+    assert.equal(count(temp.db, 'talents'), 2, 'unmatched people are not created');
+    const rows = temp.db.prepare(`SELECT talents.name AS talent, training_catalog.name AS course, status, obtained_year FROM talent_certifications
+      JOIN talents ON talents.id = talent_id JOIN training_catalog ON training_catalog.id = course_id ORDER BY talents.name`).all();
+    assert.deepEqual(rows.map((row) => ({ ...row })), [
+      { talent: 'Ana Prueba', course: 'Curso Ficticio A', status: 'Obtenida', obtained_year: 2026 },
+      { talent: 'Beto Ficticio', course: 'Cert Extra Ficticia (EX-1)', status: 'Pendiente', obtained_year: null },
+    ]);
+    assert.ok(logs.some((message) => /1 certification row\(s\) skipped/.test(message)));
+    assert.ok(logs.every((message) => !message.includes('Inexistente')), 'names are never logged');
+
+    const strategy = temp.db.prepare('SELECT * FROM training_strategies').get();
+    assert.equal(strategy.year, 2026);
+    assert.deepEqual(JSON.parse(strategy.investment_lines), [{ line: 'Línea A', priority: 'Alta', unitPrice: 200, vouchers: 3 }]);
+  });
+
+  test('the certification catalog merges even when the catalog already has rows', () => {
+    writeAll(['certificationCatalog']);
+    const now = new Date().toISOString();
+    temp.db.prepare('INSERT INTO training_catalog (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run('own', 'Cert Extra Ficticia', 'Mía', now, now);
+    assert.equal(seedFromContent(temp.db, seedDir, { logger: silent }).certificationCatalog.status, 'imported');
+    assert.equal(count(temp.db, 'training_catalog'), 2, 'the matching entry is not duplicated');
+    const own = temp.db.prepare("SELECT * FROM training_catalog WHERE id = 'own'").get();
+    assert.equal(own.description, 'Mía', 'a filled description is never overwritten');
+    assert.equal(own.approx_price, 165, 'an empty price is filled');
   });
 
   test('is idempotent: a second run imports nothing', () => {

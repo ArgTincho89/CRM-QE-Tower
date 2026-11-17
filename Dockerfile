@@ -29,6 +29,7 @@ COPY --from=build /app/src/mentions.js ./src/mentions.js
 COPY --from=build /app/src/notifications.js ./src/notifications.js
 COPY --from=build /app/src/people.js ./src/people.js
 COPY --from=build /app/src/recordActions.js ./src/recordActions.js
+COPY --from=build /app/src/training.js ./src/training.js
 
 EXPOSE 8080
 CMD ["node", "server/index.js"]

@@ -7,6 +7,7 @@ import {
   CAREER_LEVELS, DEFAULT_DELIVERY_PROJECT_STATUS, DEFAULT_PERFORMANCE_STATUS, DELIVERY_PROJECT_STATUSES, PERFORMANCE_STATUSES, TALENT_CATEGORIES, TALENT_PROFILES,
   normalizeDeliveryTarget, normalizeNaq, parseTalentProfiles, parseTestingScope,
 } from '../src/people.js';
+import { CERTIFICATION_STATUSES, DEFAULT_CERTIFICATION_STATUS } from '../src/training.js';
 import { deleteWorkspaceLinks, loadWorkspaceLinks, loadWorkspaceLinksByEntity, parseWorkspaceLinks, replaceWorkspaceLinks, sameWorkspaceLinks } from './workspaceLinks.js';
 
 /**
@@ -178,6 +179,74 @@ function choiceList(key, label, allowed) {
   };
 }
 
+/** Boolean checkbox stored as 0/1 (true, 'true', 1 and '1' are true; empty is false). */
+function flag(key, label) {
+  return {
+    key,
+    parse(value) {
+      if (value === undefined || value === null || value === '' || value === false || value === 0 || value === '0' || value === 'false') return 0;
+      if (value === true || value === 1 || value === '1' || value === 'true') return 1;
+      throw validationError(`El campo «${label}» debe ser verdadero o falso.`, key);
+    },
+  };
+}
+
+/**
+ * JSON array of objects with fixed keys, stored as text. `item` maps each key to 'text' or
+ * 'number' (optionally `{ type, max, required }`); unknown keys are dropped and items whose values
+ * are all empty are skipped. With `item = 'text'` the array holds plain strings.
+ */
+function jsonList(key, label, item, { maxItems = 50 } = {}) {
+  const fail = (message) => { throw validationError(`${label}: ${message}`, key); };
+  const parseValue = (spec, value, name, index) => {
+    const { type = spec, max = 4000, required = false } = typeof spec === 'object' ? spec : {};
+    if (type === 'number') {
+      if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+        if (required) fail(`la fila ${index + 1} necesita «${name}».`);
+        return null;
+      }
+      const parsed = typeof value === 'number' ? value : parseSpanishNumber(String(value));
+      if (parsed === null || !Number.isFinite(parsed) || parsed < 0 || parsed > 100000000) fail(`«${name}» de la fila ${index + 1} debe ser un número positivo.`);
+      return parsed;
+    }
+    if (value !== undefined && value !== null && typeof value !== 'string' && typeof value !== 'number') fail(`«${name}» de la fila ${index + 1} debe ser texto.`);
+    const trimmed = String(value ?? '').trim();
+    if (trimmed.length > max) fail(`«${name}» de la fila ${index + 1} no puede superar los ${max} caracteres.`);
+    if (required && trimmed === '') fail(`la fila ${index + 1} necesita «${name}».`);
+    return trimmed;
+  };
+  return {
+    key,
+    parse(value) {
+      if (value === undefined || value === null || value === '') return '[]';
+      if (!Array.isArray(value)) fail('debe ser una lista.');
+      if (value.length > maxItems) fail(`como máximo ${maxItems} filas.`);
+      const rows = [];
+      value.forEach((entry, index) => {
+        if (item === 'text') {
+          const text = parseValue('text', entry, 'texto', index);
+          if (text) rows.push(text);
+          return;
+        }
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail(`la fila ${index + 1} no es válida.`);
+        const empty = Object.keys(item).every((name) => entry[name] === undefined || entry[name] === null || String(entry[name]).trim() === '');
+        if (empty) return;
+        rows.push(Object.fromEntries(Object.entries(item).map(([name, spec]) => [name, parseValue(spec, entry[name], name, index)])));
+      });
+      return JSON.stringify(rows);
+    },
+  };
+}
+
+const parseJsonArray = (value) => {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
 /** Next value of an integer column (max + 1), for append-at-the-end ordering and numeric ids. */
 function nextInteger(db, table, column) {
   return Number(db.prepare(`SELECT COALESCE(MAX(CAST(${column} AS INTEGER)), 0) AS value FROM ${table}`).get().value) + 1;
@@ -270,6 +339,7 @@ const RESOURCES = {
       ['SELECT COUNT(*) AS count FROM training_plan WHERE talent_id = $id', 'fila del plan de formación', 'filas del plan de formación'],
       ['SELECT COUNT(*) AS count FROM performance_reviews WHERE talent_id = $id', 'objetivo de performance review', 'objetivos de performance review'],
       ['SELECT COUNT(*) AS count FROM delivery_projects WHERE talent_id = $id', 'proyecto', 'proyectos'],
+      ['SELECT COUNT(*) AS count FROM talent_certifications WHERE talent_id = $id', 'certificación', 'certificaciones'],
     ],
     insertDefaults: (db) => ({ sort_order: nextInteger(db, 'talents', 'sort_order') }),
     describe: (row) => row.name,
@@ -405,11 +475,82 @@ const RESOURCES = {
       ['estimated_hours', number('estimatedHours', 'Horas estimadas')],
       ['url', url('url', 'Enlace')],
       ['validity_months', number('validityMonths', 'Vigencia/Meses', { max: 600, integer: true })],
+      ['no_expiry', flag('noExpiry', 'No expira')],
+      ['description', text('description', 'Descripción', { max: 4000 })],
+      ['approx_price', number('approxPrice', 'Precio aprox', { max: 10000000 })],
     ],
+    /** "No expira" wins over the validity: a certification that never expires has no months. */
+    validate(db, values) {
+      if (values.no_expiry) values.validity_months = null;
+    },
     deleteChecks: [
       ['SELECT COUNT(*) AS count FROM training_plan WHERE course_id = $id', 'fila del plan de formación', 'filas del plan de formación'],
+      ['SELECT COUNT(*) AS count FROM talent_certifications WHERE course_id = $id', 'certificación de talento', 'certificaciones de talento'],
     ],
     describe: (row) => row.name,
+    map: (record) => ({ ...record, noExpiry: Boolean(record.noExpiry) }),
+  },
+  'talent-certifications': {
+    table: 'talent_certifications',
+    entityType: 'talent_certification',
+    subject: 'la certificación',
+    notFound: 'La certificación del talento no existe.',
+    select: `SELECT talent_certifications.*, talents.name AS talent_name, training_catalog.name AS course_name,
+        training_catalog.istqb_category AS course_category, training_catalog.validity_months AS validity_months,
+        training_catalog.no_expiry AS no_expiry
+      FROM talent_certifications JOIN talents ON talents.id = talent_certifications.talent_id
+      JOIN training_catalog ON training_catalog.id = talent_certifications.course_id`,
+    order: 'ORDER BY talents.name COLLATE NOCASE, training_catalog.name COLLATE NOCASE',
+    fields: [
+      ['talent_id', reference('talentId', 'Talento', 'talents', { required: true })],
+      ['course_id', reference('courseId', 'Certificación', 'training_catalog', { required: true })],
+      ['status', oneOf('status', 'Estado', CERTIFICATION_STATUSES)],
+      ['obtained_date', date('obtainedDate', 'Fecha de obtención')],
+      ['obtained_year', number('obtainedYear', 'Año', { min: 2000, max: 2100, integer: true })],
+      ['notes', text('notes', 'Notas', { max: 2000 })],
+    ],
+    validate(db, values, id) {
+      if (!values.status) values.status = DEFAULT_CERTIFICATION_STATUS;
+      // The date's year wins over a separately typed year.
+      if (values.obtained_date) values.obtained_year = Number(values.obtained_date.slice(0, 4));
+      const found = db.prepare('SELECT id FROM talent_certifications WHERE talent_id = ? AND course_id = ?').get(values.talent_id, values.course_id);
+      if (found && found.id !== id) throw new HttpError(409, 'duplicate_record', 'Este talento ya tiene registrada esa certificación.', 'courseId');
+    },
+    deleteChecks: [],
+    describe: (row) => `${row.talent_name} · ${row.course_name}`,
+    map: (record) => ({ ...record, noExpiry: Boolean(record.noExpiry) }),
+  },
+  'training-strategies': {
+    table: 'training_strategies',
+    entityType: 'training_strategy',
+    subject: 'la estrategia',
+    notFound: 'La estrategia de formación no existe.',
+    select: 'SELECT training_strategies.* FROM training_strategies',
+    order: 'ORDER BY training_strategies.year DESC',
+    fields: [
+      ['year', number('year', 'Año', { min: 2000, max: 2100, required: true, integer: true })],
+      ['title', text('title', 'Título', { max: 200 })],
+      ['business_case', jsonList('businessCase', 'Business case', { concept: { type: 'text', max: 200, required: true }, detail: { type: 'text', max: 4000 } })],
+      ['investment_lines', jsonList('investmentLines', 'Plan de inversión', { line: { type: 'text', max: 200, required: true }, priority: { type: 'text', max: 120 }, unitPrice: 'number', vouchers: 'number' })],
+      ['investment_note', text('investmentNote', 'Nota del plan de inversión', { max: 4000 })],
+      ['category_targets', jsonList('categoryTargets', 'Objetivos por categoría', { category: { type: 'text', max: 120, required: true }, target: 'number' })],
+      ['strategic_axes', jsonList('strategicAxes', 'Ejes estratégicos', { axis: { type: 'text', max: 200, required: true }, decision: { type: 'text', max: 500 } })],
+      ['conclusions', jsonList('conclusions', 'Conclusiones', 'text')],
+    ],
+    validate(db, values, id) {
+      const found = db.prepare('SELECT id FROM training_strategies WHERE year = ?').get(values.year);
+      if (found && found.id !== id) throw new HttpError(409, 'duplicate_record', 'Ya existe una estrategia de formación para ese año.', 'year');
+    },
+    deleteChecks: [],
+    describe: (row) => `${row.year}`,
+    map: (record) => ({
+      ...record,
+      businessCase: parseJsonArray(record.businessCase),
+      investmentLines: parseJsonArray(record.investmentLines),
+      categoryTargets: parseJsonArray(record.categoryTargets),
+      strategicAxes: parseJsonArray(record.strategicAxes),
+      conclusions: parseJsonArray(record.conclusions),
+    }),
   },
   'training-plan': {
     table: 'training_plan',
