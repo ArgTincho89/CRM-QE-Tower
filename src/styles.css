@@ -24,7 +24,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .sidebar { width: 270px; position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; flex-direction: column; padding: 23px 14px 13px; background: #fff; border-right: 1px solid #e9edf3; }
 .brand { display: flex; align-items: center; height: 50px; padding-left: 2px; }
 .brand-logo { display: block; width: auto; height: 50px; transform: translateY(-2px); }
-.workspace-label { margin: 35px 0 12px 10px; color: #a0a9b8; font-size: 13px; font-weight: 700; letter-spacing: 1.25px; }
+.workspace-label { margin: 35px 0 12px 10px; color: #a0a9b8; font-size: 14px; font-weight: 600; letter-spacing: 0; }
 .side-nav { display: grid; gap: 4px; min-height: 0; overflow-y: auto; }
 .nav-group { display: grid; gap: 4px; }
 .nav-group-labeled { margin-top: 14px; padding-top: 12px; border-top: 1px solid #edf0f4; }
@@ -447,6 +447,9 @@ button.kpi-card-main:focus-visible { outline: 2px solid #1268d5; outline-offset:
 .user-menu { flex: 0 0 auto; }
 .user-menu small { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-logout { flex: 0 0 auto; height: 34px; }
+/* "Back": walks the in-app history without leaving the application. */
+.back-button { flex: 0 0 auto; height: 34px; }
+.topbar .back-button { margin-right: -6px; }
 @media (max-width: 1200px) {
   .topbar { gap: 12px; }
   .global-search { width: min(300px, 30vw); }
@@ -458,6 +461,11 @@ button.kpi-card-main:focus-visible { outline: 2px solid #1268d5; outline-offset:
 @media (max-width: 620px) {
   .topbar-logout { height: 30px; padding: 0 8px; font-size: 13px; }
   .user-menu small { max-width: 90px; }
+}
+/* Small screens keep the back arrow only, to leave room for the search box. */
+@media (max-width: 760px) {
+  .back-button { width: 34px; padding: 0; }
+  .back-button span { display: none; }
 }
 
 /* Board load states */
@@ -785,6 +793,8 @@ a.nav-item { text-decoration: none; }
 .master-data-tab:focus-visible { outline: 2px solid #1268d5; outline-offset: 2px; }
 
 .resource-page { position: relative; height: calc(100vh - 230px); min-height: 480px; border: 1px solid #e1e6ee; border-radius: 8px; background: #fff; overflow: hidden; }
+.resource-page-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.resource-page-title { color: #48566b; font-size: 14px; font-weight: 600; }
 .resource-frame { display: block; width: 100%; height: 100%; border: 0; opacity: 0; transition: opacity .15s ease; }
 .resource-frame.loaded { opacity: 1; }
 .resource-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: #69768b; font-size: 14px; }

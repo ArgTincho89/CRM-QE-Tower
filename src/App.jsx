@@ -4,6 +4,7 @@ import { initiativeCategories, initiativePriorities, initiativeStages, initiativ
 import { REUSABLE_REASON_LIMIT, contractTypeLabel, formatAiScore, marketScopeLabel, parseAiScore, serviceTypeLabel } from './opportunityFields.js';
 import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
 import { MASTER_DATA_TABS, NAV_GROUPS, RESOURCE_LINKS, RESOURCE_PAGES, resolveNavigationTarget } from './navigation.js';
+import { canNavigateBack, createNavigationEntry, navigationHash, navigationState, parseNavigationHash, parseNavigationState, readNavigationEntry } from './navigationHistory.js';
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
@@ -56,6 +57,12 @@ const pageTitles = {
 
 const APP_NAME = 'QE Operations Centre';
 
+// Screen shown on this load: restored from history.state (a reload), the URL hash (a shared link)
+// or the pipeline, the first entry of a fresh session.
+const INITIAL_NAVIGATION = typeof window === 'undefined'
+  ? createNavigationEntry({})
+  : readNavigationEntry({ state: window.history.state, hash: window.location.hash });
+
 function Icon({ name, size = 18 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
   const shapes = {
@@ -78,6 +85,7 @@ function Icon({ name, size = 18 }) {
     clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
     dots: <><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>,
     arrow: <><path d="M5 12h14M13 6l6 6-6 6"/></>,
+    back: <><path d="M19 12H5M11 18l-6-6 6-6"/></>,
     list: <><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></>,
     table: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16M15 4v16"/></>,
     close: <><path d="m6 6 12 12M18 6 6 18"/></>,
@@ -110,9 +118,11 @@ function App() {
   // "{entityType}:{id}" of the record opened from a mention notification: its dialog scrolls to "Comentarios".
   const [commentsFocus, setCommentsFocus] = useState('');
   const [oppState, setOppState] = useState('loading');
-  const [page, setPage] = useState('pipeline');
+  const [page, setPage] = useState(INITIAL_NAVIGATION.page);
+  // Entries pushed before this one; zero means Back would leave the app.
+  const [navDepth, setNavDepth] = useState(INITIAL_NAVIGATION.depth);
   // Last "Datos Maestros" tab, persisted per browser.
-  const [masterTab, setMasterTab] = useState(() => loadMasterDataTab());
+  const [masterTab, setMasterTab] = useState(() => INITIAL_NAVIGATION.tab || loadMasterDataTab());
   const [query, setQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
   const [towerFilter, setTowerFilter] = useState('all');
@@ -121,7 +131,7 @@ function App() {
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   // The "Gestión" heading collapses the operational items of the sidebar.
   const [operationsCollapsed, setOperationsCollapsed] = useState(false);
-  const [view, setViewState] = useState(() => loadViewMode('pipeline'));
+  const [view, setViewState] = useState(() => INITIAL_NAVIGATION.view || loadViewMode('pipeline'));
   // CRM QE KPI year (a number or ALL_YEARS), persisted per browser; defaults to the current year.
   const [kpiYear, setKpiYearState] = useState(() => loadPipelineYear(new Date().getFullYear()));
   const [opportunityBreakdownOpen, setOpportunityBreakdownOpen] = useState(false);
@@ -312,23 +322,100 @@ function App() {
     saveMasterDataTab(tabId);
   };
 
-  // Former master data page ids (e.g. "clients" from a KPI or report) open their Datos Maestros tab.
+  // Applies one history entry to the screen without touching the browser history.
+  const applyEntry = (entry) => {
+    setPage(entry.page);
+    if (entry.tab) selectMasterTab(entry.tab);
+    if (entry.page === 'pipeline') {
+      setQuery(entry.query || '');
+      if (entry.filters) {
+        setStageFilter(entry.filters.toolbar.stage);
+        setTowerFilter(entry.filters.toolbar.tower);
+        setOwnerFilter(entry.filters.toolbar.owner);
+        setAdvancedFilters(entry.filters.advanced);
+        setAdvancedFiltersOpen(JSON.stringify(entry.filters.advanced) !== JSON.stringify(createDefaultAdvancedFilters()));
+        setArchivedView(false);
+      }
+      if (entry.view) setView(entry.view);
+    }
+    setMobileNav(false);
+  };
+  // The popstate listener outlives every render, so it calls the latest applyEntry.
+  const applyEntryRef = useRef(applyEntry);
+  applyEntryRef.current = applyEntry;
+  const navigateRef = useRef(null);
+  const pageRef = useRef(page);
+  pageRef.current = page;
+
+  // Keeps URL, history.state and screen in sync from the very first load on.
+  useEffect(() => {
+    if (!parseNavigationState(window.history.state)) {
+      window.history.replaceState(navigationState(INITIAL_NAVIGATION), '', navigationHash(INITIAL_NAVIGATION.page));
+    }
+    if (INITIAL_NAVIGATION.filters) applyEntryRef.current(INITIAL_NAVIGATION);
+    const onPopState = (event) => {
+      const entry = parseNavigationState(event.state);
+      // A foreign entry (another site, a hash-only jump) is not ours to apply.
+      if (!entry) return;
+      applyEntryRef.current(entry);
+      setNavDepth(entry.depth);
+    };
+    // A hash typed into the address bar (or a same-page link) opens that page in this tab too.
+    const onHashChange = () => {
+      const target = parseNavigationHash(window.location.hash);
+      if (!target || target === pageRef.current) return;
+      const state = parseNavigationState(window.history.state);
+      // Back/Forward already applied this page through popstate.
+      if (state && state.page === target) return;
+      navigateRef.current?.(target);
+    };
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, []);
+
+  // One in-app navigation is one browser history entry, so Back and Forward restore the previous
+  // screen (page, pipeline view, filters and search) exactly. Former master data page ids (e.g.
+  // "clients" from a KPI or a report) resolve to their new home and view.
   const navigate = (nextPage, { view: requestedView = null, filters = null } = {}) => {
     const target = resolveNavigationTarget(nextPage, filters);
-    setPage(target.page);
-    if (target.tab) selectMasterTab(target.tab);
-    if (target.filters) {
-      setQuery('');
-      setStageFilter(target.filters.toolbar.stage);
-      setTowerFilter(target.filters.toolbar.tower);
-      setOwnerFilter(target.filters.toolbar.owner);
-      setAdvancedFilters(target.filters.advanced);
-      setAdvancedFiltersOpen(JSON.stringify(target.filters.advanced) !== JSON.stringify(createDefaultAdvancedFilters()));
-      setArchivedView(false);
-    }
     const nextView = requestedView || target.view;
-    if (target.page === 'pipeline' && nextView) setView(nextView);
-    setMobileNav(false);
+    const currentFilters = { toolbar: { stage: stageFilter, tower: towerFilter, owner: ownerFilter }, advanced: advancedFilters };
+    // Before leaving, save the current screen as it is, so Back returns to it unchanged.
+    const current = createNavigationEntry({
+      page,
+      view,
+      tab: masterTab,
+      filters: currentFilters,
+      query,
+      depth: navDepth,
+    });
+    window.history.replaceState(navigationState(current), '', navigationHash(current.page));
+    const entry = createNavigationEntry({
+      page: target.page,
+      view: target.page === 'pipeline' ? nextView || view : null,
+      tab: target.tab || (target.page === 'masterData' ? masterTab : null),
+      filters: target.page === 'pipeline' ? target.filters || currentFilters : null,
+      query: target.page === 'pipeline' ? (target.filters ? '' : query) : '',
+      depth: navDepth + 1,
+    });
+    applyEntry(entry);
+    setNavDepth(entry.depth);
+    window.history.pushState(navigationState(entry), '', navigationHash(entry.page));
+  };
+  navigateRef.current = navigate;
+
+  // Visible "Back": only walks in-app history, never out of the application.
+  const goBack = () => {
+    if (canNavigateBack({ depth: navDepth })) window.history.back();
+  };
+
+  const backToResources = () => {
+    if (canNavigateBack({ depth: navDepth })) window.history.back();
+    else navigate('resources');
   };
 
   const reloadOpportunities = () => {
@@ -755,7 +842,11 @@ function App() {
     setNotifications({ items: [], unreadCount: 0 });
     setUsers([]);
     setOppState('loading');
-    setPage('pipeline');
+    // The signed-out screen always reopens on the first page, with a clean history entry.
+    const resetEntry = createNavigationEntry({});
+    setPage(resetEntry.page);
+    setNavDepth(resetEntry.depth);
+    window.history.replaceState(navigationState(resetEntry), '', navigationHash(resetEntry.page));
   };
 
   if (session.status === 'loading') {
@@ -791,7 +882,7 @@ function App() {
       <aside className={`sidebar${mobileNav ? ' sidebar-open' : ''}`} aria-label="Navegación principal">
         <div className="brand"><img className="brand-logo" src="/logo-seidor.jpeg" alt="SEIDOR" /><span className="brand-name">{APP_NAME}</span></div>
         <button type="button" className={`workspace-label workspace-toggle${operationsCollapsed ? '' : ' expanded'}`} onClick={() => setOperationsCollapsed((collapsed) => !collapsed)} aria-expanded={!operationsCollapsed} aria-controls="nav-group-operations">
-          GESTIÓN <Icon name="chevron" size={13} />
+          Gestión <Icon name="chevron" size={13} />
         </button>
         <nav className="side-nav">
           {NAV_GROUPS.map((group, groupIndex) => <div key={group.id} id={`nav-group-${group.id}`} className={`nav-group nav-group-${group.id}${group.label || groupIndex > 0 ? ' nav-group-labeled' : ''}`} role="group" aria-labelledby={group.label ? `nav-group-${group.id}-label` : undefined}>
@@ -812,6 +903,7 @@ function App() {
       <main className="main-area">
         <header className="topbar">
           <button className="mobile-menu icon-button" aria-label="Abrir navegación" onClick={() => setMobileNav(true)}><Icon name="list" /></button>
+          {canNavigateBack({ depth: navDepth }) && <button type="button" className="button button-secondary back-button" onClick={goBack} aria-label="Volver a la vista anterior"><Icon name="back" size={16} /> <span>Back</span></button>}
           <div className="breadcrumbs"><span>SEIDOR</span><Icon name="chevron" size={14} /><strong>{title}</strong></div>
           <label className="global-search"><Icon name="search" size={17} /><span className="sr-only">Buscar en {APP_NAME}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente, oportunidad, ICRM..." /><kbd>⌘ K</kbd></label>
           <NotificationBell notifications={notifications.items} unreadCount={notifications.unreadCount} onOpen={openNotification} onMarkAllRead={markAllRead} />
@@ -879,7 +971,7 @@ function App() {
              : page === 'resources'
               ? <ResourcesPage onNavigate={navigate} />
             : resourcePage
-              ? <ResourcePage key={resourcePage.id} title={resourcePage.label} src={resourcePage.resource} />
+              ? <ResourcePage key={resourcePage.id} title={resourcePage.label} src={resourcePage.resource} onBack={backToResources} />
             : renderSecondaryPage(page)}
           <footer className="main-footer"><span>{APP_NAME} <b>·</b> Herramienta complementaria al CRM corporativo</span><span>Los importes reflejan oportunidades estimadas, no ingresos contratados.</span></footer>
         </div>
@@ -1235,12 +1327,18 @@ function ResourcesPage({ onNavigate }) {
 }
 
 /** An internal document from /resources/, embedded full size with a loading state. */
-function ResourcePage({ title, src }) {
+function ResourcePage({ title, src, onBack }) {
   const [loaded, setLoaded] = useState(false);
-  return <section className="resource-page" aria-busy={!loaded}>
-    {!loaded && <div className="resource-loading" role="status"><span className="resource-spinner" aria-hidden="true" />Cargando documento…</div>}
-    <iframe className={`resource-frame${loaded ? ' loaded' : ''}`} src={src} title={title} onLoad={() => setLoaded(true)} />
-  </section>;
+  return <>
+    <div className="resource-page-bar">
+      <button type="button" className="button button-secondary back-button" onClick={onBack} aria-label="Volver al listado de Recursos"><Icon name="back" size={16} /> <span>Back</span></button>
+      <span className="resource-page-title">{title}</span>
+    </div>
+    <section className="resource-page" aria-busy={!loaded}>
+      {!loaded && <div className="resource-loading" role="status"><span className="resource-spinner" aria-hidden="true" />Cargando documento…</div>}
+      <iframe className={`resource-frame${loaded ? ' loaded' : ''}`} src={src} title={title} onLoad={() => setLoaded(true)} />
+    </section>
+  </>;
 }
 
 function SecondaryPage({ page, opportunities, clients, towers, services, serviceYears, activeServiceYear, onSelectServiceYear, onNewServiceYear, onDeleteServiceYear, lobs, people, initiatives, agreements, query = '', onNavigate, user, onLogout, onEditInitiative, onEditMaster, onDeactivateMaster, onDeleteMaster, onEditAgreement, onDeleteAgreement }) {
