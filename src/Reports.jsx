@@ -7,6 +7,10 @@ import { MISSING_TYPE_BREAKDOWN_ID, availableYears, opportunityTypeBreakdown } f
 import { MISSING_OPPORTUNITY_TYPE_FILTER, OPEN_OUTCOME_FILTER } from './pipelineFilters.js';
 import { computePipelineQe } from './pipelineSummary.js';
 import { monthFilterRange, reportOutcomeColumns, summarizeOpportunityOutcomes } from './reportMetrics.js';
+import { REPORT_TABS } from './navigation.js';
+import { loadReportTab, saveReportTab } from './preferences.js';
+import { TabStrip } from './OperationsUi.jsx';
+import { AgreementsReport, InitiativesReport, PeopleReport, ProjectsReport, TrainingReport } from './CategoryReports.jsx';
 
 const LIVE_PERIOD = 'live';
 const TYPE_COLUMNS = [['tender', 'Pliego'], ['offer', 'Oferta'], ['staffing', 'Staffing'], [MISSING_TYPE_BREAKDOWN_ID, 'Sin tipo']];
@@ -123,10 +127,13 @@ function MonthlyReportView({ entry }) {
 }
 
 /**
- * "Informes": clickable summary metrics, the per-month evolution of a year and the monthly
- * report (stored snapshots plus the live current month), printable on its own.
+ * "Informes", one tab per view: clickable summary metrics, the per-month evolution of a year, the
+ * monthly report (stored snapshots plus the live current month, printable on its own) and the
+ * category summaries (Iniciativas, Acuerdos Marco, People, Formación, Proyectos).
  */
-export default function ReportsPage({ opportunities, initiatives, agreements, towers, currentYear, onNavigate, onUnauthorized }) {
+export default function ReportsPage({ opportunities, initiatives, agreements, towers, clients = [], currentYear, onNavigate, onUnauthorized }) {
+  const [tab, setTab] = useState(() => loadReportTab());
+  const selectTab = (id) => { setTab(id); saveReportTab(id); };
   const [year, setYear] = useState(currentYear);
   const [selectedMonth, setSelectedMonth] = useState('all');
   const [aggregates, setAggregates] = useState({ status: 'loading', data: null });
@@ -183,8 +190,8 @@ export default function ReportsPage({ opportunities, initiatives, agreements, to
   const shownMonths = selectedMonth === 'all' ? months : months.filter((month) => month.period === selectedMonth);
   const totals = aggregates.data?.totals;
 
-  return <div className="reports-page">
-    <section className="report-block no-print" aria-labelledby="report-summary-title">
+  return <TabStrip tabs={REPORT_TABS} active={tab} onSelect={selectTab} label="Informes" className="report-tabs"><div className="reports-page">
+    {tab === 'summary' && <section className="report-block no-print" aria-labelledby="report-summary-title">
       <div className="report-block-heading"><h2 id="report-summary-title">Resumen actual</h2><p>Registros activos del CRM QE. Pulsa una cifra para ver el listado.</p></div>
       <div className="report-metrics">
         <MetricButton label="Oportunidades abiertas" value={outcomes.open} detail="Sin resultado registrado" onClick={pipeline({ outcome: OPEN_OUTCOME_FILTER })} />
@@ -206,9 +213,9 @@ export default function ReportsPage({ opportunities, initiatives, agreements, to
           <div className="bar-chart">{towerRows.map((item) => <button type="button" className="bar-row report-bar-row" key={item.id} onClick={pipeline({ towerId: item.id })} aria-label={`${item.name}: ${item.count} oportunidades. Ver listado`}><span>{item.name}</span><div className="bar-track"><i style={{ width: `${Math.max(5, (item.count / maxTowerCount) * 100)}%` }} /></div><strong>{item.count}</strong></button>)}{towerRows.length === 0 && <p className="empty-state">No hay towers registradas.</p>}</div>
         </div>
       </div>
-    </section>
+    </section>}
 
-    <section className="report-block no-print" aria-labelledby="report-monthly-title">
+    {tab === 'monthly' && <section className="report-block no-print" aria-labelledby="report-monthly-title">
       <div className="report-block-heading">
         <div><h2 id="report-monthly-title">Evolución mensual</h2><p>Oportunidades por fecha de creación; resultados por fecha estimada de cierre. Pulsa una cifra para ver el listado.</p></div>
         <div className="report-controls">
@@ -245,9 +252,9 @@ export default function ReportsPage({ opportunities, initiatives, agreements, to
           </tr></tfoot>}
         </table>
       </div>}
-    </section>
+    </section>}
 
-    <section className="report-block" aria-labelledby="report-snapshot-title">
+    {tab === 'monthlyReport' && <section className="report-block" aria-labelledby="report-snapshot-title">
       <div className="report-block-heading no-print">
         <div><h2 id="report-snapshot-title">Informe mensual</h2><p>El día 1 de cada mes se guarda el informe completo del mes anterior y ya no cambia.</p></div>
         <div className="report-controls">
@@ -257,6 +264,12 @@ export default function ReportsPage({ opportunities, initiatives, agreements, to
       {report.status === 'loading' && <p className="empty-state no-print">Cargando informe…</p>}
       {report.status === 'error' && <p className="empty-state no-print">{report.message}</p>}
       {report.status === 'ready' && <MonthlyReportView entry={report.entry} />}
-    </section>
-  </div>;
+    </section>}
+
+    {tab === 'initiatives' && <InitiativesReport initiatives={initiatives} />}
+    {tab === 'agreements' && <AgreementsReport agreements={agreements} clients={clients} />}
+    {tab === 'people' && <PeopleReport onUnauthorized={onUnauthorized} />}
+    {tab === 'training' && <TrainingReport onUnauthorized={onUnauthorized} />}
+    {tab === 'projects' && <ProjectsReport onUnauthorized={onUnauthorized} />}
+  </div></TabStrip>;
 }

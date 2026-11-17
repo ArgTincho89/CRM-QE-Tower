@@ -106,6 +106,34 @@ export function isTrainingTab(tabId) {
   return TRAINING_TABS.some((tab) => tab.id === tabId);
 }
 
+/** Tabs of the "Proyectos" page, in display order. */
+export const PROJECT_TABS = [
+  { id: 'naqPortfolio', label: 'QE - NAQ Application Portfolio' },
+  { id: 'deliveryProjects', label: 'Proyectos' },
+];
+export const DEFAULT_PROJECT_TAB = PROJECT_TABS[0].id;
+
+export function isProjectTab(tabId) {
+  return PROJECT_TABS.some((tab) => tab.id === tabId);
+}
+
+/** Tabs of the "Informes" page, in display order. */
+export const REPORT_TABS = [
+  { id: 'summary', label: 'Resumen actual' },
+  { id: 'monthly', label: 'Evolución mensual' },
+  { id: 'monthlyReport', label: 'Informe mensual' },
+  { id: 'initiatives', label: 'Iniciativas' },
+  { id: 'agreements', label: 'Acuerdos Marco' },
+  { id: 'people', label: 'People' },
+  { id: 'training', label: 'Formación' },
+  { id: 'projects', label: 'Proyectos' },
+];
+export const DEFAULT_REPORT_TAB = REPORT_TABS[0].id;
+
+export function isReportTab(tabId) {
+  return REPORT_TABS.some((tab) => tab.id === tabId);
+}
+
 // Retired page ids and where they live now. The Oportunidades page became the "Tabla" view of
 // CRM QE, so links, notifications and saved state that still name it land there. The master data
 // pages became tabs of "Datos Maestros", so their ids open that page on the matching tab.

@@ -7,11 +7,12 @@ import { canNavigateBack, createNavigationEntry, navigationHash, navigationState
 import { COLLAPSED_CARD_LIMIT, getColumnVisibility, moveOpportunityToStage, toggleColumnExpanded } from './kanban.js';
 import { AMOUNT_CURRENCY, formatAmountInput, formatCurrency, parseAmount } from './money.js';
 import { INITIATIVE_STATUS_FILTERS, addInitiative, buildOpportunityPrefill, describeInitiativeUrgency, filterInitiativeRecords, initiativeCountLabel, isActiveInitiative, mapInitiativeStage, removeInitiative, toInitiativeRecord } from './initiatives.js';
-import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLinks, safeWorkspaceUrl, toWorkspaceLinkForm } from './workspaceLinks.js';
+import { normalizeWorkspaceLinks, toWorkspaceLinkForm } from './workspaceLinks.js';
+import { WorkspaceLinkList, WorkspaceLinksEditor } from './WorkspaceLinks.jsx';
 import { filterAgreements } from './agreements.js';
 import { computeWeightedAmount } from './pipelineSummary.js';
 import { ALL_YEARS, availableYears, computePipelineKpis } from './pipelineMetrics.js';
-import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePeopleTab, savePipelineYear, saveViewMode } from './preferences.js';
+import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePeopleTab, savePipelineYear, saveProjectTab, saveViewMode } from './preferences.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
 import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, MISSING_OPTION_FILTER, NOT_REUSABLE_FILTER, OPEN_OUTCOME_FILTER, REUSABLE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
@@ -45,7 +46,7 @@ const pageTitles = {
   services: ['Servicios', 'Catálogo de servicios QE asignables a iniciativas y oportunidades.'],
   lobs: ['LoB', 'Líneas de negocio a las que se asocian las towers y las oportunidades.'],
   people: ['Responsables', 'Personas asignables a clientes, iniciativas y oportunidades.'],
-  calendar: ['Calendario', 'Próximas acciones de iniciativas y oportunidades y fin de vigencia de los acuerdos marco.'],
+  calendar: ['Calendario', 'Próximas acciones de iniciativas, oportunidades y proyectos, hitos de proyectos y fin de vigencia de los acuerdos marco.'],
   talents: ['People', 'Talentos del equipo QE: skills, catálogo de actividades, asignaciones y formación.'],
   projects: ['Proyectos', 'Portfolio de aplicaciones NAQ con servicio QA.'],
   analytics: ['Informes', 'Indicadores de actividad comercial y evolución del pipeline.'],
@@ -827,6 +828,12 @@ function App() {
       navigate('talents');
       return;
     }
+    // Delivery project dates open Proyectos on the Proyectos tab.
+    if (event.type === 'project') {
+      saveProjectTab('deliveryProjects');
+      navigate('projects');
+      return;
+    }
     // Action and agreement end events open the record they belong to.
     openRecord(event.entityType || event.type, event.recordId, { stay: true });
   };
@@ -967,9 +974,9 @@ function App() {
           : page === 'talents'
             ? <PeoplePage towers={towers} lobs={lobs} clients={clients} onNotice={showNotice} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
           : page === 'projects'
-            ? <ProjectsPage onNotice={showNotice} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
+            ? <ProjectsPage clients={clients} towers={towers} onNotice={showNotice} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
           : page === 'analytics'
-            ? <ReportsPage opportunities={opportunities} initiatives={initiatives} agreements={agreements} towers={towers} currentYear={serviceYears.currentYear} onNavigate={navigate} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
+            ? <ReportsPage opportunities={opportunities} initiatives={initiatives} agreements={agreements} towers={towers} clients={clients} currentYear={serviceYears.currentYear} onNavigate={navigate} onUnauthorized={() => setSession({ status: 'anonymous', user: null })} />
           : (page === 'initiatives' || page === 'crossSelling')
               ? <InitiativeBoard page={page} initiatives={initiatives} archivedInitiatives={archivedInitiatives} archivedView={initiativesArchivedView} archivedLoading={initiativesArchivedLoading} onToggleArchived={toggleInitiativesArchivedView} onRestore={restoreArchivedInitiative} query={query} expandedColumns={expandedColumns} onToggleColumn={(stageId) => setExpandedColumns((current) => toggleColumnExpanded(current, stageId))} onEdit={setEditingInitiative} onMove={moveBoardCard} onArchive={archiveRecord} onDelete={deleteRecord} />
             : page === 'masterData'
@@ -1712,6 +1719,7 @@ function MasterPanel({ title, records, kind, headers, onEdit, onDeactivate, onDe
     : { id: field, label: headers[index], value: (record) => record[field] });
   return <><section className="secondary-panel"><div className="secondary-panel-heading"><div><h2>{title}</h2><p>{description}</p></div><span className="record-count">{records.length} registros</span></div><div className="table-wrap"><DataTable tableId={`master-${kind}`} rows={records} columns={[
     ...columns.map(columnFor),
+    ...(isServices ? [{ id: 'links', label: 'Enlaces', value: (record) => (record.links || []).map((link) => link.title).join(', '), render: (record) => <WorkspaceLinkList links={record.links} /> }] : []),
     ...(hasLifecycle ? [{ id: 'status', label: 'Estado', value: (record) => (record.active ? 'Activo' : 'Inactivo') }] : []),
   ]} onRowClick={isServices ? setDetail : null} rowAriaLabel={isServices ? (record) => `Ver detalle de ${record.name}` : null} actions={{ label: 'Acciones', className: 'master-actions', render: (record) => <><button className="button button-secondary" onClick={() => onEdit(kind, record)}>Editar</button>{hasLifecycle && record.active && <button className="button button-secondary" onClick={() => onDeactivate(kind, record)}>Desactivar</button>}<button className="button button-secondary button-danger" onClick={() => onDelete(kind, record)}>Eliminar</button></> }} />{records.length === 0 && <p className="empty-state">Todavía no hay registros. Crea uno para poder seleccionarlo en iniciativas y oportunidades.</p>}</div></section>{detail && <ServiceDetailsDialog service={detail} onClose={() => setDetail(null)} />}</>;
 }
@@ -1724,6 +1732,7 @@ function ServiceDetailsDialog({ service, onClose }) {
     { label: 'Descripción', value: service.description },
     { label: 'Ejercicio', value: service.year },
     { label: 'Estado', value: service.active ? 'Activo' : 'Inactivo' },
+    { label: 'Enlaces', value: <WorkspaceLinkList links={service.links} /> },
     { label: 'Creado', value: formatDateTime(service.createdAt) },
     { label: 'Actualizado', value: formatDateTime(service.updatedAt) },
   ]} />;
@@ -1791,7 +1800,7 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
     lobs: ['Nueva LoB', 'LoB', ['name', 'Nombre', 'description', 'Descripción']],
     people: ['Nuevo responsable', 'Responsable', ['name', 'Nombre', 'email', 'Email']],
   }[kind];
-  const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', description: record.description || '', responsibleId: record.responsibleId || '', lobId: record.lobId || '', active: record.active ?? true, ...(kind === 'services' && record.year ? { year: record.year } : {}) });
+  const [values, setValues] = useState({ name: record.name || '', sector: record.sector || '', email: record.email || '', description: record.description || '', responsibleId: record.responsibleId || '', lobId: record.lobId || '', active: record.active ?? true, ...(kind === 'services' && record.year ? { year: record.year } : {}), ...(kind === 'services' ? { links: toWorkspaceLinkForm(record.links) } : {}) });
   const [error, setError] = useState('');
   const fieldErrors = useFieldErrors();
   const dialogRef = useRef(null);
@@ -1803,7 +1812,7 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
   const submit = async (event) => {
     event.preventDefault(); setError('');
     if (fieldErrors.show(validateMasterForm(kind, values))) return;
-    try { const payload = { ...values, id: record.id }; if (kind === 'towers') delete payload.active; const saved = await onSave(kind, payload); onSaved?.(saved); onClose(); }
+    try { const payload = { ...values, id: record.id }; if (kind === 'towers') delete payload.active; if (kind === 'services') payload.links = normalizeWorkspaceLinks(values.links); const saved = await onSave(kind, payload); onSaved?.(saved); onClose(); }
     catch (err) {
       const mapped = mapServerFieldError(err, MASTER_FORM_FIELDS);
       if (mapped) fieldErrors.show(mapped);
@@ -1812,7 +1821,7 @@ function MasterDialog({ kind, record, people, lobs, onClose, onSave, onSaved }) 
   };
   const fields = [];
   for (let index = 0; index < labels[2].length; index += 2) fields.push([labels[2][index], labels[2][index + 1]]);
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit} noValidate ref={fieldErrors.formRef}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <FormField form={fieldErrors} field={field} label={label} required={field === 'name'} className="wide" key={field}><input required={field === 'name'} value={values[field]} onChange={(event) => setValue(field, event.target.value)} {...fieldErrors.fieldProps(field)} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</FormField>)}{kind === 'towers' && <FormField form={fieldErrors} field="responsibleId" label="Responsable" required className="wide"><select required value={values.responsibleId} onChange={(event) => setValue('responsibleId', event.target.value)} {...fieldErrors.fieldProps('responsibleId')}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></FormField>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}><form onSubmit={submit} noValidate ref={fieldErrors.formRef}><div className="dialog-heading"><div><span className="eyebrow">DATOS MAESTROS</span><h2>{record.id ? `Editar ${labels[1].toLowerCase()}` : labels[0]}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}><Icon name="close" /></button></div><div className="form-grid">{fields.map(([field, label]) => <FormField form={fieldErrors} field={field} label={label} required={field === 'name'} className="wide" key={field}><input required={field === 'name'} value={values[field]} onChange={(event) => setValue(field, event.target.value)} {...fieldErrors.fieldProps(field)} />{field === 'description' && <span className="field-hint">Opcional</span>}{field === 'name' && kind === 'services' && values.year && <span className="field-hint">Ejercicio {values.year}</span>}{field === 'email' && <span className="field-hint">Opcional</span>}</FormField>)}{kind === 'towers' && <FormField form={fieldErrors} field="responsibleId" label="Responsable" required className="wide"><select required value={values.responsibleId} onChange={(event) => setValue('responsibleId', event.target.value)} {...fieldErrors.fieldProps('responsibleId')}><option value="">Selecciona un responsable</option>{people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></FormField>}{kind === 'towers' && <label className="form-field wide">LoB<select value={values.lobId} onChange={(event) => setValues((current) => ({ ...current, lobId: event.target.value }))}><option value="">Sin LoB</option>{lobs.filter((lob) => lob.active || lob.id === values.lobId).map((lob) => <option key={lob.id} value={lob.id}>{lob.name}</option>)}</select><span className="field-hint">Una tower pertenece a una sola LoB como máximo.</span></label>}{record.id && kind !== 'towers' && <label className="form-field wide">Estado<select value={values.active ? 'active' : 'inactive'} onChange={(event) => setValues((current) => ({ ...current, active: event.target.value === 'active' }))}><option value="active">Activo</option><option value="inactive">Inactivo</option></select></label>}</div>{kind === 'services' && <WorkspaceLinksEditor links={values.links} onChange={(links) => setValues((current) => ({ ...current, links }))} disabled={false} />}{error && <p className="form-error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cancelar</button><button className="button button-primary" type="submit">Guardar</button></div></form></dialog>;
 }
 
 function InitiativeDialog({ record, users = [], clients, services, lobs = [], towers = [], currentServiceYear, onQuickCreate, onClose, onSave, onCreateOpportunity, currentUserId = '', focusComments = false, onNextActionDateSynced }) {
@@ -1904,50 +1913,6 @@ function InitiativeDialog({ record, users = [], clients, services, lobs = [], to
       <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose} disabled={saving}>Cancelar</button><button className="button button-primary" type="submit" disabled={saving}>{saving ? 'Guardando…' : 'Guardar iniciativa'}</button></div>
     </form>
   </dialog>;
-}
-
-/** Shared Workspace links editor for opportunities, initiatives and framework agreements. */
-function WorkspaceLinksEditor({ links, onChange, disabled }) {
-  // Saved links with a safe URL render as clickable links; new or edited rows render as inputs.
-  const [editingRows, setEditingRows] = useState(() => new Set());
-  const updateLink = (index, field, value) => onChange(links.map((link, position) => (position === index ? { ...link, [field]: value } : link)));
-  const addLink = () => {
-    if (links.length >= MAX_WORKSPACE_LINKS) return;
-    setEditingRows((current) => new Set(current).add(links.length));
-    onChange([...links, { title: DEFAULT_WORKSPACE_LINK_TITLE, url: '' }]);
-  };
-  const editLink = (index) => setEditingRows((current) => new Set(current).add(index));
-  const removeLink = (index) => {
-    setEditingRows((current) => new Set([...current].filter((row) => row !== index).map((row) => (row > index ? row - 1 : row))));
-    onChange(links.filter((_, position) => position !== index));
-  };
-  return <fieldset className="relation-field">
-    <legend>Enlaces Workspace</legend>
-    <span className="field-hint">Cada enlace necesita título y URL. Hasta {MAX_WORKSPACE_LINKS} enlaces.</span>
-    <div className="link-editor">
-      {links.length === 0 && <span className="field-hint">Todavía no hay enlaces.</span>}
-      {links.map((link, index) => {
-        const href = safeWorkspaceUrl(link.url);
-        const linkTitle = link.title || DEFAULT_WORKSPACE_LINK_TITLE;
-        if (href && !editingRows.has(index)) {
-          return <div className="link-view" key={index}>
-            <span className="link-view-text"><strong>{linkTitle}</strong><a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${linkTitle}: ${link.url} (se abre en una pestaña nueva)`}>{link.url}</a></span>
-            <button type="button" className="inline-link" onClick={() => editLink(index)} disabled={disabled} aria-label={`Editar enlace ${linkTitle}`}>Editar</button>
-            <button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={disabled}><Icon name="close" size={16} /></button>
-          </div>;
-        }
-        return <div className="link-row" key={index}><input aria-label={`Título del enlace ${index + 1}`} value={link.title} onChange={(event) => updateLink(index, 'title', event.target.value)} placeholder={DEFAULT_WORKSPACE_LINK_TITLE} maxLength="120" disabled={disabled} /><input aria-label={`URL del enlace ${index + 1}`} value={link.url} onChange={(event) => updateLink(index, 'url', event.target.value)} placeholder="https://workspaces.example/..." maxLength="500" disabled={disabled} />{href ? <a className="link-open" href={href} target="_blank" rel="noopener noreferrer" aria-label={`Abrir ${link.title || DEFAULT_WORKSPACE_LINK_TITLE} en una pestaña nueva`}>Abrir</a> : <span className="link-open" aria-hidden="true" />}<button type="button" className="icon-button" aria-label={`Quitar enlace ${index + 1}`} onClick={() => removeLink(index)} disabled={disabled}><Icon name="close" size={16} /></button></div>;
-      })}
-    </div>
-    <button type="button" className="inline-link" onClick={addLink} disabled={disabled || links.length >= MAX_WORKSPACE_LINKS}>+ Añadir enlace</button>
-  </fieldset>;
-}
-
-/** Read-only link list for tables: only safe URLs become anchors, opened in a new tab. */
-function WorkspaceLinkList({ links }) {
-  const safe = (links || []).map((link) => ({ ...link, href: safeWorkspaceUrl(link.url) })).filter((link) => link.href);
-  if (safe.length === 0) return '—';
-  return <span className="workspace-link-list">{safe.map((link) => <a key={link.id || link.href} href={link.href} target="_blank" rel="noopener noreferrer" title={link.url}>{link.title}</a>)}</span>;
 }
 
 function AgreementPanel({ agreements, query = '', clients, people, onEdit, onDelete }) {

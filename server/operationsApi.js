@@ -4,8 +4,10 @@ import { parseSpanishNumber } from './csv.js';
 import { withTransaction } from './db.js';
 import { HttpError, readJson, sendJson } from './http.js';
 import {
-  CAREER_LEVELS, DEFAULT_PERFORMANCE_STATUS, PERFORMANCE_STATUSES, TALENT_CATEGORIES, TALENT_PROFILES, parseTalentProfiles, parseTestingScope,
+  CAREER_LEVELS, DEFAULT_DELIVERY_PROJECT_STATUS, DEFAULT_PERFORMANCE_STATUS, DELIVERY_PROJECT_STATUSES, PERFORMANCE_STATUSES, TALENT_CATEGORIES, TALENT_PROFILES,
+  normalizeDeliveryTarget, normalizeNaq, parseTalentProfiles, parseTestingScope,
 } from '../src/people.js';
+import { deleteWorkspaceLinks, loadWorkspaceLinks, loadWorkspaceLinksByEntity, parseWorkspaceLinks, replaceWorkspaceLinks, sameWorkspaceLinks } from './workspaceLinks.js';
 
 /**
  * Authenticated CRUD of the "People" and "Proyectos" sections: talents, talent skills, activity
@@ -71,6 +73,12 @@ function oneOf(key, label, allowed) {
       return trimmed;
     },
   };
+}
+
+/** Free text mapped through `normalize` (e.g. legacy English values to their Spanish choice). */
+function normalizedText(key, label, normalize, options) {
+  const base = text(key, label, options);
+  return { key, parse: (value) => normalize(base.parse(value)) };
 }
 
 function number(key, label, { min = 0, max = 100000, required = false, integer = false } = {}) {
@@ -261,6 +269,7 @@ const RESOURCES = {
       ['SELECT COUNT(*) AS count FROM assignments WHERE talent_id = $id', 'asignación', 'asignaciones'],
       ['SELECT COUNT(*) AS count FROM training_plan WHERE talent_id = $id', 'fila del plan de formación', 'filas del plan de formación'],
       ['SELECT COUNT(*) AS count FROM performance_reviews WHERE talent_id = $id', 'objetivo de performance review', 'objetivos de performance review'],
+      ['SELECT COUNT(*) AS count FROM delivery_projects WHERE talent_id = $id', 'proyecto', 'proyectos'],
     ],
     insertDefaults: (db) => ({ sort_order: nextInteger(db, 'talents', 'sort_order') }),
     describe: (row) => row.name,
@@ -452,37 +461,74 @@ const RESOURCES = {
       ['application_name', text('applicationName', 'Application Name', { max: 200, required: true })],
       ['version', text('version', 'Version', { max: 60 })],
       ['client', text('client', 'Client', { max: 200 })],
-      ['naq', text('naq', 'NAQ', { max: 60 })],
-      ['project_type', text('projectType', 'Project Type', { max: 120 })],
-      ['delivery_target', text('deliveryTarget', 'Delivery Target', { max: 120 })],
-      ['testing_scope', stringList('testingScope', 'Testing Scope')],
-      ['qa_service_type', text('qaServiceType', 'QA Service Type', { max: 120 })],
-      ['phase', text('phase', 'Phase', { max: 120 })],
-      ['risk_level', text('riskLevel', 'Risk Level', { max: 60 })],
-      ['automation', text('automation', 'Automation', { max: 120 })],
-      ['status', text('status', 'Status', { max: 120 })],
-      ['project_url', url('projectUrl', 'Project URL')],
-      ['qa_owner', text('qaOwner', 'QA Owner', { max: 200 })],
-      ['qa_entry_date', date('qaEntryDate', 'QA Entry Date')],
-      ['target_release_date', date('targetReleaseDate', 'Target Release Date')],
-      ['comments', text('comments', 'Comments', { max: 4000 })],
-      ['created_date', date('createdDate', 'Created')],
-      ['attachments', text('attachments', 'Attachments', { max: 500 })],
+      ['naq', normalizedText('naq', 'NAQ', normalizeNaq, { max: 60 })],
+      ['project_type', text('projectType', 'Tipo de proyecto', { max: 120 })],
+      ['delivery_target', normalizedText('deliveryTarget', 'Delivery target', normalizeDeliveryTarget, { max: 120 })],
+      ['testing_scope', stringList('testingScope', 'Alcance de pruebas')],
+      ['qa_service_type', text('qaServiceType', 'Tipo de servicio QA', { max: 120 })],
+      ['phase', text('phase', 'Fase', { max: 120 })],
+      ['risk_level', text('riskLevel', 'Nivel de riesgo', { max: 60 })],
+      ['automation', text('automation', 'Automatización', { max: 120 })],
+      ['status', text('status', 'Estado', { max: 120 })],
+      ['project_url', url('projectUrl', 'URL del proyecto')],
+      ['qa_owner', text('qaOwner', 'Responsable QA', { max: 200 })],
+      ['qa_entry_date', date('qaEntryDate', 'Fecha de entrada QA')],
+      ['target_release_date', date('targetReleaseDate', 'Fecha objetivo de release')],
+      ['comments', text('comments', 'Comentarios', { max: 4000 })],
+      ['created_date', date('createdDate', 'Fecha de creación')],
+      ['attachments', text('attachments', 'Adjuntos', { max: 500 })],
     ],
     deleteChecks: [],
     describe: (row) => row.application_name,
     map: (record) => ({ ...record, testingScope: parseTestingScope(record.testingScope) }),
   },
+  'delivery-projects': {
+    table: 'delivery_projects',
+    entityType: 'delivery_project',
+    subject: 'el proyecto',
+    notFound: 'El proyecto no existe.',
+    select: `SELECT delivery_projects.*, clients.name AS client_name, towers.name AS tower_name, talents.name AS talent_name
+      FROM delivery_projects LEFT JOIN clients ON clients.id = delivery_projects.client_id
+      LEFT JOIN towers ON towers.id = delivery_projects.tower_id LEFT JOIN talents ON talents.id = delivery_projects.talent_id`,
+    order: 'ORDER BY delivery_projects.name COLLATE NOCASE, delivery_projects.created_at',
+    fields: [
+      ['name', text('name', 'Nombre', { max: 200, required: true })],
+      ['client_id', reference('clientId', 'Cliente', 'clients', { required: true })],
+      ['tower_id', reference('towerId', 'Tower', 'towers')],
+      ['talent_id', reference('talentId', 'Responsable', 'talents')],
+      ['status', oneOf('status', 'Estado', DELIVERY_PROJECT_STATUSES)],
+      ['start_date', date('startDate', 'Fecha inicio')],
+      ['end_date', date('endDate', 'Fecha fin')],
+      ['description', text('description', 'Descripción', { max: 4000 })],
+      ['next_milestone_date', date('nextMilestoneDate', 'Fecha próximo hito')],
+      ['next_milestone', text('nextMilestone', 'Próximo hito', { max: 500 })],
+      ['next_action_date', date('nextActionDate', 'Fecha próxima acción')],
+    ],
+    validate(db, values) {
+      if (!values.status) values.status = DEFAULT_DELIVERY_PROJECT_STATUS;
+      if (values.start_date && values.end_date && values.end_date < values.start_date) {
+        throw validationError('La fecha fin no puede ser anterior a la fecha inicio.', 'endDate');
+      }
+    },
+    // "Enlaces": the shared Workspace links (workspace_links.entity_type).
+    linkEntityType: 'delivery_project',
+    deleteChecks: [],
+    describe: (row) => row.name,
+  },
 };
 
-/** `loaded` is `[[relation, Map(ownerId → [{ id, name }])]]` from loadRelations. */
-function toRecord(resource, row, loaded = []) {
+/**
+ * `loaded` is `[[relation, Map(ownerId → [{ id, name }])]]` from loadRelations; `links` (resources
+ * with `linkEntityType`) is a Map(ownerId → Workspace links).
+ */
+function toRecord(resource, row, loaded = [], links = null) {
   const record = mapRow(row);
   for (const [rel, byOwner] of loaded) {
     const items = byOwner.get(row.id) || [];
     record[rel.key] = items.map((item) => item.id);
     record[rel.namesKey] = items.map((item) => item.name);
   }
+  if (resource.linkEntityType) record.links = links?.get(row.id) || [];
   return resource.map ? resource.map(record) : record;
 }
 
@@ -495,7 +541,8 @@ function getRow(db, resource, id) {
 }
 
 function getRecord(db, resource, id) {
-  return toRecord(resource, getRow(db, resource, id), loadRelations(db, resource, id));
+  const links = resource.linkEntityType ? new Map([[id, loadWorkspaceLinks(db, resource.linkEntityType, id)]]) : null;
+  return toRecord(resource, getRow(db, resource, id), loadRelations(db, resource, id), links);
 }
 
 function appendEvent(db, resource, { id, user, action, detail = {}, now }) {
@@ -507,7 +554,8 @@ function listResource(ctx, req, res, resource) {
   requireUser(ctx, req);
   const rows = ctx.db.prepare(`${resource.select} ${resource.order}`).all();
   const loaded = loadRelations(ctx.db, resource);
-  sendJson(res, 200, { records: rows.map((row) => toRecord(resource, row, loaded)) });
+  const links = resource.linkEntityType ? loadWorkspaceLinksByEntity(ctx.db, resource.linkEntityType) : null;
+  sendJson(res, 200, { records: rows.map((row) => toRecord(resource, row, loaded, links)) });
 }
 
 /** Parses, validates and inserts one record inside the caller's transaction; returns its id. */
@@ -516,12 +564,14 @@ function insertRecord(db, resource, body, { user, now }) {
   const values = {};
   for (const [column, parser] of resource.fields) values[column] = parser.parse(body[parser.key], db);
   const relations = Object.fromEntries((resource.relations || []).map((rel) => [rel.key, rel.parse(body[rel.key], db)]));
+  const links = resource.linkEntityType ? parseWorkspaceLinks(body.links) : [];
   resource.validate?.(db, values, null, relations);
   Object.assign(values, resource.insertDefaults?.(db) || {});
   const columns = ['id', ...Object.keys(values), 'created_at', 'updated_at'];
   db.prepare(`INSERT INTO ${resource.table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
     .run(id, ...Object.values(values), now, now);
   for (const rel of resource.relations || []) rel.replace(db, id, relations[rel.key]);
+  if (resource.linkEntityType) replaceWorkspaceLinks(db, resource.linkEntityType, id, links, user, now);
   appendEvent(db, resource, { id, user, action: 'created', now });
   return id;
 }
@@ -580,13 +630,17 @@ async function updateResource(ctx, req, res, resource, rawId) {
       relations[rel.key] = Object.hasOwn(body, rel.key) ? rel.parse(body[rel.key], ctx.db) : stored;
       if (!sameIds(relations[rel.key], stored)) changedRelations.push(rel);
     }
+    // Links missing from the body are kept; present ones replace the stored list when they differ.
+    const nextLinks = resource.linkEntityType && Object.hasOwn(body, 'links') ? parseWorkspaceLinks(body.links) : null;
+    const linksChanged = nextLinks !== null && !sameWorkspaceLinks(nextLinks, loadWorkspaceLinks(ctx.db, resource.linkEntityType, id));
     resource.validate?.(ctx.db, merged, id, relations);
     const changed = resource.fields.map(([column]) => column).filter((column) => merged[column] !== existing[column]);
-    if (changed.length === 0 && changedRelations.length === 0) return;
+    if (changed.length === 0 && changedRelations.length === 0 && !linksChanged) return;
     ctx.db.prepare(`UPDATE ${resource.table} SET ${changed.map((column) => `${column} = ?, `).join('')}updated_at = ? WHERE id = ?`)
       .run(...changed.map((column) => merged[column]), now, id);
     for (const rel of changedRelations) rel.replace(ctx.db, id, relations[rel.key]);
-    const fields = [...changed.map(camelCase), ...changedRelations.map((rel) => rel.key)];
+    if (linksChanged) replaceWorkspaceLinks(ctx.db, resource.linkEntityType, id, nextLinks, user, now);
+    const fields = [...changed.map(camelCase), ...changedRelations.map((rel) => rel.key), ...(linksChanged ? ['links'] : [])];
     appendEvent(ctx.db, resource, { id, user, action: 'updated', detail: { fields }, now });
   });
   sendJson(res, 200, { record: getRecord(ctx.db, resource, id) });
@@ -618,6 +672,7 @@ function deleteResource(ctx, req, res, resource, rawId) {
     if (links.length > 0) throw new HttpError(409, `${resource.entityType}_in_use`, message);
     ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(resource.entityType, id);
     for (const rel of resource.relations || []) rel.remove(ctx.db, id);
+    if (resource.linkEntityType) deleteWorkspaceLinks(ctx.db, resource.linkEntityType, id);
     ctx.db.prepare(`DELETE FROM ${resource.table} WHERE id = ?`).run(id);
   });
   sendJson(res, 200, { deleted: true });

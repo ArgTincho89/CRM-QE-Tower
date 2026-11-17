@@ -1,5 +1,5 @@
 import { ALL_YEARS, normalizeYearSelection } from './pipelineMetrics.js';
-import { DEFAULT_MASTER_DATA_TAB, DEFAULT_PEOPLE_TAB, DEFAULT_TRAINING_TAB, isMasterDataTab, isPeopleTab, isTrainingTab } from './navigation.js';
+import { DEFAULT_MASTER_DATA_TAB, DEFAULT_PEOPLE_TAB, DEFAULT_PROJECT_TAB, DEFAULT_REPORT_TAB, DEFAULT_TRAINING_TAB, isMasterDataTab, isPeopleTab, isProjectTab, isReportTab, isTrainingTab } from './navigation.js';
 
 // Per-browser UI preferences. Storage can be missing or throw (private mode, blocked site
 // data), so every read falls back to a default and every write reports success as a boolean.
@@ -100,4 +100,29 @@ export function loadTrainingTab(storage = defaultPreferenceStorage()) {
 export function saveTrainingTab(tabId, storage = defaultPreferenceStorage()) {
   if (!isTrainingTab(tabId)) return false;
   return writeItem(TRAINING_TAB_STORAGE_KEY, tabId, storage);
+}
+
+export const PROJECT_TAB_STORAGE_KEY = 'crm.projects.tab';
+export const REPORT_TAB_STORAGE_KEY = 'crm.reports.tab';
+
+/** Last tab opened in "Proyectos"; unknown or missing values fall back to the first tab. */
+export function loadProjectTab(storage = defaultPreferenceStorage()) {
+  const saved = readItem(PROJECT_TAB_STORAGE_KEY, storage);
+  return isProjectTab(saved) ? saved : DEFAULT_PROJECT_TAB;
+}
+
+export function saveProjectTab(tabId, storage = defaultPreferenceStorage()) {
+  if (!isProjectTab(tabId)) return false;
+  return writeItem(PROJECT_TAB_STORAGE_KEY, tabId, storage);
+}
+
+/** Last tab opened in "Informes"; unknown or missing values fall back to the first tab. */
+export function loadReportTab(storage = defaultPreferenceStorage()) {
+  const saved = readItem(REPORT_TAB_STORAGE_KEY, storage);
+  return isReportTab(saved) ? saved : DEFAULT_REPORT_TAB;
+}
+
+export function saveReportTab(tabId, storage = defaultPreferenceStorage()) {
+  if (!isReportTab(tabId)) return false;
+  return writeItem(REPORT_TAB_STORAGE_KEY, tabId, storage);
 }

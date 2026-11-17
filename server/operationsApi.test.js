@@ -249,6 +249,85 @@ describe('People and Proyectos API', () => {
     assert.equal((await call('PUT', '/api/projects', {})).status, 405);
   });
 
+  test('projects store NAQ and delivery target in Spanish, translating legacy English values', async () => {
+    const created = await call('POST', '/api/projects', { applicationName: 'App NAQ', naq: 'High', deliveryTarget: 'Integrated', projectType: 'Nuevo desarrollo' });
+    assert.equal(created.status, 201);
+    assert.equal(created.body.record.naq, 'Alto');
+    assert.equal(created.body.record.deliveryTarget, 'Integrado');
+    const updated = await call('PATCH', `/api/projects/${created.body.record.id}`, { naq: 'bajo', deliveryTarget: 'Continuo' });
+    assert.equal(updated.body.record.naq, 'Bajo');
+    assert.equal(updated.body.record.deliveryTarget, 'Continuo');
+    await call('DELETE', `/api/projects/${created.body.record.id}`);
+  });
+
+  test('delivery projects CRUD validates references, keeps Workspace links and guards masters', async () => {
+    const person = (await call('POST', '/api/people', { name: 'Responsable Proyecto' })).body.record;
+    const client = (await call('POST', '/api/clients', { name: 'Cliente Proyecto' })).body.record;
+    const tower = (await call('POST', '/api/towers', { name: 'Tower Proyecto', responsibleId: person.id })).body.record;
+    const talent = (await call('POST', '/api/talents', { name: 'Talento Proyecto' })).body.record;
+
+    const missingClient = await call('POST', '/api/delivery-projects', { name: 'Proyecto X' });
+    assert.equal(missingClient.status, 400);
+    assert.equal(missingClient.body.error.field, 'clientId');
+    const badStatus = await call('POST', '/api/delivery-projects', { name: 'Proyecto X', clientId: client.id, status: 'Hecho' });
+    assert.equal(badStatus.body.error.field, 'status');
+    const badDates = await call('POST', '/api/delivery-projects', { name: 'Proyecto X', clientId: client.id, startDate: '2026-05-01', endDate: '2026-04-01' });
+    assert.equal(badDates.body.error.field, 'endDate');
+    const badLink = await call('POST', '/api/delivery-projects', { name: 'Proyecto X', clientId: client.id, links: [{ title: 'Mal', url: 'javascript:alert(1)' }] });
+    assert.equal(badLink.status, 400);
+
+    const created = await call('POST', '/api/delivery-projects', {
+      name: 'Proyecto Ficticio', clientId: client.id, towerId: tower.id, talentId: talent.id, nextMilestone: 'Go live', nextMilestoneDate: '2026-09-01',
+      nextActionDate: '2026-08-15', links: [{ title: 'Carpeta', url: 'https://example.com/carpeta' }],
+    });
+    assert.equal(created.status, 201);
+    const record = created.body.record;
+    assert.equal(record.status, 'Planificado');
+    assert.equal(record.clientName, 'Cliente Proyecto');
+    assert.equal(record.towerName, 'Tower Proyecto');
+    assert.equal(record.talentName, 'Talento Proyecto');
+    assert.deepEqual(record.links.map((link) => [link.title, link.url]), [['Carpeta', 'https://example.com/carpeta']]);
+
+    const kept = await call('PATCH', `/api/delivery-projects/${record.id}`, { status: 'En curso' });
+    assert.equal(kept.body.record.status, 'En curso');
+    assert.equal(kept.body.record.links.length, 1);
+    const relinked = await call('PATCH', `/api/delivery-projects/${record.id}`, { links: [] });
+    assert.deepEqual(relinked.body.record.links, []);
+    const events = app.db.prepare("SELECT detail FROM entity_events WHERE entity_type = 'delivery_project' AND entity_id = ? AND action = 'updated' ORDER BY id").all(record.id);
+    assert.deepEqual(JSON.parse(events.at(-1).detail).fields, ['links']);
+    const list = await call('GET', '/api/delivery-projects');
+    assert.equal(list.body.records.find((item) => item.id === record.id).name, 'Proyecto Ficticio');
+
+    const blockedClient = await call('DELETE', `/api/clients/${client.id}`);
+    assert.equal(blockedClient.status, 409);
+    assert.match(blockedClient.body.error.message, /1 proyecto/);
+    assert.equal((await call('DELETE', `/api/towers/${tower.id}`)).status, 409);
+    const talentLinks = await call('GET', `/api/talents/${talent.id}/links`);
+    assert.equal(talentLinks.body.blocked, true);
+
+    await call('PATCH', `/api/delivery-projects/${record.id}`, { links: [{ title: 'Otra', url: 'https://example.com/otra' }] });
+    assert.equal((await call('DELETE', `/api/delivery-projects/${record.id}`)).status, 200);
+    assert.equal(app.db.prepare("SELECT COUNT(*) AS count FROM workspace_links WHERE entity_type = 'delivery_project' AND entity_id = ?").get(record.id).count, 0);
+    assert.equal((await call('DELETE', `/api/clients/${client.id}`)).status, 200);
+  });
+
+  test('services keep Workspace links on create, edit and list, and drop them on delete', async () => {
+    const badLink = await call('POST', '/api/services', { name: 'Servicio Enlaces', links: [{ title: 'X', url: 'ftp://example.com' }] });
+    assert.equal(badLink.status, 400);
+    const created = await call('POST', '/api/services', { name: 'Servicio Enlaces', links: [{ title: 'Ficha', url: 'https://example.com/ficha' }] });
+    assert.equal(created.status, 201);
+    assert.deepEqual(created.body.record.links.map((link) => link.title), ['Ficha']);
+    const id = created.body.record.id;
+    const renamed = await call('PATCH', `/api/services/${id}`, { description: 'Sin tocar enlaces' });
+    assert.equal(renamed.body.record.links.length, 1);
+    const relinked = await call('PATCH', `/api/services/${id}`, { links: [{ title: 'Ficha', url: 'https://example.com/ficha' }, { title: 'Wiki', url: 'https://example.com/wiki' }] });
+    assert.deepEqual(relinked.body.record.links.map((link) => link.title), ['Ficha', 'Wiki']);
+    const listed = (await call('GET', '/api/services')).body.records.find((item) => item.id === id);
+    assert.deepEqual(listed.links.map((link) => link.url), ['https://example.com/ficha', 'https://example.com/wiki']);
+    assert.equal((await call('DELETE', `/api/services/${id}`)).status, 200);
+    assert.equal(app.db.prepare("SELECT COUNT(*) AS count FROM workspace_links WHERE entity_type = 'service' AND entity_id = ?").get(id).count, 0);
+  });
+
   test('talents keep a manual order that only the reorder endpoint changes', async () => {
     const names = ['Orden C', 'Orden A', 'Orden B'];
     const ids = [];

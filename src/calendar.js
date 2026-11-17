@@ -1,7 +1,7 @@
 // Pure helpers for the "Calendario" page. Every date is an ISO calendar date ('YYYY-MM-DD') and
 // all arithmetic runs on UTC day numbers, so daylight saving changes never shift or repeat a day.
 import { initiativeUrgency, isInitiativeCompleted } from './initiatives.js';
-import { assignmentProjectLabel } from './people.js';
+import { CLOSED_DELIVERY_PROJECT_STATUS, assignmentProjectLabel } from './people.js';
 import { truncateActionText } from './recordActions.js';
 
 export const CALENDAR_VIEWS = [
@@ -18,6 +18,7 @@ export const CALENDAR_EVENT_TYPES = [
   { id: 'action', label: 'Acción', tone: 'blue' },
   { id: 'agreementEnd', label: 'Fin de acuerdo', tone: 'brown' },
   { id: 'assignment', label: 'Fin de asignación', tone: 'rose' },
+  { id: 'project', label: 'Proyecto', tone: 'green' },
 ];
 
 /** Event types that place a record on its "Fecha próxima acción". */
@@ -196,8 +197,10 @@ function isClosedOpportunity(item) {
  *   dropped: the action event says the same thing and more.
  * - People assignments with an end date ("Fecha fin") as "Fin de asignación: <talento> en
  *   <cliente / tower / LoB>".
+ * - Delivery projects that are not closed (`deliveryProjects`), as "Proyecto" events: one on their
+ *   "Fecha próxima acción" and one on their "Fecha próximo hito" with the milestone text.
  */
-export function buildCalendarEvents({ initiatives = [], opportunities = [], agreements = [], assignments = [], actions = [] } = {}, today = new Date()) {
+export function buildCalendarEvents({ initiatives = [], opportunities = [], agreements = [], assignments = [], actions = [], deliveryProjects = [] } = {}, today = new Date()) {
   const events = [];
   const push = (type, record, date, extra = {}) => {
     if (!parseIsoDate(date)) return;
@@ -237,6 +240,15 @@ export function buildCalendarEvents({ initiatives = [], opportunities = [], agre
     if (!item) continue;
     const label = `Fin de asignación: ${item.talentName || 'talento'} en ${assignmentProjectLabel(item)}`;
     push('assignment', item, item.endDate, { title: label, label, description: label });
+  }
+  for (const item of deliveryProjects || []) {
+    if (!item || item.status === CLOSED_DELIVERY_PROJECT_STATUS) continue;
+    const name = item.name || '';
+    const actionLabel = `Próxima acción: ${name}`;
+    push('project', item, item.nextActionDate, { key: `project:${item.id}:action`, title: name, label: actionLabel, description: `Proyecto ${name}: próxima acción` });
+    const milestone = String(item.nextMilestone ?? '').trim();
+    const milestoneLabel = `Hito: ${milestone || 'sin descripción'} — ${name}`;
+    push('project', item, item.nextMilestoneDate, { key: `project:${item.id}:milestone`, title: name, label: milestoneLabel, description: `Proyecto ${name}: próximo hito${milestone ? ` «${milestone}»` : ''}` });
   }
   const typeOrder = CALENDAR_EVENT_TYPES.map((type) => type.id);
   return events

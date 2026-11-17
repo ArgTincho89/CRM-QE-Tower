@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseCsvRecords, parseSpanishDate, parseSpanishNumber, parseSpanishPercent } from './csv.js';
 import { withTransaction } from './db.js';
-import { CAREER_LEVELS, parseTestingScope } from '../src/people.js';
+import { CAREER_LEVELS, normalizeDeliveryTarget, normalizeNaq, parseTestingScope } from '../src/people.js';
 
 /**
  * One-time import of the private seed CSVs (content/seed, never committed). Each dataset is
@@ -115,8 +115,8 @@ function importProjects(db, records, now) {
   for (const record of records) {
     const name = field(record, 'Application Name');
     if (!name) continue;
-    insert.run(randomUUID(), field(record, 'ID'), name, field(record, 'Version'), field(record, 'Client'), field(record, 'NAQ'),
-      field(record, 'Project Type'), field(record, 'Delivery Target'), JSON.stringify(parseTestingScope(field(record, 'Testing Scope'))),
+    insert.run(randomUUID(), field(record, 'ID'), name, field(record, 'Version'), field(record, 'Client'), normalizeNaq(field(record, 'NAQ')),
+      field(record, 'Project Type'), normalizeDeliveryTarget(field(record, 'Delivery Target')), JSON.stringify(parseTestingScope(field(record, 'Testing Scope'))),
       field(record, 'QA Service Type'), field(record, 'Phase'), field(record, 'Risk Level'), field(record, 'Automation'),
       field(record, 'Status'), field(record, 'Project URL'), field(record, 'QA Owner'), parseSpanishDate(field(record, 'QA Entry Date')),
       parseSpanishDate(field(record, 'Target Release Date')), field(record, 'Comments'), parseSpanishDate(field(record, 'Created')),

@@ -29,6 +29,43 @@ export const TESTING_SCOPE_DEFAULTS = ['Functional', 'API', 'E2E', 'Regression',
 
 export const ASSIGNMENT_LIMIT = 100;
 
+/** "Tipo de proyecto" of the NAQ portfolio: the project typologies of the Quality Gates model. */
+export const PROJECT_TYPES = [
+  'Nuevo desarrollo', 'Mantenimiento evolutivo', 'Mantenimiento correctivo', 'Hotfix / Emergencia (QG-Exprés)',
+  'Transformación / migración', 'Integraciones / APIs / datos', 'Producto digital / canal usuario', 'Paquetizado (SAP / Salesforce)',
+  'Producto de mercado', 'IA / ML / GenAI', 'Data & Analytics / BI', 'Infraestructura / DevOps / Cloud', 'RPA / Automatización',
+  'Ciberseguridad', 'Consultoría',
+];
+/** NAQ level of a portfolio application. */
+export const NAQ_LEVELS = ['Bajo', 'Medio', 'Alto'];
+/** Delivery target of a portfolio application. */
+export const DELIVERY_TARGETS = ['Tradicional', 'Integrado', 'Continuo'];
+
+const LEGACY_NAQ = { low: 'Bajo', medium: 'Medio', high: 'Alto' };
+const LEGACY_DELIVERY_TARGETS = { traditional: 'Tradicional', integrated: 'Integrado', continuous: 'Continuo', continuos: 'Continuo' };
+
+/** Matches a value against the canonical list (case-insensitive) or its legacy English synonym; else keeps it trimmed. */
+function normalizeChoice(value, canonical, legacy) {
+  const raw = String(value ?? '').trim();
+  const key = raw.toLowerCase();
+  return canonical.find((item) => item.toLowerCase() === key) || legacy[key] || raw;
+}
+
+/** NAQ in Spanish: 'Low' → 'Bajo', 'medio' → 'Medio'; unknown values are kept. */
+export function normalizeNaq(value) {
+  return normalizeChoice(value, NAQ_LEVELS, LEGACY_NAQ);
+}
+
+/** Delivery target in Spanish: 'Integrated' → 'Integrado', 'Continuos' → 'Continuo'; unknown values are kept. */
+export function normalizeDeliveryTarget(value) {
+  return normalizeChoice(value, DELIVERY_TARGETS, LEGACY_DELIVERY_TARGETS);
+}
+
+/** Status of a delivery project ("Proyectos" tab); 'Cerrado' hides it from the calendar. */
+export const DELIVERY_PROJECT_STATUSES = ['Planificado', 'En curso', 'En pausa', 'Cerrado'];
+export const DEFAULT_DELIVERY_PROJECT_STATUS = DELIVERY_PROJECT_STATUSES[0];
+export const CLOSED_DELIVERY_PROJECT_STATUS = 'Cerrado';
+
 /**
  * Talent profiles from what may be stored or sent: an array, a JSON array string or a legacy
  * single value ('Ambos' = Funcional + No funcional). Unknown values are dropped and the result
@@ -363,6 +400,18 @@ export function validatePlanForm(form) {
   }
   const progress = numberError(form.progress, { min: 0, max: 1000, label: 'el avance' });
   if (progress) errors.progress = progress;
+  return errors;
+}
+
+export const DELIVERY_PROJECT_FORM_FIELDS = ['name', 'clientId', 'towerId', 'talentId', 'status', 'startDate', 'endDate', 'description', 'nextMilestoneDate', 'nextMilestone', 'nextActionDate', 'links'];
+
+export function validateDeliveryProjectForm(form) {
+  const errors = {};
+  if (isBlank(form.name)) errors.name = 'Indica el nombre del proyecto.';
+  if (isBlank(form.clientId)) errors.clientId = 'Selecciona el cliente.';
+  if (!isBlank(form.startDate) && !isBlank(form.endDate) && form.endDate < form.startDate) {
+    errors.endDate = 'La fecha fin no puede ser anterior a la fecha inicio.';
+  }
   return errors;
 }
 

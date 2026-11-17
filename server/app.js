@@ -36,6 +36,7 @@ import {
 } from './http.js';
 import { RESOURCES_PREFIX, serveResource } from './resources.js';
 import { routeOperationsApi } from './operationsApi.js';
+import { deleteWorkspaceLinks, loadWorkspaceLinks, loadWorkspaceLinksByEntity, parseWorkspaceLinks, replaceWorkspaceLinks, sameWorkspaceLinks } from './workspaceLinks.js';
 
 const STAGES = new Set(stages.map(({ id }) => id));
 const OPPORTUNITY_ORIGINS = new Set(opportunityOrigins);
@@ -208,6 +209,7 @@ const MASTER_DELETE_RULES = {
       ['SELECT COUNT(*) AS count FROM initiatives WHERE client_id = $id', 'iniciativa', 'iniciativas'],
       ['SELECT COUNT(*) AS count FROM framework_agreements WHERE client_id = $id', 'acuerdo marco', 'acuerdos marco'],
       ['SELECT COUNT(*) AS count FROM assignments WHERE client_id = $id', 'asignación de talento', 'asignaciones de talento'],
+      ['SELECT COUNT(*) AS count FROM delivery_projects WHERE client_id = $id', 'proyecto', 'proyectos'],
     ],
   },
   towers: {
@@ -227,6 +229,7 @@ const MASTER_DELETE_RULES = {
         'iniciativas',
       ],
       ['SELECT COUNT(*) AS count FROM assignments WHERE tower_id = $id', 'asignación de talento', 'asignaciones de talento'],
+      ['SELECT COUNT(*) AS count FROM delivery_projects WHERE tower_id = $id', 'proyecto', 'proyectos'],
       [
         `SELECT COUNT(*) AS count FROM talents
           WHERE primary_tower_id = $id OR id IN (SELECT talent_id FROM talent_towers WHERE tower_id = $id)`,
@@ -275,6 +278,7 @@ function deleteMaster(ctx, res, kind, id) {
     const rule = MASTER_DELETE_RULES[kind];
     assertNoReferences(ctx.db, id, { ...rule, subject: `${rule.subject} «${current.name}»` });
     ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(kind, id);
+    if (kind === 'services') deleteWorkspaceLinks(ctx.db, SERVICE_ENTITY_TYPE, id);
     ctx.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
   });
   sendJson(res, 200, { deleted: true });
@@ -332,23 +336,6 @@ function replaceJoinRows(db, table, ownerColumn, ownerId, valueColumn, ids) {
   db.prepare(`DELETE FROM ${table} WHERE ${ownerColumn} = ?`).run(ownerId);
   const insert = db.prepare(`INSERT OR IGNORE INTO ${table} (${ownerColumn}, ${valueColumn}) VALUES (?, ?)`);
   for (const id of ids) insert.run(ownerId, id);
-}
-
-function loadWorkspaceLinks(db, entityType, entityId) {
-  return db
-    .prepare('SELECT id, title, url FROM workspace_links WHERE entity_type = ? AND entity_id = ? ORDER BY created_at, rowid')
-    .all(entityType, entityId);
-}
-
-function replaceWorkspaceLinks(db, entityType, entityId, links, user, now) {
-  db.prepare('DELETE FROM workspace_links WHERE entity_type = ? AND entity_id = ?').run(entityType, entityId);
-  const insert = db.prepare(
-    `INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at, created_by_id, created_by_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  for (const link of links) {
-    insert.run(randomUUID(), entityType, entityId, link.title, link.url, now, user?.id ?? null, user?.name ?? '');
-  }
 }
 
 /** Optional euro value as displayed by the API ('' when unset), like the formatted `amount`. */
@@ -444,7 +431,11 @@ function getOpportunityForDisplay(db, id) {
   return db.prepare(`${OPPORTUNITY_DISPLAY_SELECT} WHERE opportunities.id = ?`).get(id);
 }
 
-function mapMaster(row, kind) {
+/** Entity type of services in workspace_links (entity_events keep the master kind 'services'). */
+const SERVICE_ENTITY_TYPE = 'service';
+
+/** `links` (services only) are the record's Workspace links. */
+function mapMaster(row, kind, links = []) {
   const mapped = { id: row.id, name: row.name, sector: row.sector ?? undefined, email: row.email ?? undefined, description: row.description ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at };
   if (kind === 'towers') {
     mapped.responsibleId = row.responsible_id || '';
@@ -454,7 +445,10 @@ function mapMaster(row, kind) {
     return mapped;
   }
   mapped.active = row.status === 'active';
-  if (kind === 'services') mapped.year = row.year;
+  if (kind === 'services') {
+    mapped.year = row.year;
+    mapped.links = links;
+  }
   return mapped;
 }
 
@@ -808,22 +802,6 @@ function parseInitiativeStatus(value) {
     throw validationError('El estado operativo debe ser active, paused o discarded.');
   }
   return value.trim();
-}
-
-function parseWorkspaceLinks(value) {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) throw validationError('Los enlaces de Workspace deben ser una lista.');
-  if (value.length > 20) throw validationError('No se permiten más de 20 enlaces de Workspace.');
-  return value.map((item) => {
-    if (!item || typeof item !== 'object') throw validationError('Cada enlace debe tener título y URL.');
-    const title = typeof item.title === 'string' ? item.title.trim() : '';
-    const url = typeof item.url === 'string' ? item.url.trim() : '';
-    if (!title) throw validationError('Cada enlace de Workspace necesita un título.');
-    if (title.length > 120) throw validationError('El título del enlace no puede superar los 120 caracteres.');
-    if (!/^https?:\/\//i.test(url)) throw validationError('La URL del enlace debe empezar por http:// o https://.');
-    if (url.length > 500) throw validationError('La URL del enlace no puede superar los 500 caracteres.');
-    return { title, url };
-  });
 }
 
 function optionalId(db, table, value, field) {
@@ -1598,7 +1576,8 @@ function listMaster(ctx, req, res, kind, query) {
   } else {
     rows = ctx.db.prepare(`SELECT * FROM ${table} ORDER BY status ASC, name COLLATE NOCASE`).all();
   }
-  sendJson(res, 200, { records: rows.map((row) => mapMaster(row, kind)) });
+  const linksById = kind === 'services' ? loadWorkspaceLinksByEntity(ctx.db, SERVICE_ENTITY_TYPE) : new Map();
+  sendJson(res, 200, { records: rows.map((row) => mapMaster(row, kind, linksById.get(row.id) || [])) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1773,6 +1752,7 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
       return typeof body[field] === 'string' ? body[field].trim().slice(0, 240) : '';
     });
     const year = kind === 'services' ? resolveServiceYear(ctx, body.year) : null;
+    const links = kind === 'services' ? parseWorkspaceLinks(body.links) : [];
     if (nameTaken(values[0], null, year)) throw duplicateError(year);
     const extraColumns = [];
     const extraValues = [];
@@ -1788,8 +1768,11 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
     }
     const id = randomUUID();
     const columns = ['id', ...fields, ...extraColumns, 'status', 'created_at', 'updated_at'];
-    ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, ...extraValues, 'active', now, now);
-    appendEntityEvent(ctx.db, { type: kind, id, user, action: 'created', now });
+    withTransaction(ctx.db, () => {
+      ctx.db.prepare(`INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`).run(id, ...values, ...extraValues, 'active', now, now);
+      if (kind === 'services') replaceWorkspaceLinks(ctx.db, SERVICE_ENTITY_TYPE, id, links, user, now);
+      appendEntityEvent(ctx.db, { type: kind, id, user, action: 'created', now });
+    });
     row = getMasterRow(ctx.db, kind, id);
   } else {
     const id = decodeId(rawId);
@@ -1831,17 +1814,29 @@ async function mutateMaster(ctx, req, res, kind, rawId = null) {
         if (kind === 'lobs' && body.active === false) assertLobUnreferenced(ctx.db, id);
         changes.push(['status', body.active ? 'active' : 'inactive']);
       }
-      if (!changes.length) {
-        const mapped = mapMaster(getMasterRow(ctx.db, kind, id), kind);
+      // Services also own Workspace links: replaced only when the body carries them and they differ.
+      const nextLinks = kind === 'services' && Object.hasOwn(body, 'links') ? parseWorkspaceLinks(body.links) : null;
+      const linksChanged = nextLinks !== null && !sameWorkspaceLinks(nextLinks, loadWorkspaceLinks(ctx.db, SERVICE_ENTITY_TYPE, id));
+      if (!changes.length && !linksChanged) {
+        const mapped = mapMaster(getMasterRow(ctx.db, kind, id), kind, masterLinks(ctx.db, kind, id));
         sendJson(res, 200, kind === 'towers' ? { record: mapped } : { [plural.slice(0, -1)]: mapped });
         return;
       }
-      ctx.db.prepare(`UPDATE ${table} SET ${changes.map(([field]) => `${field} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...changes.map(([, value]) => value), now, id);
-      appendEntityEvent(ctx.db, { type: kind, id, user, action: changes.some(([field]) => field === 'status') ? 'status_changed' : 'updated', detail: { fields: changes.map(([field]) => field) }, now });
+      withTransaction(ctx.db, () => {
+        ctx.db.prepare(`UPDATE ${table} SET ${changes.map(([field]) => `${field} = ?, `).join('')}updated_at = ? WHERE id = ?`).run(...changes.map(([, value]) => value), now, id);
+        if (linksChanged) replaceWorkspaceLinks(ctx.db, SERVICE_ENTITY_TYPE, id, nextLinks, user, now);
+        const changedFields = [...changes.map(([field]) => field), ...(linksChanged ? ['links'] : [])];
+        appendEntityEvent(ctx.db, { type: kind, id, user, action: changes.some(([field]) => field === 'status') ? 'status_changed' : 'updated', detail: { fields: changedFields }, now });
+      });
     }
     row = getMasterRow(ctx.db, kind, id);
   }
-  sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row, kind) });
+  sendJson(res, req.method === 'POST' ? 201 : 200, { record: mapMaster(row, kind, masterLinks(ctx.db, kind, row.id)) });
+}
+
+/** Workspace links of a master record (only services have them). */
+function masterLinks(db, kind, id) {
+  return kind === 'services' ? loadWorkspaceLinks(db, SERVICE_ENTITY_TYPE, id) : [];
 }
 
 const INITIATIVE_DISPLAY_SELECT = `SELECT initiatives.*, clients.name AS client_name, assigned_users.name AS assigned_user_name

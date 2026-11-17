@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  createOperationRecord, deleteOperationRecord, getOperationRecordLinks, listActivityCatalog, listOperationRecords, reorderTalents, updateOperationRecord,
+  createOperationRecord, listActivityCatalog, listOperationRecords, reorderTalents, updateOperationRecord,
 } from './api.js';
 import { toLocalIsoDate } from './calendar.js';
 import { PEOPLE_TABS, TRAINING_TABS } from './navigation.js';
@@ -14,62 +14,14 @@ import {
 import { loadPeopleTab, loadTrainingTab, savePeopleTab, saveTrainingTab } from './preferences.js';
 import { moveColumnTo, orderByIds } from './tableState.js';
 import {
-  DeleteRecordDialog, DetailsDialog, RecordDialog, RecordPanel, SearchBox, TabStrip, formatDateTime, formatNumber, numberToInput, useCollection,
+  DetailsDialog, RecordDialog, RecordPanel, SearchBox, TabStrip, formatDateTime, formatNumber, numberToInput, useCollection, useRecordActions as useSharedRecordActions,
 } from './OperationsUi.jsx';
 import { FieldError, FormField, useFieldErrors } from './FormField.jsx';
 
 const EYEBROW = 'PEOPLE';
 
-/**
- * Shared create/edit/delete wiring of one resource panel. Deleting first asks the server what
- * links block it, so the dialog either lists them (no delete offered) or asks to confirm.
- */
-function useRecordActions(resource, { reload, onNotice, describe, noun }) {
-  const [editing, setEditing] = useState(null);
-  const [deleting, setDeleting] = useState(null);
-  const save = async (payload) => {
-    if (editing?.id) await updateOperationRecord(resource, editing.id, payload);
-    else await createOperationRecord(resource, payload);
-    onNotice(editing?.id ? `Se guardaron los cambios de ${noun}.` : `Se creó ${noun}.`);
-    reload();
-  };
-  const checkLinks = async (record) => {
-    setDeleting({ record, status: 'loading', links: [] });
-    try {
-      const result = await getOperationRecordLinks(resource, record.id);
-      setDeleting({ record, status: result?.blocked ? 'blocked' : 'ready', links: result?.links || [] });
-    } catch (err) {
-      setDeleting({ record, status: 'error', links: [], error: err?.message || 'No se pudieron comprobar los vínculos del registro.' });
-    }
-  };
-  const confirmDelete = async () => {
-    const { record } = deleting;
-    setDeleting((current) => ({ ...current, status: 'deleting' }));
-    try {
-      await deleteOperationRecord(resource, record.id);
-      setDeleting(null);
-      onNotice(`Se eliminó ${noun} «${describe(record)}».`);
-      reload();
-    } catch (err) {
-      // A link created meanwhile: show the up-to-date list instead of a generic error.
-      if (err?.status === 409) {
-        try {
-          const result = await getOperationRecordLinks(resource, record.id);
-          if (result?.blocked) {
-            setDeleting({ record, status: 'blocked', links: result.links || [] });
-            return;
-          }
-        } catch {
-          // Fall back to the server message, which already lists the links.
-        }
-      }
-      setDeleting({ record, status: 'error', links: [], error: err?.message || `No se pudo eliminar ${noun}.` });
-    }
-  };
-  const deleteDialog = deleting && <DeleteRecordDialog eyebrow={EYEBROW} noun={noun} name={describe(deleting.record)} state={deleting}
-    onConfirm={confirmDelete} onClose={() => setDeleting(null)} onRetry={() => checkLinks(deleting.record)} />;
-  return { editing, setEditing, save, remove: checkLinks, deleteDialog };
-}
+/** Create/edit/delete wiring of one People panel (see useRecordActions in OperationsUi). */
+const useRecordActions = (resource, options) => useSharedRecordActions(resource, { eyebrow: EYEBROW, ...options });
 
 /**
  * "People": talents, their skills, the activity catalog by level, assignments, training and

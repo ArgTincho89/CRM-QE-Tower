@@ -30,8 +30,9 @@ function CalendarEvent({ event, onOpen }) {
 /**
  * "Calendario": read-only, all-day view of next action dates (initiatives, opportunities and
  * framework agreements), pending actions with a due date, framework agreement end dates and the end
- * of People assignments, in month, week or agenda views. Clicking an event opens its record (actions
- * open their record; assignments open People > Asignaciones). `actionsVersion` changes whenever an
+ * of People assignments, plus the next action and next milestone of open delivery projects, in month,
+ * week or agenda views. Clicking an event opens its record (actions open their record; assignments
+ * open People > Asignaciones; projects open Proyectos > Proyectos). `actionsVersion` changes whenever an
  * action is edited elsewhere, so the scheduled actions are reloaded.
  */
 export default function CalendarPage({ initiatives, opportunities, agreements, onOpenEvent, actionsVersion = 0 }) {
@@ -52,6 +53,14 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
     return () => { cancelled = true; };
   }, []);
 
+  // Delivery projects (Proyectos); like assignments, simply omitted on failure.
+  const [deliveryProjects, setDeliveryProjects] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    listOperationRecords('delivery-projects').then((payload) => { if (!cancelled) setDeliveryProjects(payload?.records || []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   // Pending actions with a due date; like assignments, simply omitted on failure.
   const [actions, setActions] = useState([]);
   useEffect(() => {
@@ -61,8 +70,8 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
   }, [actionsVersion]);
 
   const allEvents = useMemo(
-    () => buildCalendarEvents({ initiatives, opportunities, agreements, assignments, actions }),
-    [initiatives, opportunities, agreements, assignments, actions],
+    () => buildCalendarEvents({ initiatives, opportunities, agreements, assignments, actions, deliveryProjects }),
+    [initiatives, opportunities, agreements, assignments, actions, deliveryProjects],
   );
   const events = useMemo(() => filterEventsByType(allEvents, enabledTypes), [allEvents, enabledTypes]);
   const eventsByDay = useMemo(() => groupEventsByDay(events), [events]);

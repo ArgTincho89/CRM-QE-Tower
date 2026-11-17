@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import DataTable from './DataTable.jsx';
+import { WorkspaceLinksEditor } from './WorkspaceLinks.jsx';
 import MultiSelect from './MultiSelect.jsx';
 import { FieldError, FormField, useFieldErrors } from './FormField.jsx';
 import { mapServerFieldError } from './formValidation.js';
+import { createOperationRecord, deleteOperationRecord, getOperationRecordLinks, updateOperationRecord } from './api.js';
 
 /**
  * Building blocks shared by the "People" and "Proyectos" pages: accessible tabs, a table panel
@@ -106,7 +108,7 @@ function MultiCheckField({ legend, options, selected, onChange, form, field, hin
  * Create/edit dialog generated from `fields`: `{ id, label, type, options?, required?, wide?, hint?,
  * visible?(values), compute?(values), onChange?(value, values) → patch }`. `options` may be a
  * function of the current values. Types: text, textarea, number, date, url, select, combo (free
- * text with suggestions), readonly, checklist, multicheck (ids from fixed options) and multiselect (the
+ * text with suggestions), readonly, checklist, links (Workspace links editor), multicheck (ids from fixed options) and multiselect (the
  * same ids through an accessible dropdown with search).
  * `validate(values)` returns field errors; server errors with a `field` are mapped back too.
  */
@@ -158,6 +160,7 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
       <div className="form-grid">
         {fields.filter((field) => !field.visible || field.visible(values)).map((field) => {
           if (field.type === 'checklist') return <ChecklistField key={field.id} legend={field.label} options={field.options || []} selected={values[field.id] || []} onChange={(next) => setValue(field, next)} />;
+          if (field.type === 'links') return <div key={field.id} className="form-field wide"><WorkspaceLinksEditor links={values[field.id] || []} onChange={(next) => setValue(field, next)} disabled={saving} legend={field.label} /></div>;
           if (field.type === 'heading') return <h3 key={field.id} className="form-section-title">{field.label}</h3>;
           if (field.type === 'multiselect') {
             return <MultiSelect key={field.id} className={`form-field wide ops-multiselect${field.required ? ' required' : ''}`} legend={field.label} hint={field.hint}
@@ -221,6 +224,61 @@ export function DeleteRecordDialog({ eyebrow, noun, name, state, onConfirm, onCl
       </div>
     </div>
   </dialog>;
+}
+
+/** "de el proyecto" → "del proyecto". */
+const ofNoun = (noun) => (noun.startsWith('el ') ? `del ${noun.slice(3)}` : `de ${noun}`);
+
+/**
+ * Shared create/edit/delete wiring of one resource panel. Deleting first asks the server what
+ * links block it, so the dialog either lists them (no delete offered) or asks to confirm.
+ * `eyebrow` labels the delete dialog (e.g. 'PEOPLE', 'PROYECTOS').
+ */
+export function useRecordActions(resource, { reload, onNotice, describe, noun, eyebrow }) {
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const save = async (payload) => {
+    if (editing?.id) await updateOperationRecord(resource, editing.id, payload);
+    else await createOperationRecord(resource, payload);
+    onNotice(editing?.id ? `Se guardaron los cambios ${ofNoun(noun)}.` : `Se creó ${noun}.`);
+    reload();
+  };
+  const checkLinks = async (record) => {
+    setDeleting({ record, status: 'loading', links: [] });
+    try {
+      const result = await getOperationRecordLinks(resource, record.id);
+      setDeleting({ record, status: result?.blocked ? 'blocked' : 'ready', links: result?.links || [] });
+    } catch (err) {
+      setDeleting({ record, status: 'error', links: [], error: err?.message || 'No se pudieron comprobar los vínculos del registro.' });
+    }
+  };
+  const confirmDelete = async () => {
+    const { record } = deleting;
+    setDeleting((current) => ({ ...current, status: 'deleting' }));
+    try {
+      await deleteOperationRecord(resource, record.id);
+      setDeleting(null);
+      onNotice(`Se eliminó ${noun} «${describe(record)}».`);
+      reload();
+    } catch (err) {
+      // A link created meanwhile: show the up-to-date list instead of a generic error.
+      if (err?.status === 409) {
+        try {
+          const result = await getOperationRecordLinks(resource, record.id);
+          if (result?.blocked) {
+            setDeleting({ record, status: 'blocked', links: result.links || [] });
+            return;
+          }
+        } catch {
+          // Fall back to the server message, which already lists the links.
+        }
+      }
+      setDeleting({ record, status: 'error', links: [], error: err?.message || `No se pudo eliminar ${noun}.` });
+    }
+  };
+  const deleteDialog = deleting && <DeleteRecordDialog eyebrow={eyebrow} noun={noun} name={describe(deleting.record)} state={deleting}
+    onConfirm={confirmDelete} onClose={() => setDeleting(null)} onRetry={() => checkLinks(deleting.record)} />;
+  return { editing, setEditing, save, remove: checkLinks, deleteDialog };
 }
 
 /** Loads one API collection; `reload()` refetches it. 401 is reported through `onUnauthorized`. */

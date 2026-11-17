@@ -909,6 +909,14 @@ a.button { text-decoration: none; }
 .calendar-page { --cal-action: #2f6fd1; --cal-action-bg: #e8f0fc; --cal-agreement-end: #8a6a3a; --cal-agreement-end-bg: #f4eee5; }
 .calendar-event-action { --cal-dot: var(--cal-action); --cal-bg: var(--cal-action-bg); }
 .calendar-event-agreementEnd { --cal-dot: var(--cal-agreement-end); --cal-bg: var(--cal-agreement-end-bg); }
+.calendar-page { --cal-project: #2f8f5b; --cal-project-bg: #e7f6ee; }
+.calendar-event-project { --cal-dot: var(--cal-project); --cal-bg: var(--cal-project-bg); }
+.report-tabs .master-data-panel { display: grid; gap: 14px; }
+.report-columns-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 12px; }
+.report-columns-2 h3 { margin: 0 0 4px; color: #2b3a52; font-size: 15px; }
+.bar-chart-wide .bar-row { grid-template-columns: minmax(110px, 2fr) minmax(60px, 3fr) 32px; }
+.bar-chart-wide .bar-row span { overflow-wrap: anywhere; }
+
 .action-entry.action-entry-dated { grid-template-columns: 145px minmax(0, 1fr) auto auto; }
 .action-entry-date { display: flex; align-items: center; gap: 6px; color: #5d6b80; font-size: 13px; }
 .action-due { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: #5d6b80; font-size: 12px; }

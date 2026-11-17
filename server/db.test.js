@@ -344,6 +344,62 @@ test('workspace links are rebuilt to accept agreements, preserving rows, order a
   }
 });
 
+test('workspace links that already accept agreements are rebuilt once to accept services and delivery projects', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'crm-workspace-links-services-'));
+  const dbPath = path.join(dir, 'app.db');
+  const original = new DatabaseSync(dbPath);
+  original.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, name TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', created_at TEXT NOT NULL);
+    CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO schema_meta VALUES ('workspace_links_agreements_v1', '2026-01-01');
+    CREATE TABLE workspace_links (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
+      entity_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_by_name TEXT NOT NULL DEFAULT ''
+    );
+    INSERT INTO workspace_links VALUES ('ag-link','agreement','AM-000001','Contrato','https://a.example','2026-01-01',NULL,'');
+    INSERT INTO workspace_links VALUES ('op-link','opportunity','OP-000001','Carpeta','https://b.example','2026-01-02',NULL,'');
+  `);
+  assert.throws(() => original.prepare("INSERT INTO workspace_links VALUES ('x','service','S-1','t','https://x.example','2026-01-01',NULL,'')").run(), /CHECK/);
+  original.close();
+  const snapshot = (db) => db.prepare('SELECT rowid, * FROM workspace_links ORDER BY rowid').all().map((row) => ({ ...row }));
+  try {
+    const db = openDatabase(dbPath);
+    assert.deepEqual(snapshot(db).map((row) => [row.rowid, row.id, row.entity_type]), [[1, 'ag-link', 'agreement'], [2, 'op-link', 'opportunity']]);
+    assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_workspace_links_entity'").get());
+    for (const type of ['service', 'delivery_project']) {
+      db.prepare("INSERT INTO workspace_links (id, entity_type, entity_id, title, url, created_at) VALUES (?, ?, 'X-1', 't', 'https://x.example', '2026-03-01')").run(`link-${type}`, type);
+    }
+    const before = snapshot(db);
+    closeDatabase(db);
+    const reopened = openDatabase(dbPath);
+    assert.deepEqual(snapshot(reopened), before);
+    assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_meta WHERE key = 'workspace_links_services_projects_v1'").get().count, 1);
+    closeDatabase(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('legacy English NAQ and delivery target values of the portfolio are translated once', () => {
+  const temp = createTempDatabase();
+  try {
+    const insert = temp.db.prepare("INSERT INTO projects (id, application_name, naq, delivery_target, created_at, updated_at) VALUES (?, ?, ?, ?, '2026-01-01', '2026-01-01')");
+    insert.run('p1', 'App 1', 'Medium', 'Integrated');
+    insert.run('p2', 'App 2', 'High', 'Continuos');
+    insert.run('p3', 'App 3', 'Otro', 'Traditional');
+    temp.db.prepare("DELETE FROM schema_meta WHERE key = 'project_spanish_values_v1'").run();
+    applySchema(temp.db);
+    const rows = temp.db.prepare('SELECT id, naq, delivery_target FROM projects ORDER BY id').all().map((row) => [row.id, row.naq, row.delivery_target]);
+    assert.deepEqual(rows, [['p1', 'Medio', 'Integrado'], ['p2', 'Alto', 'Continuo'], ['p3', 'Otro', 'Tradicional']]);
+  } finally {
+    temp.cleanup();
+  }
+});
+
 test('a fresh database accepts agreement workspace links and rejects unknown entity types', () => {
   const temp = createTempDatabase();
   try {

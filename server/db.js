@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { AGREEMENT_ID_PREFIX, INITIATIVE_ID_PREFIX, OPPORTUNITY_ID_PREFIX, planIdRename } from './ids.js';
-import { parseTalentProfiles } from '../src/people.js';
+import { normalizeDeliveryTarget, normalizeNaq, parseTalentProfiles } from '../src/people.js';
 
 const SERVICES_COLUMNS = `id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
       description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
@@ -12,7 +12,7 @@ const SERVICES_COLUMNS = `id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE
 // Entity types that may own Workspace links. Widening this list needs a rebuild migration:
 // SQLite cannot alter a CHECK constraint in place.
 const WORKSPACE_LINK_COLUMNS = `id TEXT PRIMARY KEY,
-      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement')),
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('opportunity','initiative','agreement','service','delivery_project')),
       entity_id TEXT NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
       created_at TEXT NOT NULL,
       created_by_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -276,6 +276,19 @@ const SCHEMA_STATEMENTS = [
       comments TEXT NOT NULL DEFAULT '', created_date TEXT NOT NULL DEFAULT '', attachments TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`,
+  // "Proyectos" > "Proyectos": delivery projects. Their links live in workspace_links
+  // (entity_type 'delivery_project'); the status values are validated by the API.
+  `CREATE TABLE IF NOT EXISTS delivery_projects (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL,
+      client_id TEXT REFERENCES clients(id), tower_id TEXT REFERENCES towers(id), talent_id TEXT REFERENCES talents(id),
+      status TEXT NOT NULL DEFAULT 'Planificado', start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '', next_milestone TEXT NOT NULL DEFAULT '', next_milestone_date TEXT NOT NULL DEFAULT '',
+      next_action_date TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_delivery_projects_client ON delivery_projects(client_id)',
+  'CREATE INDEX IF NOT EXISTS idx_delivery_projects_tower ON delivery_projects(tower_id)',
+  'CREATE INDEX IF NOT EXISTS idx_delivery_projects_talent ON delivery_projects(talent_id)',
 ];
 
 /** Nullable "Asignado a" column: a system user account, separate from the people-master owner. */
@@ -303,6 +316,8 @@ const TALENT_RELATIONS_MARKER = 'talent_relations_backfill_v1';
 const TALENT_PROFILES_MARKER = 'talent_profiles_multi_v1';
 const TALENT_SORT_ORDER_MARKER = 'talent_sort_order_v1';
 const RECORD_ACTIONS_AGREEMENTS_MARKER = 'record_actions_agreements_v1';
+const WORKSPACE_LINKS_SERVICES_MARKER = 'workspace_links_services_projects_v1';
+const PROJECT_SPANISH_VALUES_MARKER = 'project_spanish_values_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -467,6 +482,7 @@ export function runMigrations(db) {
   // Runs first: the legacy migration below seeds services, which needs the per-year shape.
   migrateServiceYears(db);
   migrateWorkspaceLinkAgreements(db);
+  migrateWorkspaceLinkServices(db);
   migrateRecordActionAgreements(db);
   migrateNotificationMentionKind(db);
   migrateResolutionDate(db);
@@ -478,6 +494,7 @@ export function runMigrations(db) {
   migrateTalentRelations(db);
   migrateTalentProfiles(db);
   migrateTalentSortOrder(db);
+  migrateProjectSpanishValues(db);
 }
 
 function migrateLegacyEvolution(db) {
@@ -574,9 +591,23 @@ export function migrateServiceYears(db) {
  * only the marker is written.
  */
 export function migrateWorkspaceLinkAgreements(db) {
-  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(WORKSPACE_LINKS_AGREEMENTS_MARKER)) return;
+  rebuildWorkspaceLinksOnce(db, WORKSPACE_LINKS_AGREEMENTS_MARKER, "'agreement'");
+}
+
+/**
+ * Lets services (Datos Maestros) and delivery projects own Workspace links. Same guarded rebuild
+ * as migrateWorkspaceLinkAgreements: ids, rowids and values are preserved; a database that already
+ * has the widened CHECK only gets the marker.
+ */
+export function migrateWorkspaceLinkServices(db) {
+  rebuildWorkspaceLinksOnce(db, WORKSPACE_LINKS_SERVICES_MARKER, "'delivery_project'");
+}
+
+/** Rebuilds `workspace_links` with the current CHECK unless its SQL already contains `requiredToken`. */
+function rebuildWorkspaceLinksOnce(db, marker, requiredToken) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(marker)) return;
   const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workspace_links'").get()?.sql ?? '';
-  const needsRebuild = !tableSql.includes("'agreement'");
+  const needsRebuild = !tableSql.includes(requiredToken);
   // SQLite ignores this pragma inside a transaction, so it is switched around the rebuild.
   const foreignKeys = Number(db.prepare('PRAGMA foreign_keys').get().foreign_keys);
   if (needsRebuild) db.exec('PRAGMA foreign_keys = OFF');
@@ -592,7 +623,7 @@ export function migrateWorkspaceLinkAgreements(db) {
         const broken = db.prepare('PRAGMA foreign_key_check(workspace_links)').all();
         if (broken.length > 0) throw new Error(`Workspace link migration left ${broken.length} broken foreign key reference(s).`);
       }
-      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(WORKSPACE_LINKS_AGREEMENTS_MARKER, new Date().toISOString());
+      db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(marker, new Date().toISOString());
     });
   } finally {
     if (needsRebuild && foreignKeys) db.exec('PRAGMA foreign_keys = ON');
@@ -718,6 +749,24 @@ export function migrateTalentSortOrder(db) {
     const update = db.prepare('UPDATE talents SET sort_order = ? WHERE id = ?');
     db.prepare('SELECT id FROM talents ORDER BY name COLLATE NOCASE, id').all().forEach((row, index) => update.run(index + 1, row.id));
     db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(TALENT_SORT_ORDER_MARKER, new Date().toISOString());
+  });
+}
+
+/**
+ * Translates the legacy English NAQ (Low/Medium/High → Bajo/Medio/Alto) and Delivery target
+ * (Traditional/Integrated/Continuous → Tradicional/Integrado/Continuo) values of the NAQ portfolio.
+ * Unknown values are kept as they are. Guarded by `schema_meta`, so it runs once per database.
+ */
+export function migrateProjectSpanishValues(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(PROJECT_SPANISH_VALUES_MARKER)) return;
+  withTransaction(db, () => {
+    const update = db.prepare('UPDATE projects SET naq = ?, delivery_target = ? WHERE id = ?');
+    for (const row of db.prepare('SELECT id, naq, delivery_target FROM projects').all()) {
+      const naq = normalizeNaq(row.naq);
+      const deliveryTarget = normalizeDeliveryTarget(row.delivery_target);
+      if (naq !== row.naq || deliveryTarget !== row.delivery_target) update.run(naq, deliveryTarget, row.id);
+    }
+    db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(PROJECT_SPANISH_VALUES_MARKER, new Date().toISOString());
   });
 }
 
