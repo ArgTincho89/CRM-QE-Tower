@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ariaSortFor, compareValues, describeColumnMove, describeSortChange, isEmptyValue, loadTableState, mergeColumnOrder, moveColumn, moveColumnTo, nextSort, parseDateValue, sanitizeSort, saveTableState, sortRows, tableStorageKey, toSortKey } from './tableState.js';
+import { ariaSortFor, compareValues, describeColumnMove, describeSortChange, isEmptyValue, loadTableState, mergeColumnOrder, moveColumn, moveColumnTo, nextSort, orderByIds, describeRowMove, parseDateValue, sanitizeSort, saveTableState, sortRows, tableStorageKey, toSortKey } from './tableState.js';
 
 function memoryStorage(initial = {}) {
   const data = new Map(Object.entries(initial));
@@ -177,4 +177,12 @@ test('announcements describe sort changes and column moves in Spanish', () => {
   assert.equal(describeSortChange({ columnId: 'name', direction: 'desc' }, 'Cliente'), 'Ordenado por Cliente, descendente.');
   assert.equal(describeSortChange(null, 'Cliente'), 'Orden predeterminado restaurado.');
   assert.equal(describeColumnMove(['a', 'b', 'c'], 'b', 'Importe'), 'Columna Importe movida a la posición 2 de 3.');
+});
+
+test('orderByIds puts listed rows first and keeps the rest in their order', () => {
+  const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  assert.deepEqual(orderByIds(rows, ['c', 'a', 'zz']).map((row) => row.id), ['c', 'a', 'b', 'd']);
+  assert.deepEqual(orderByIds(rows, []).map((row) => row.id), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(orderByIds(null, ['a']), []);
+  assert.equal(describeRowMove('Pérez, Ana', 2, 5), 'Pérez, Ana movido a la posición 2 de 5.');
 });

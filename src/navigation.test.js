@@ -184,7 +184,7 @@ describe('People and Proyectos pages', () => {
   });
 
   test('People tabs and Formación sub-tabs keep their order', () => {
-    assert.deepEqual(PEOPLE_TABS.map((tab) => tab.label), ['Listado de personas', 'Skills x talento', 'Catálogo de actividades por niveles', 'Asignaciones', 'Formación']);
+    assert.deepEqual(PEOPLE_TABS.map((tab) => tab.label), ['Listado de personas', 'Skills x talento', 'Catálogo de actividades por niveles', 'Asignaciones', 'Formación', 'Performance review']);
     assert.deepEqual(TRAINING_TABS.map((tab) => tab.label), ['Catálogo de formación', 'Plan de formación']);
   });
 });

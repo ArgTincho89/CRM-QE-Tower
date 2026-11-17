@@ -147,6 +147,25 @@ describe('calendar events', () => {
     assert.equal(events[0].recordId, 'OP-000001');
   });
 
+  test('assignments with an end date show as "Fin de asignación" on that day', () => {
+    const events = buildCalendarEvents({ assignments: [
+      { id: 'AS-1', talentName: 'Pérez, Ana', clientName: 'Cliente Uno', towerName: 'Tower X', endDate: '2026-03-10' },
+      { id: 'AS-2', talentName: 'Ruiz, Leo', towerName: 'Tower X', lobName: 'LoB Y', endDate: '2026-03-10' },
+      { id: 'AS-3', talentName: 'Gil, Eva', lobName: 'LoB Y', endDate: '2026-03-12' },
+      { id: 'AS-4', talentName: 'Sin fin', clientName: 'Cliente Uno', endDate: '' },
+      { id: 'AS-5', talentName: 'Fecha mala', endDate: '2026-02-30' },
+    ], agreements: [{ id: 'AM-1', title: 'Marco', status: 'active', endDate: '2026-03-10' }] }, today);
+    assert.deepEqual(events.map((event) => event.key), ['agreement:AM-1', 'assignment:AS-1', 'assignment:AS-2', 'assignment:AS-3']);
+    const first = events[1];
+    assert.equal(first.type, 'assignment');
+    assert.equal(first.date, '2026-03-10');
+    assert.equal(first.label, 'Fin de asignación: Pérez, Ana en Cliente Uno');
+    assert.equal(first.description, first.label);
+    assert.equal(events[2].label, 'Fin de asignación: Ruiz, Leo en Tower X');
+    assert.equal(events[3].label, 'Fin de asignación: Gil, Eva en LoB Y');
+    assert.deepEqual(filterEventsByType(events, ['assignment']).map((event) => event.recordId), ['AS-1', 'AS-2', 'AS-3']);
+  });
+
   test('overdue initiatives carry the due urgency', () => {
     const events = buildCalendarEvents(data, today);
     assert.equal(events.find((event) => event.recordId === 'IN-000001').urgency, 'due');

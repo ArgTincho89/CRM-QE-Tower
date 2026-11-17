@@ -1,6 +1,7 @@
 // Pure helpers for the "Calendario" page. Every date is an ISO calendar date ('YYYY-MM-DD') and
 // all arithmetic runs on UTC day numbers, so daylight saving changes never shift or repeat a day.
 import { initiativeUrgency, isInitiativeCompleted } from './initiatives.js';
+import { assignmentProjectLabel } from './people.js';
 
 export const CALENDAR_VIEWS = [
   { id: 'month', label: 'Mes' },
@@ -13,6 +14,7 @@ export const CALENDAR_EVENT_TYPES = [
   { id: 'initiative', label: 'Iniciativa', tone: 'teal' },
   { id: 'opportunity', label: 'Oportunidad', tone: 'violet' },
   { id: 'agreement', label: 'Acuerdo Marco', tone: 'amber' },
+  { id: 'assignment', label: 'Fin de asignación', tone: 'rose' },
 ];
 
 /** Events a month cell shows before collapsing the rest into "+N más". */
@@ -177,8 +179,10 @@ function isClosedOpportunity(item) {
  * action date and active framework agreements by end date ("Fin de vigencia"). Archived records,
  * completed initiatives and closed opportunities (Resultado with an outcome) never show, nor do
  * records without a valid date. Initiative events carry their urgency ('due' / 'soon' / 'none').
+ * People assignments with an end date ("Fecha fin") show on that day as "Fin de asignación:
+ * <talento> en <cliente / tower / LoB>".
  */
-export function buildCalendarEvents({ initiatives = [], opportunities = [], agreements = [] } = {}, today = new Date()) {
+export function buildCalendarEvents({ initiatives = [], opportunities = [], agreements = [], assignments = [] } = {}, today = new Date()) {
   const events = [];
   const push = (type, record, date, extra = {}) => {
     if (!parseIsoDate(date)) return;
@@ -195,6 +199,11 @@ export function buildCalendarEvents({ initiatives = [], opportunities = [], agre
   for (const item of agreements || []) {
     if (!item || item.archivedAt || (item.status && item.status !== 'active')) continue;
     push('agreement', item, item.endDate);
+  }
+  for (const item of assignments || []) {
+    if (!item) continue;
+    const label = `Fin de asignación: ${item.talentName || 'talento'} en ${assignmentProjectLabel(item)}`;
+    push('assignment', item, item.endDate, { title: label, label, description: label });
   }
   const typeOrder = CALENDAR_EVENT_TYPES.map((type) => type.id);
   return events.sort((a, b) => a.date.localeCompare(b.date)

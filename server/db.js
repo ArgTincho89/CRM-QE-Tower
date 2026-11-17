@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { AGREEMENT_ID_PREFIX, INITIATIVE_ID_PREFIX, OPPORTUNITY_ID_PREFIX, planIdRename } from './ids.js';
+import { parseTalentProfiles } from '../src/people.js';
 
 const SERVICES_COLUMNS = `id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
       description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
@@ -245,6 +246,19 @@ const SCHEMA_STATEMENTS = [
     )`,
   'CREATE INDEX IF NOT EXISTS idx_training_plan_talent ON training_plan(talent_id)',
   'CREATE INDEX IF NOT EXISTS idx_training_plan_course ON training_plan(course_id)',
+  // "Performance review": one row per objective of a talent in a year. status is validated by the
+  // API (Pendiente / Cumplido / No cumplido); link_url is an optional http(s) link.
+  `CREATE TABLE IF NOT EXISTS performance_reviews (
+      id TEXT PRIMARY KEY,
+      talent_id TEXT NOT NULL REFERENCES talents(id),
+      year INTEGER NOT NULL,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'Pendiente',
+      link_title TEXT NOT NULL DEFAULT '', link_url TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+  'CREATE INDEX IF NOT EXISTS idx_performance_reviews_talent ON performance_reviews(talent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_performance_reviews_year ON performance_reviews(year)',
   // "Proyectos": NAQ application portfolio. testing_scope is a JSON array of strings.
   `CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY, code TEXT NOT NULL DEFAULT '', application_name TEXT NOT NULL,
@@ -281,6 +295,8 @@ const SIX_DIGIT_IDS_MARKER = 'six_digit_ids_v1';
 const NOTIFICATION_MENTION_KIND_MARKER = 'notification_mention_kind_v1';
 const RESOLUTION_DATE_MARKER = 'resolution_date_from_close_v1';
 const TALENT_RELATIONS_MARKER = 'talent_relations_backfill_v1';
+const TALENT_PROFILES_MARKER = 'talent_profiles_multi_v1';
+const TALENT_SORT_ORDER_MARKER = 'talent_sort_order_v1';
 
 /** Fiscal year that receives the seeded catalog and every service created before years existed. */
 export const INITIAL_SERVICE_YEAR = 2026;
@@ -335,6 +351,16 @@ export function applySchema(db) {
   // talent has no towers; otherwise one of its talent_towers rows (enforced by the API).
   const talentColumns = db.prepare('PRAGMA table_info(talents)').all().map((row) => row.name);
   if (!talentColumns.includes('primary_tower_id')) db.exec('ALTER TABLE talents ADD COLUMN primary_tower_id TEXT REFERENCES towers(id)');
+  // Manual display order of "Listado de personas" (drag and drop); backfilled by migrateTalentSortOrder.
+  if (!talentColumns.includes('sort_order')) db.exec('ALTER TABLE talents ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  // Optional ISO dates of an assignment ('' = open); an assignment counts as active between them.
+  const assignmentColumns = db.prepare('PRAGMA table_info(assignments)').all().map((row) => row.name);
+  for (const name of ['start_date', 'end_date']) {
+    if (!assignmentColumns.includes(name)) db.exec(`ALTER TABLE assignments ADD COLUMN ${name} TEXT NOT NULL DEFAULT ''`);
+  }
+  // The activity catalog became editable, so it tracks its last update like the other resources.
+  const activityColumns = db.prepare('PRAGMA table_info(activity_catalog)').all().map((row) => row.name);
+  if (!activityColumns.includes('updated_at')) db.exec("ALTER TABLE activity_catalog ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''");
   const opportunityAdditions = [
     ['origin', "TEXT NOT NULL DEFAULT ''"],
     ['probability', 'INTEGER'],
@@ -438,6 +464,8 @@ export function runMigrations(db) {
   migrateSixDigitIds(db);
   // After the id renames, so the derived relations reference the final master ids.
   migrateTalentRelations(db);
+  migrateTalentProfiles(db);
+  migrateTalentSortOrder(db);
 }
 
 function migrateLegacyEvolution(db) {
@@ -613,6 +641,36 @@ export function migrateTalentRelations(db) {
       WHERE primary_tower_id IS NULL
     `);
     db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(TALENT_RELATIONS_MARKER, new Date().toISOString());
+  });
+}
+
+/**
+ * "Perfil" became a multi-select stored as a JSON array in `talents.profile`. Converts the former
+ * single values once: 'Ambos' → ["Funcional","No funcional"], a known profile → [profile], empty →
+ * [], anything unknown → []. Guarded by `schema_meta`; later boots leave user edits alone.
+ */
+export function migrateTalentProfiles(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(TALENT_PROFILES_MARKER)) return;
+  withTransaction(db, () => {
+    const update = db.prepare('UPDATE talents SET profile = ? WHERE id = ?');
+    for (const row of db.prepare('SELECT id, profile FROM talents').all()) {
+      const next = JSON.stringify(parseTalentProfiles(row.profile));
+      if (next !== row.profile) update.run(next, row.id);
+    }
+    db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(TALENT_PROFILES_MARKER, new Date().toISOString());
+  });
+}
+
+/**
+ * Backfills the manual order of "Listado de personas" once, following the former alphabetical
+ * list (1..n). Guarded by `schema_meta`, so later reorders are never overwritten.
+ */
+export function migrateTalentSortOrder(db) {
+  if (db.prepare('SELECT value FROM schema_meta WHERE key = ?').get(TALENT_SORT_ORDER_MARKER)) return;
+  withTransaction(db, () => {
+    const update = db.prepare('UPDATE talents SET sort_order = ? WHERE id = ?');
+    db.prepare('SELECT id FROM talents ORDER BY name COLLATE NOCASE, id').all().forEach((row, index) => update.run(index + 1, row.id));
+    db.prepare('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run(TALENT_SORT_ORDER_MARKER, new Date().toISOString());
   });
 }
 

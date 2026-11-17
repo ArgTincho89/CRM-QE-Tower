@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { clampActiveIndex, edgeEnabledIndex, filterOptions, isAssignable, reduceDropdownKey, removeSelection, selectedOptions, toggleSelection } from './multiSelect.js';
 import { initiativeCategories, initiativePriorities, initiativeStages, initiativeStatuses, opportunityContractTypes, opportunityMarketScopes, opportunityOrigins, opportunityOutcomes, opportunityServiceTypes, opportunityTypes, proposals, stages } from './data.js';
 import { REUSABLE_REASON_LIMIT, contractTypeLabel, formatAiScore, marketScopeLabel, parseAiScore, serviceTypeLabel } from './opportunityFields.js';
 import { NO_CLIENT_LABEL, applyOriginChange, describeOpportunityOutcome, describeOpportunityType, isActiveOpportunity, isClientRequired, opportunityClientLabel, opportunityNumberLabel, originInitiativeOptions, requiresOriginInitiative } from './opportunities.js';
@@ -12,7 +11,7 @@ import { MAX_WORKSPACE_LINKS, DEFAULT_WORKSPACE_LINK_TITLE, normalizeWorkspaceLi
 import { filterAgreements } from './agreements.js';
 import { computeWeightedAmount } from './pipelineSummary.js';
 import { ALL_YEARS, availableYears, computePipelineKpis } from './pipelineMetrics.js';
-import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePipelineYear, saveViewMode } from './preferences.js';
+import { loadMasterDataTab, loadPipelineYear, loadViewMode, saveMasterDataTab, savePeopleTab, savePipelineYear, saveViewMode } from './preferences.js';
 import { buildServiceOptions, defaultServiceYear, previousServiceYear, serviceLabel, servicesOfYear, suggestNewServiceYear, yearNumbers } from './serviceYears.js';
 import { ASSIGNED_TO_ME_FILTER, MISSING_OPPORTUNITY_TYPE_FILTER, MISSING_OPTION_FILTER, NOT_REUSABLE_FILTER, OPEN_OUTCOME_FILTER, REUSABLE_FILTER, UNASSIGNED_FILTER, createDefaultAdvancedFilters, filterPipelineCards, filterPipelineToolbar } from './pipelineFilters.js';
 import { formatNotificationTime, markNotificationsRead, notificationTargetPage, unreadBadgeLabel } from './notifications.js';
@@ -26,6 +25,7 @@ import ProjectsPage from './ProjectsPage.jsx';
 import RecordComments from './RecordComments.jsx';
 import { fieldLabel } from './history.js';
 import DataTable from './DataTable.jsx';
+import MultiSelect from './MultiSelect.jsx';
 import { FormField, useFieldErrors } from './FormField.jsx';
 import { DetailsDialog, formatDateTime } from './OperationsUi.jsx';
 import { AGREEMENT_FORM_FIELDS, INITIATIVE_FORM_FIELDS, MASTER_FORM_FIELDS, OPPORTUNITY_FORM_FIELDS, SERVICE_YEAR_FORM_FIELDS, mapServerFieldError, validateAgreementForm, validateInitiativeForm, validateMasterForm, validateOpportunityForm, validateServiceYearForm } from './formValidation.js';
@@ -811,6 +811,12 @@ function App() {
 
   const openCalendarEvent = (event) => {
     setCommentsFocus('');
+    // Assignment end dates open People on the Asignaciones tab.
+    if (event.type === 'assignment') {
+      savePeopleTab('assignments');
+      navigate('talents');
+      return;
+    }
     openRecord(event.type, event.recordId, { stay: true });
   };
 
@@ -1469,111 +1475,6 @@ function InitiativeTable({ tableId, rows, archived, emptyMessage, onEdit, onArch
     ...(archived ? [{ id: 'archivedBy', label: 'Archivada por', value: (item) => item.archivedByName }] : []),
   ];
   return <div className="table-wrap"><DataTable tableId={tableId} className="data-table initiative-table" rows={rows} columns={columns} actions={{ label: 'Acciones', className: 'master-actions', render: (item) => <>{archived ? <button className="button button-secondary" onClick={() => onRestore(item)}>Restaurar</button> : <><button className="button button-secondary" onClick={() => onEdit(item)}>Editar</button><button className="button button-secondary" onClick={() => onArchive(item)}>Archivar</button></>}<button className="button button-secondary button-danger" onClick={() => onDelete(item)}>Eliminar</button></> }} />{rows.length === 0 && <p className="empty-state">{emptyMessage}</p>}</div>;
-}
-
-/**
- * Dropdown multi-select: a closed control with the selected chips (removable) and a toggle that
- * opens a popover listbox with a search box. Keyboard: ArrowDown/ArrowUp/Home/End move, Enter
- * toggles, Escape closes; focus stays in the search box (aria-activedescendant). Clicking outside
- * closes the popover only, never the surrounding dialog. Non-assignable options (inactive or of
- * another fiscal year) render disabled unless already selected, so they can still be removed.
- */
-function MultiSelect({ legend, hint, options, selected, onChange, disabled }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const [activeIndex, setActiveIndex] = useState(-1);
-  const rootRef = useRef(null);
-  const toggleRef = useRef(null);
-  const searchRef = useRef(null);
-  const baseId = useId();
-  const listId = `${baseId}-list`;
-  const hintId = `${baseId}-hint`;
-  const optionId = (index) => `${baseId}-option-${index}`;
-  const chips = selectedOptions(options, selected);
-  const visible = filterOptions(options, query);
-  const optionLabel = (option) => `${option.name}${option.active === false ? ' (inactivo)' : ''}`;
-
-  const close = (restoreFocus) => {
-    setOpen(false);
-    setQuery('');
-    setActiveIndex(-1);
-    if (restoreFocus) toggleRef.current?.focus();
-  };
-  const openList = (index) => {
-    setOpen(true);
-    setActiveIndex(index);
-  };
-
-  useEffect(() => {
-    if (!open) return undefined;
-    searchRef.current?.focus();
-    // Pointer down outside closes the popover; the dialog itself stays open.
-    const handlePointerDown = (event) => {
-      if (!rootRef.current?.contains(event.target)) close(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  useEffect(() => {
-    if (open) document.getElementById(optionId(activeIndex))?.scrollIntoView?.({ block: 'nearest' });
-  }, [open, activeIndex]);
-
-  useEffect(() => {
-    if (disabled && open) close(false);
-  }, [disabled, open]);
-
-  const handleKeyDown = (event) => {
-    const next = reduceDropdownKey({ open, activeIndex }, event.key, { options: visible, selected });
-    if (!next.handled) return;
-    event.preventDefault();
-    // Escape must close only the popover, not the dialog around it.
-    event.stopPropagation();
-    if (next.toggle) onChange(toggleSelection(selected, next.toggle));
-    if (!next.open) close(true);
-    else openList(next.activeIndex);
-  };
-  const handleSearch = (value) => {
-    setQuery(value);
-    setActiveIndex(clampActiveIndex(filterOptions(options, value), selected, -1));
-  };
-  const pick = (option, index) => {
-    if (!isAssignable(option, selected)) return;
-    onChange(toggleSelection(selected, option));
-    setActiveIndex(index);
-    searchRef.current?.focus();
-  };
-
-  return <fieldset className="relation-field multi-select" disabled={disabled} ref={rootRef} onBlur={(event) => { if (open && !rootRef.current?.contains(event.relatedTarget)) close(false); }}>
-    <legend>{legend}</legend>
-    {hint && <span className="field-hint" id={hintId}>{hint}</span>}
-    <div className={`multi-select-control${open ? ' open' : ''}`}>
-      {chips.length > 0
-        ? <ul className="multi-select-chips" aria-label={`${legend} seleccionados`}>
-          {chips.map((option) => <li key={option.id} className={`relation-option selected${option.active === false ? ' inactive' : ''}`}><span>{optionLabel(option)}</span><button type="button" className="chip-remove" onClick={() => onChange(removeSelection(selected, option.id))} aria-label={`Quitar ${option.name}`}>×</button></li>)}
-        </ul>
-        : <span className="multi-select-placeholder">Sin selección</span>}
-      <button type="button" ref={toggleRef} className="multi-select-toggle" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} aria-describedby={hint ? hintId : undefined} onClick={() => (open ? close(true) : openList(edgeEnabledIndex(visible, selected, 'start')))} onKeyDown={handleKeyDown}>
-        <span className="sr-only">{open ? 'Cerrar' : 'Abrir'} opciones de {legend}</span><Icon name="chevron" size={14} />
-      </button>
-    </div>
-    {open && <div className="multi-select-popover">
-      <input type="search" ref={searchRef} className="multi-select-search" value={query} onChange={(event) => handleSearch(event.target.value)} onKeyDown={handleKeyDown} placeholder={`Buscar ${legend.toLowerCase()}…`} role="combobox" aria-label={`Buscar en ${legend}`} aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={activeIndex >= 0 && activeIndex < visible.length ? optionId(activeIndex) : undefined} autoComplete="off" />
-      <ul className="multi-select-listbox" id={listId} role="listbox" aria-multiselectable="true" aria-label={`Opciones de ${legend}`}>
-        {visible.map((option, index) => {
-          const isSelected = selected.includes(option.id);
-          const assignable = isAssignable(option, selected);
-          return <li key={option.id} id={optionId(index)} role="option" aria-selected={isSelected} aria-disabled={assignable ? undefined : 'true'} className={`multi-select-option${isSelected ? ' selected' : ''}${index === activeIndex ? ' active' : ''}${assignable ? '' : ' disabled'}`} onPointerDown={(event) => event.preventDefault()} onClick={() => pick(option, index)} onPointerEnter={() => { if (assignable) setActiveIndex(index); }}>
-            <span className="multi-select-check" aria-hidden="true">{isSelected ? '✓' : ''}</span><span>{optionLabel(option)}</span>
-          </li>;
-        })}
-      </ul>
-      {options.length === 0
-        ? <span className="field-hint">No hay opciones disponibles.</span>
-        : visible.length === 0 && <span className="field-hint" role="status">Sin coincidencias.</span>}
-    </div>}
-    <span className="sr-only" role="status" aria-live="polite">{selected.length} seleccionados</span>
-  </fieldset>;
 }
 
 /**

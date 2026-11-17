@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import DataTable from './DataTable.jsx';
+import MultiSelect from './MultiSelect.jsx';
 import { FieldError, FormField, useFieldErrors } from './FormField.jsx';
 import { mapServerFieldError } from './formValidation.js';
 
@@ -43,7 +44,7 @@ export function SearchBox({ value, onChange, label, placeholder = 'Buscar…' })
  * Table panel: title, description, record count, search box, optional create button, notices and
  * the sortable/draggable DataTable with "Editar" / "Eliminar" actions.
  */
-export function RecordPanel({ title, description, tableId, columns, rows, totalCount, query, onQueryChange, searchLabel, createLabel, onCreate, onEdit, onDelete, emptyMessage, loading = false, error = '', onRetry, onRowClick = null, rowAriaLabel = null, children }) {
+export function RecordPanel({ title, description, tableId, columns, rows, totalCount, query, onQueryChange, searchLabel, createLabel, onCreate, onEdit, onDelete, emptyMessage, loading = false, error = '', onRetry, onRowClick = null, rowAriaLabel = null, rowReorder = null, children }) {
   const actions = onEdit || onDelete
     ? { label: 'Acciones', className: 'master-actions', render: (row) => <>{onEdit && <button type="button" className="button button-secondary" onClick={() => onEdit(row)}>Editar</button>}{onDelete && <button type="button" className="button button-secondary button-danger" onClick={() => onDelete(row)}>Eliminar</button>}</> }
     : null;
@@ -60,7 +61,7 @@ export function RecordPanel({ title, description, tableId, columns, rows, totalC
         : error
           ? <div className="board-state"><p>{error}</p>{onRetry && <button type="button" className="button button-secondary" onClick={onRetry}>Reintentar</button>}</div>
           : <>
-            <DataTable tableId={tableId} className="data-table secondary-table" columns={columns} rows={rows} actions={actions} onRowClick={onRowClick} rowAriaLabel={rowAriaLabel} />
+            <DataTable tableId={tableId} className="data-table secondary-table" columns={columns} rows={rows} actions={actions} onRowClick={onRowClick} rowAriaLabel={rowAriaLabel} rowReorder={rowReorder} />
             {rows.length === 0 && <p className="empty-state">{query.trim() ? 'No hay registros que coincidan con la búsqueda.' : emptyMessage}</p>}
           </>}
     </div>
@@ -105,10 +106,11 @@ function MultiCheckField({ legend, options, selected, onChange, form, field, hin
  * Create/edit dialog generated from `fields`: `{ id, label, type, options?, required?, wide?, hint?,
  * visible?(values), compute?(values), onChange?(value, values) → patch }`. `options` may be a
  * function of the current values. Types: text, textarea, number, date, url, select, combo (free
- * text with suggestions), readonly, checklist and multicheck (ids from fixed options).
+ * text with suggestions), readonly, checklist, multicheck (ids from fixed options) and multiselect (the
+ * same ids through an accessible dropdown with search).
  * `validate(values)` returns field errors; server errors with a `field` are mapped back too.
  */
-export function RecordDialog({ eyebrow, title, fields, initialValues, validate, formFields, toPayload = (values) => values, onSave, onClose, submitLabel = 'Guardar' }) {
+export function RecordDialog({ eyebrow, title, fields, initialValues, validate, formFields, toPayload = (values) => values, onSave, onClose, submitLabel = 'Guardar', className = '' }) {
   const [values, setValues] = useState(initialValues);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -150,12 +152,19 @@ export function RecordDialog({ eyebrow, title, fields, initialValues, validate, 
     if (field.type === 'url') return <input type="url" inputMode="url" placeholder="https://" {...common} />;
     return <input {...common} />;
   };
-  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }}>
+  return <dialog ref={dialogRef} className={`opportunity-dialog compact-dialog${className ? ` ${className}` : ''}`} onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <form onSubmit={submit} noValidate ref={fieldErrors.formRef}>
       <div className="dialog-heading"><div><span className="eyebrow">{eyebrow}</span><h2>{title}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}>×</button></div>
       <div className="form-grid">
         {fields.filter((field) => !field.visible || field.visible(values)).map((field) => {
           if (field.type === 'checklist') return <ChecklistField key={field.id} legend={field.label} options={field.options || []} selected={values[field.id] || []} onChange={(next) => setValue(field, next)} />;
+          if (field.type === 'heading') return <h3 key={field.id} className="form-section-title">{field.label}</h3>;
+          if (field.type === 'multiselect') {
+            return <MultiSelect key={field.id} className={`form-field wide ops-multiselect${field.required ? ' required' : ''}`} legend={field.label} hint={field.hint}
+              options={optionsOf(field).map((option) => ({ id: optionValue(option), name: optionLabel(option), active: typeof option === 'object' ? option.active : undefined }))}
+              selected={values[field.id] || []} onChange={(next) => setValue(field, next)} disabled={saving}
+              invalid={Boolean(fieldErrors.errors[field.id])} errorId={fieldErrors.errorId(field.id)}><FieldError form={fieldErrors} field={field.id} /></MultiSelect>;
+          }
           if (field.type === 'multicheck') return <MultiCheckField key={field.id} legend={field.label} options={optionsOf(field)} selected={values[field.id] || []} onChange={(next) => setValue(field, next)} form={fieldErrors} field={field.id} hint={field.hint} />;
           if (field.type === 'readonly') return <label key={field.id} className={`form-field${field.wide ? ' wide' : ''}`}>{field.label}<input value={field.compute(values) || ''} readOnly aria-readonly="true" className="ops-readonly" />{field.hint && <span className="field-hint">{field.hint}</span>}</label>;
           return <FormField key={field.id} form={fieldErrors} field={field.id} label={field.label} required={field.required} className={field.wide ? 'wide' : ''}>{renderControl(field)}{field.hint && <span className="field-hint">{field.hint}</span>}</FormField>;
@@ -179,6 +188,37 @@ export function DetailsDialog({ eyebrow, title, rows = [], onClose }) {
       <div className="dialog-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose}>×</button></div>
       <dl className="detail-list">{rows.map((row, index) => <div key={`${row.label}-${index}`}><dt>{row.label}</dt><dd>{row.value === null || row.value === undefined || row.value === '' ? '—' : row.value}</dd></div>)}</dl>
       <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></div>
+    </div>
+  </dialog>;
+}
+
+/**
+ * Delete confirmation that knows what blocks the delete before offering it. `state` is
+ * `{ status, links, error }` with status 'loading' (checking the links), 'ready' (nothing blocks:
+ * confirm), 'blocked' (lists every link; only "Cerrar"), 'deleting' or 'error'.
+ */
+export function DeleteRecordDialog({ eyebrow, noun, name, state, onConfirm, onClose, onRetry }) {
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  useEffect(() => { dialogRef.current?.showModal(); return () => { if (dialogRef.current?.open) dialogRef.current.close(); }; }, []);
+  const { status, links = [], error = '' } = state;
+  const blocked = status === 'blocked';
+  return <dialog ref={dialogRef} className="opportunity-dialog compact-dialog delete-dialog" aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); if (status !== 'deleting') onClose(); }}>
+    <div className="dialog-body">
+      <div className="dialog-heading"><div><span className="eyebrow">{eyebrow}</span><h2 id={titleId}>{blocked ? `No se puede eliminar ${noun}` : `Eliminar ${noun}`}</h2></div><button type="button" className="icon-button" aria-label="Cerrar" onClick={onClose} disabled={status === 'deleting'}>×</button></div>
+      {status === 'loading' && <p role="status">Comprobando los vínculos de «{name}»…</p>}
+      {status === 'error' && <p className="form-error" role="alert">{error}</p>}
+      {blocked && <div role="alert">
+        <p>«{name}» tiene vínculos que impiden eliminarlo:</p>
+        <ul className="delete-links">{links.map((link) => <li key={link.label}>{link.text}</li>)}</ul>
+        <p className="field-hint">Elimina o reasigna esos registros y vuelve a intentarlo.</p>
+      </div>}
+      {(status === 'ready' || status === 'deleting') && <p>¿Eliminar definitivamente {noun} «{name}»? Esta acción no se puede deshacer.</p>}
+      <div className="dialog-actions">
+        {blocked || status === 'error' || status === 'loading'
+          ? <>{status === 'error' && onRetry && <button type="button" className="button button-secondary" onClick={onRetry}>Reintentar</button>}<button type="button" className="button button-secondary" onClick={onClose}>Cerrar</button></>
+          : <><button type="button" className="button button-secondary" onClick={onClose} disabled={status === 'deleting'}>Cancelar</button><button type="button" className="button button-primary button-danger-solid" onClick={onConfirm} disabled={status === 'deleting'}>{status === 'deleting' ? 'Eliminando…' : 'Eliminar'}</button></>}
+      </div>
     </div>
   </dialog>;
 }

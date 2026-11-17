@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ariaSortFor, describeColumnMove, describeSortChange, isEmptyValue, loadTableState, mergeColumnOrder, moveColumn, moveColumnTo, nextSort, sanitizeSort, saveTableState, sortRows } from './tableState.js';
+import { ariaSortFor, describeColumnMove, describeRowMove, describeSortChange, isEmptyValue, loadTableState, mergeColumnOrder, moveColumn, moveColumnTo, nextSort, sanitizeSort, saveTableState, sortRows } from './tableState.js';
 
 /**
  * Column order and sort of one table, persisted in localStorage under `crm.table.<tableId>`.
@@ -36,6 +36,9 @@ export function useTableState(tableId, columns) {
       commit({ order: next, sort });
       return next;
     },
+    clearSort() {
+      commit({ order, sort: null });
+    },
   };
 }
 
@@ -49,26 +52,67 @@ function SortIndicator({ direction }) {
  * `pinnedFirst` columns always render first, whatever the saved order.
  * `actions` (`{ label, srOnly?, className?, render(row) }`) always renders last and is fixed.
  * With `onRowClick(row)` the whole row opens that record; clicks on its own controls are ignored.
+ *
+ * Opt-in manual row order: `rowReorder` (`{ onMove(sourceKey, targetKey), label(row) }`) adds a
+ * drag handle per row; dropping a row on another one (or Alt+Up/Down on the focused handle) asks
+ * the owner to move it to that row's position. A column sort wins over the manual order: while one
+ * is active the handles are disabled and a "Volver al orden manual" button clears the sort.
  */
-export default function DataTable({ tableId, columns, rows, rowKey = (row) => row.id, actions = null, className = 'data-table', onRowClick = null, rowAriaLabel = null }) {
-  const { order, sort, toggleSort, move, moveTo } = useTableState(tableId, columns);
+export default function DataTable({ tableId, columns, rows, rowKey = (row) => row.id, actions = null, className = 'data-table', onRowClick = null, rowAriaLabel = null, rowReorder = null }) {
+  const { order, sort, toggleSort, move, moveTo, clearSort } = useTableState(tableId, columns);
   const [announcement, setAnnouncement] = useState('');
   const [dragId, setDragId] = useState(null);
   const [dropTargetId, setDropTargetId] = useState(null);
+  const [rowDragKey, setRowDragKey] = useState(null);
+  const [rowDropKey, setRowDropKey] = useState(null);
   const headerRefs = useRef(new Map());
+  const handleRefs = useRef(new Map());
   const pendingFocusRef = useRef(null);
+  const pendingHandleFocusRef = useRef(null);
   const instructionsId = useId();
+  const rowInstructionsId = useId();
   const byId = new Map(columns.map((column) => [column.id, column]));
   const pinnedIds = columns.filter((column) => column.pinnedFirst).map((column) => column.id);
   const orderedColumns = [...pinnedIds, ...order.filter((id) => !pinnedIds.includes(id))].map((id) => byId.get(id)).filter(Boolean);
   const sortedRows = sortRows(rows, columns, sort);
+  const manualOrder = Boolean(rowReorder) && !sort;
 
-  // Keyboard reordering moves the focused header; keep focus on it after React reorders the DOM.
+  // Keyboard reordering moves the focused header (or row handle); keep focus on it after React
+  // reorders the DOM.
   useEffect(() => {
-    if (!pendingFocusRef.current) return;
-    headerRefs.current.get(pendingFocusRef.current)?.focus();
-    pendingFocusRef.current = null;
+    if (pendingFocusRef.current) {
+      headerRefs.current.get(pendingFocusRef.current)?.focus();
+      pendingFocusRef.current = null;
+    }
+    if (pendingHandleFocusRef.current) {
+      const handle = handleRefs.current.get(pendingHandleFocusRef.current);
+      if (handle && document.activeElement !== handle) handle.focus();
+      pendingHandleFocusRef.current = null;
+    }
   });
+
+  const moveRow = (sourceRow, targetRow) => {
+    const sourceKey = rowKey(sourceRow);
+    const targetKey = rowKey(targetRow);
+    if (!manualOrder || sourceKey === targetKey) return;
+    rowReorder.onMove(sourceKey, targetKey);
+    const position = sortedRows.indexOf(targetRow) + 1;
+    setAnnouncement(describeRowMove(rowReorder.label(sourceRow), position, sortedRows.length));
+  };
+  const handleRowKeyDown = (event, row, index) => {
+    if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = sortedRows[index + (event.key === 'ArrowUp' ? -1 : 1)];
+    if (!target) return;
+    pendingHandleFocusRef.current = rowKey(row);
+    moveRow(row, target);
+  };
+  const resetRowDrag = () => { setRowDragKey(null); setRowDropKey(null); };
+  const restoreManualOrder = () => {
+    clearSort();
+    setAnnouncement('Orden manual restaurado.');
+  };
 
   const handleSort = (column) => {
     if (column.sortable === false) return;
@@ -103,10 +147,16 @@ export default function DataTable({ tableId, columns, rows, rowKey = (row) => ro
     resetDrag();
   };
 
+  const sortedLabel = sort ? byId.get(sort.columnId)?.label || '' : '';
   return <>
+    {rowReorder && sort && <p className="row-order-note" role="status">
+      Ordenado por «{sortedLabel}»: el orden manual está en pausa.
+      <button type="button" className="inline-link" onClick={restoreManualOrder}>Volver al orden manual</button>
+    </p>}
     <table className={className}>
       <caption className="sr-only" id={instructionsId}>Pulsa un encabezado para ordenar. Alt + flecha izquierda o derecha mueve la columna; también puedes arrastrar los encabezados.</caption>
       <thead><tr>
+        {rowReorder && <th className="row-drag-header" scope="col"><span className="sr-only">Orden manual</span></th>}
         {orderedColumns.map((column) => {
           const ariaSort = ariaSortFor(sort, column.id);
           const sortable = column.sortable !== false;
@@ -120,12 +170,42 @@ export default function DataTable({ tableId, columns, rows, rowKey = (row) => ro
         })}
         {actions && <th className="actions-header">{actions.srOnly ? <span className="sr-only">{actions.label}</span> : actions.label}</th>}
       </tr></thead>
-      <tbody>{sortedRows.map((row, index) => <tr key={rowKey(row, index)}
-        className={onRowClick ? 'row-clickable' : undefined}
+      <tbody>{sortedRows.map((row, index) => {
+        const key = rowKey(row, index);
+        // Only Enter/Space pressed on the row itself opens it; on its buttons they must activate them.
+        const rowClass = [onRowClick ? 'row-clickable' : '', rowDragKey === key ? 'row-dragging' : '', rowDropKey === key && rowDragKey !== key ? 'row-drop-target' : ''].filter(Boolean).join(' ');
+        const dragOver = (event) => {
+          if (rowDragKey === null) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          if (rowDropKey !== key) setRowDropKey(key);
+        };
+        return <tr key={key}
+        className={rowClass || undefined}
         tabIndex={onRowClick ? 0 : undefined}
         aria-label={onRowClick && rowAriaLabel ? rowAriaLabel(row) : undefined}
         onClick={onRowClick ? (event) => { if (!event.target.closest('button, a, input, select, textarea, label')) onRowClick(row); } : undefined}
-        onKeyDown={onRowClick ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onRowClick(row); } } : undefined}>
+        onKeyDown={onRowClick ? (event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onRowClick(row); } } : undefined}
+        onDragOver={rowReorder ? dragOver : undefined}
+        onDragEnter={rowReorder ? dragOver : undefined}
+        onDrop={rowReorder ? (event) => {
+          if (rowDragKey === null) return;
+          event.preventDefault();
+          const source = sortedRows.find((item, itemIndex) => rowKey(item, itemIndex) === rowDragKey);
+          if (source) moveRow(source, row);
+          resetRowDrag();
+        } : undefined}>
+        {rowReorder && <td className="row-drag-cell">
+          <button type="button" className="row-drag-handle" ref={(node) => { if (node) handleRefs.current.set(key, node); else handleRefs.current.delete(key); }}
+            draggable={manualOrder} disabled={!manualOrder}
+            aria-label={`Mover ${rowReorder.label(row)}`} aria-describedby={rowInstructionsId}
+            title={manualOrder ? 'Arrastra para cambiar el orden (Alt + flecha arriba/abajo con el teclado)' : 'Quita la ordenación por columna para reordenar manualmente'}
+            onDragStart={(event) => { setRowDragKey(key); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(key)); }}
+            onDragEnd={resetRowDrag}
+            onKeyDown={(event) => handleRowKeyDown(event, row, index)}>
+            <span aria-hidden="true">⠿</span>
+          </button>
+        </td>}
         {orderedColumns.map((column) => {
           const cellClass = typeof column.cellClassName === 'function' ? column.cellClassName(row) : column.cellClassName;
           let content;
@@ -137,8 +217,10 @@ export default function DataTable({ tableId, columns, rows, rowKey = (row) => ro
           return <td key={column.id} className={cellClass || undefined}>{content}</td>;
         })}
         {actions && <td className={actions.className || undefined}>{actions.render(row)}</td>}
-      </tr>)}</tbody>
+      </tr>;
+      })}</tbody>
     </table>
+    {rowReorder && <p className="sr-only" id={rowInstructionsId}>Alt + flecha arriba o abajo mueve la fila en el orden manual; también puedes arrastrarla por el asa.</p>}
     <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
   </>;
 }

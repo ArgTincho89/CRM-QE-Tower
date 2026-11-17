@@ -3,12 +3,15 @@ import { getSessionUser } from './auth.js';
 import { parseSpanishNumber } from './csv.js';
 import { withTransaction } from './db.js';
 import { HttpError, readJson, sendJson } from './http.js';
-import { CAREER_LEVELS, TALENT_CATEGORIES, TALENT_PROFILES, parseTestingScope } from '../src/people.js';
+import {
+  CAREER_LEVELS, DEFAULT_PERFORMANCE_STATUS, PERFORMANCE_STATUSES, TALENT_CATEGORIES, TALENT_PROFILES, parseTalentProfiles, parseTestingScope,
+} from '../src/people.js';
 
 /**
- * Authenticated CRUD of the "People" and "Proyectos" sections: talents, talent skills,
- * assignments, training catalog, training plan and projects, plus the read-only activity
- * catalog. Every mutation is recorded in `entity_events`; deletes are guarded by relations.
+ * Authenticated CRUD of the "People" and "Proyectos" sections: talents, talent skills, activity
+ * catalog, assignments, training catalog, training plan, performance reviews and projects. Every
+ * mutation is recorded in `entity_events`; deletes are guarded by relations, and
+ * `GET /api/<resource>/<id>/links` lists those relations before deleting.
  */
 
 function validationError(message, field) {
@@ -153,6 +156,25 @@ function stringList(key, label, { maxItems = 30, maxLength = 60 } = {}) {
   };
 }
 
+/** Subset of fixed choices stored as a JSON array in TALENT_PROFILES order (e.g. "Perfil"). */
+function choiceList(key, label, allowed) {
+  return {
+    key,
+    parse(value) {
+      if (value === undefined || value === null || value === '') return '[]';
+      if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw validationError(`El campo «${label}» debe ser una lista de valores.`, key);
+      const unknown = value.map((item) => item.trim()).filter((item) => item !== '' && !allowed.includes(item));
+      if (unknown.length > 0) throw validationError(`El campo «${label}» solo admite: ${allowed.join(', ')}.`, key);
+      return JSON.stringify(allowed.filter((item) => value.some((selected) => selected.trim() === item)));
+    },
+  };
+}
+
+/** Next value of an integer column (max + 1), for append-at-the-end ordering and numeric ids. */
+function nextInteger(db, table, column) {
+  return Number(db.prepare(`SELECT COALESCE(MAX(CAST(${column} AS INTEGER)), 0) AS value FROM ${table}`).get().value) + 1;
+}
+
 /**
  * Many-to-many link of a resource to a master table through a join table. The body carries
  * `key` (array of master ids); records expose `key` and `namesKey` sorted by master name.
@@ -211,12 +233,13 @@ const RESOURCES = {
     notFound: 'El talento no existe.',
     select: `SELECT talents.*, primary_tower.name AS primary_tower_name FROM talents
       LEFT JOIN towers AS primary_tower ON primary_tower.id = talents.primary_tower_id`,
-    order: 'ORDER BY talents.name COLLATE NOCASE',
+    // Manual order of "Listado de personas" (POST /api/talents/reorder); ties fall back to the name.
+    order: 'ORDER BY talents.sort_order, talents.name COLLATE NOCASE',
     fields: [
       ['name', text('name', 'Nombre', { max: 120, required: true })],
       ['location', text('location', 'Ubicación', { max: 120 })],
       ['category', oneOf('category', 'Categoría', TALENT_CATEGORIES)],
-      ['profile', oneOf('profile', 'Perfil', TALENT_PROFILES)],
+      ['profile', choiceList('profiles', 'Perfil', TALENT_PROFILES)],
       ['primary_tower_id', reference('primaryTowerId', 'Tower principal', 'towers')],
     ],
     relations: [
@@ -237,8 +260,34 @@ const RESOURCES = {
       ['SELECT COUNT(*) AS count FROM talent_skills WHERE talent_id = $id', 'skill', 'skills'],
       ['SELECT COUNT(*) AS count FROM assignments WHERE talent_id = $id', 'asignación', 'asignaciones'],
       ['SELECT COUNT(*) AS count FROM training_plan WHERE talent_id = $id', 'fila del plan de formación', 'filas del plan de formación'],
+      ['SELECT COUNT(*) AS count FROM performance_reviews WHERE talent_id = $id', 'objetivo de performance review', 'objetivos de performance review'],
+    ],
+    insertDefaults: (db) => ({ sort_order: nextInteger(db, 'talents', 'sort_order') }),
+    describe: (row) => row.name,
+    // `profile` holds a JSON array; the API exposes it as `profiles`.
+    map: ({ profile, ...record }) => ({ ...record, profiles: parseTalentProfiles(profile) }),
+  },
+  'activity-catalog': {
+    table: 'activity_catalog',
+    entityType: 'activity',
+    subject: 'la actividad',
+    notFound: 'La actividad no existe.',
+    select: 'SELECT activity_catalog.* FROM activity_catalog',
+    order: 'ORDER BY activity_catalog.sort_order, activity_catalog.name',
+    // l1..l7 keep the raw cell text: ✅ required, ⚪ optional, other text a specific role, '' not applicable.
+    fields: [
+      ['name', text('name', 'Actividad (Skill)', { max: 200, required: true })],
+      ['category', text('category', 'Skill - Categoría', { max: 120 })],
+      ...CAREER_LEVELS.map((level) => [level.toLowerCase(), text(level.toLowerCase(), level, { max: 120 })]),
+    ],
+    // Seeded ids are the catalog's numeric "ID" column, so new activities continue that sequence.
+    newId: (db) => String(nextInteger(db, 'activity_catalog', 'id')),
+    insertDefaults: (db) => ({ sort_order: nextInteger(db, 'activity_catalog', 'sort_order') }),
+    deleteChecks: [
+      ['SELECT COUNT(*) AS count FROM talent_skills WHERE activity_id = $id', 'skill de talento', 'skills de talento'],
     ],
     describe: (row) => row.name,
+    map: (record) => ({ ...record, levels: Object.fromEntries(CAREER_LEVELS.map((level) => [level, record[level.toLowerCase()] ?? ''])) }),
   },
   'talent-skills': {
     table: 'talent_skills',
@@ -262,6 +311,15 @@ const RESOURCES = {
     validate(db, values, id) {
       const found = db.prepare('SELECT id FROM talent_skills WHERE talent_id = ? AND activity_id = ?').get(values.talent_id, values.activity_id);
       if (found && found.id !== id) throw new HttpError(409, 'duplicate_record', 'Esta persona ya tiene registrada esa actividad.', 'activityId');
+      // "Nivel" must be one the activity has configured in the catalog. Rows saved before this rule
+      // keep their level while neither the level nor the activity changes.
+      if (!values.career_level) return;
+      const stored = id ? db.prepare('SELECT activity_id, career_level FROM talent_skills WHERE id = ?').get(id) : null;
+      if (stored && stored.activity_id === values.activity_id && stored.career_level === values.career_level) return;
+      const activity = db.prepare('SELECT * FROM activity_catalog WHERE id = ?').get(values.activity_id);
+      if (!String(activity?.[values.career_level.toLowerCase()] ?? '').trim()) {
+        throw validationError(`El nivel ${values.career_level} no está configurado para la actividad seleccionada.`, 'careerLevel');
+      }
     },
     deleteChecks: [],
     describe: (row) => row.activity_name || row.activity_id,
@@ -282,9 +340,44 @@ const RESOURCES = {
       ['lob_id', reference('lobId', 'LoB', 'lobs')],
       ['client_id', reference('clientId', 'Cliente', 'clients')],
       ['percentage', number('percentage', '% asignación', { min: 0, max: 100, required: true })],
+      ['start_date', date('startDate', 'Fecha inicio')],
+      ['end_date', date('endDate', 'Fecha fin')],
     ],
+    validate(db, values) {
+      if (values.start_date && values.end_date && values.end_date < values.start_date) {
+        throw validationError('La fecha fin no puede ser anterior a la fecha inicio.', 'endDate');
+      }
+    },
     deleteChecks: [],
     describe: (row) => row.talent_name,
+  },
+  'performance-reviews': {
+    table: 'performance_reviews',
+    entityType: 'performance_review',
+    subject: 'el objetivo',
+    notFound: 'El objetivo de performance review no existe.',
+    select: `SELECT performance_reviews.*, talents.name AS talent_name
+      FROM performance_reviews JOIN talents ON talents.id = performance_reviews.talent_id`,
+    order: 'ORDER BY performance_reviews.year DESC, talents.name COLLATE NOCASE, performance_reviews.created_at',
+    fields: [
+      ['talent_id', reference('talentId', 'Talento', 'talents', { required: true })],
+      ['year', number('year', 'Año', { min: 2000, max: 2100, required: true, integer: true })],
+      ['objective', text('objective', 'Objetivo', { max: 1000, required: true })],
+      ['status', oneOf('status', 'Estado', PERFORMANCE_STATUSES)],
+      ['link_title', text('linkTitle', 'Título del enlace', { max: 200 })],
+      ['link_url', url('linkUrl', 'Enlace')],
+      ['notes', text('notes', 'Notas', { max: 2000 })],
+    ],
+    validate(db, values) {
+      if (!values.status) values.status = DEFAULT_PERFORMANCE_STATUS;
+    },
+    // A create body may carry `objectives: [{ objective, status?, linkTitle?, linkUrl?, notes? }]`
+    // with the shared talentId/year: each item becomes one row, all in one transaction.
+    batchKey: 'objectives',
+    batchLabel: 'Objetivo',
+    batchSharedKeys: ['talentId', 'year'],
+    deleteChecks: [],
+    describe: (row) => row.objective,
   },
   'training-catalog': {
     table: 'training_catalog',
@@ -417,23 +510,54 @@ function listResource(ctx, req, res, resource) {
   sendJson(res, 200, { records: rows.map((row) => toRecord(resource, row, loaded)) });
 }
 
+/** Parses, validates and inserts one record inside the caller's transaction; returns its id. */
+function insertRecord(db, resource, body, { user, now }) {
+  const id = resource.newId ? resource.newId(db) : randomUUID();
+  const values = {};
+  for (const [column, parser] of resource.fields) values[column] = parser.parse(body[parser.key], db);
+  const relations = Object.fromEntries((resource.relations || []).map((rel) => [rel.key, rel.parse(body[rel.key], db)]));
+  resource.validate?.(db, values, null, relations);
+  Object.assign(values, resource.insertDefaults?.(db) || {});
+  const columns = ['id', ...Object.keys(values), 'created_at', 'updated_at'];
+  db.prepare(`INSERT INTO ${resource.table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+    .run(id, ...Object.values(values), now, now);
+  for (const rel of resource.relations || []) rel.replace(db, id, relations[rel.key]);
+  appendEvent(db, resource, { id, user, action: 'created', now });
+  return id;
+}
+
+const MAX_BATCH_ITEMS = 50;
+
 async function createResource(ctx, req, res, resource) {
   const user = requireUser(ctx, req);
   const body = await readJson(req);
   const now = ctx.now().toISOString();
-  const id = randomUUID();
-  withTransaction(ctx.db, () => {
-    const values = {};
-    for (const [column, parser] of resource.fields) values[column] = parser.parse(body[parser.key], ctx.db);
-    const relations = Object.fromEntries((resource.relations || []).map((rel) => [rel.key, rel.parse(body[rel.key], ctx.db)]));
-    resource.validate?.(ctx.db, values, null, relations);
-    const columns = ['id', ...Object.keys(values), 'created_at', 'updated_at'];
-    ctx.db.prepare(`INSERT INTO ${resource.table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
-      .run(id, ...Object.values(values), now, now);
-    for (const rel of resource.relations || []) rel.replace(ctx.db, id, relations[rel.key]);
-    appendEvent(ctx.db, resource, { id, user, action: 'created', now });
-  });
-  sendJson(res, 201, { record: getRecord(ctx.db, resource, id) });
+  const batch = resource.batchKey && Object.hasOwn(body, resource.batchKey) ? body[resource.batchKey] : null;
+  if (batch === null) {
+    const id = withTransaction(ctx.db, () => insertRecord(ctx.db, resource, body, { user, now }));
+    sendJson(res, 201, { record: getRecord(ctx.db, resource, id) });
+    return;
+  }
+  // Batch create: every item shares the body's other fields; one failing item rolls back all.
+  const { batchKey, batchLabel } = resource;
+  if (!Array.isArray(batch) || batch.length === 0 || batch.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    throw validationError(`Añade al menos un ${batchLabel.toLowerCase()}.`, batchKey);
+  }
+  if (batch.length > MAX_BATCH_ITEMS) throw validationError(`Como máximo ${MAX_BATCH_ITEMS} registros a la vez.`, batchKey);
+  const { [batchKey]: _items, ...shared } = body;
+  const ids = withTransaction(ctx.db, () => batch.map((item, index) => {
+    try {
+      return insertRecord(ctx.db, resource, { ...shared, ...item }, { user, now });
+    } catch (error) {
+      // Item-level errors name their position, e.g. "Objetivo 2: El campo «Objetivo» es obligatorio.".
+      const itemField = error instanceof HttpError && error.status === 400 && error.field && !resource.batchSharedKeys.includes(error.field);
+      if (itemField) {
+        throw new HttpError(400, error.code, `${batchLabel} ${index + 1}: ${error.message}`, batchKey);
+      }
+      throw error;
+    }
+  }));
+  sendJson(res, 201, { records: ids.map((id) => getRecord(ctx.db, resource, id)) });
 }
 
 async function updateResource(ctx, req, res, resource, rawId) {
@@ -468,20 +592,30 @@ async function updateResource(ctx, req, res, resource, rawId) {
   sendJson(res, 200, { record: getRecord(ctx.db, resource, id) });
 }
 
+/**
+ * Relations that block deleting a record, from its `deleteChecks`: `[{ count, label, text }]`
+ * (only non-zero counts), plus the full Spanish explanation in `message` ('' when none).
+ */
+function collectDeleteLinks(db, resource, row) {
+  const links = [];
+  for (const [sql, singular, plural] of resource.deleteChecks) {
+    const count = Number(db.prepare(sql).get({ id: row.id })?.count ?? 0);
+    if (count > 0) links.push({ count, label: plural, text: `${count} ${count === 1 ? singular : plural}` });
+  }
+  const message = links.length > 0
+    ? `No se puede eliminar ${resource.subject} «${resource.describe(row)}»: tiene vínculos con ${joinSpanish(links.map((link) => link.text))}.`
+    : '';
+  return { links, message };
+}
+
 function deleteResource(ctx, req, res, resource, rawId) {
   requireUser(ctx, req);
   const id = decodeId(rawId);
   withTransaction(ctx.db, () => {
     const row = getRow(ctx.db, resource, id);
     if (!row) throw new HttpError(404, 'not_found', resource.notFound);
-    const parts = [];
-    for (const [sql, singular, plural] of resource.deleteChecks) {
-      const count = Number(ctx.db.prepare(sql).get({ id })?.count ?? 0);
-      if (count > 0) parts.push(`${count} ${count === 1 ? singular : plural}`);
-    }
-    if (parts.length > 0) {
-      throw new HttpError(409, `${resource.entityType}_in_use`, `No se puede eliminar ${resource.subject} «${resource.describe(row)}»: tiene vínculos con ${joinSpanish(parts)}.`);
-    }
+    const { links, message } = collectDeleteLinks(ctx.db, resource, row);
+    if (links.length > 0) throw new HttpError(409, `${resource.entityType}_in_use`, message);
     ctx.db.prepare('DELETE FROM entity_events WHERE entity_type = ? AND entity_id = ?').run(resource.entityType, id);
     for (const rel of resource.relations || []) rel.remove(ctx.db, id);
     ctx.db.prepare(`DELETE FROM ${resource.table} WHERE id = ?`).run(id);
@@ -489,31 +623,60 @@ function deleteResource(ctx, req, res, resource, rawId) {
   sendJson(res, 200, { deleted: true });
 }
 
-function listActivityCatalog(ctx, req, res) {
+/** `GET /api/<resource>/<id>/links`: what would block deleting the record, before asking to confirm. */
+function getDeleteLinks(ctx, req, res, resource, rawId) {
   requireUser(ctx, req);
-  const rows = ctx.db.prepare('SELECT * FROM activity_catalog ORDER BY sort_order, name').all();
-  sendJson(res, 200, {
-    records: rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      category: row.category,
-      levels: Object.fromEntries(CAREER_LEVELS.map((level) => [level, row[level.toLowerCase()]])),
-    })),
+  const id = decodeId(rawId);
+  const row = getRow(ctx.db, resource, id);
+  if (!row) throw new HttpError(404, 'not_found', resource.notFound);
+  const { links, message } = collectDeleteLinks(ctx.db, resource, row);
+  sendJson(res, 200, { blocked: links.length > 0, links, message });
+}
+
+/**
+ * `POST /api/talents/reorder` with `{ ids }`: the manual order of "Listado de personas". Listed
+ * talents take positions 1..n in that order; unlisted ones keep their relative order after them.
+ * Only `sort_order` changes (no other column, no `updated_at`, no history event).
+ */
+async function reorderTalents(ctx, req, res) {
+  requireUser(ctx, req);
+  const body = await readJson(req);
+  const ids = body?.ids;
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || id === '') || new Set(ids).size !== ids.length) {
+    throw validationError('El orden debe ser una lista de talentos sin repetir.', 'ids');
+  }
+  const order = withTransaction(ctx.db, () => {
+    const current = ctx.db.prepare('SELECT id, sort_order FROM talents ORDER BY sort_order, name COLLATE NOCASE').all();
+    const known = new Set(current.map((row) => row.id));
+    if (ids.some((id) => !known.has(id))) throw validationError('Alguno de los talentos indicados no existe.', 'ids');
+    const listed = new Set(ids);
+    const next = [...ids, ...current.map((row) => row.id).filter((id) => !listed.has(id))];
+    const stored = new Map(current.map((row) => [row.id, row.sort_order]));
+    const update = ctx.db.prepare('UPDATE talents SET sort_order = ? WHERE id = ?');
+    next.forEach((id, index) => { if (stored.get(id) !== index + 1) update.run(index + 1, id); });
+    return next;
   });
+  sendJson(res, 200, { ids: order });
 }
 
 const RESOURCE_NAMES = Object.keys(RESOURCES).join('|');
 const COLLECTION_PATTERN = new RegExp(`^/api/(${RESOURCE_NAMES})$`);
 const ITEM_PATTERN = new RegExp(`^/api/(${RESOURCE_NAMES})/([^/]+)$`);
+const LINKS_PATTERN = new RegExp(`^/api/(${RESOURCE_NAMES})/([^/]+)/links$`);
 
 /**
  * Routes the People/Proyectos endpoints. Returns the handler's promise, or null when the path
  * is not one of them (the caller then keeps routing). CSRF is checked by the caller.
  */
 export function routeOperationsApi(ctx, req, res, pathname) {
-  if (pathname === '/api/activity-catalog') {
+  if (pathname === '/api/talents/reorder') {
+    if (req.method !== 'POST') return rejectMethod(res, 'POST');
+    return reorderTalents(ctx, req, res);
+  }
+  const links = LINKS_PATTERN.exec(pathname);
+  if (links) {
     if (req.method !== 'GET') return rejectMethod(res, 'GET');
-    return Promise.resolve(listActivityCatalog(ctx, req, res));
+    return Promise.resolve(getDeleteLinks(ctx, req, res, RESOURCES[links[1]], links[2]));
   }
   const collection = COLLECTION_PATTERN.exec(pathname);
   if (collection) {

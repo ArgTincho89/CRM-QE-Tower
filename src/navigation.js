@@ -87,6 +87,7 @@ export const PEOPLE_TABS = [
   { id: 'activityCatalog', label: 'Catálogo de actividades por niveles' },
   { id: 'assignments', label: 'Asignaciones' },
   { id: 'training', label: 'Formación' },
+  { id: 'performanceReview', label: 'Performance review' },
 ];
 export const DEFAULT_PEOPLE_TAB = PEOPLE_TABS[0].id;
 

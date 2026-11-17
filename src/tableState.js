@@ -136,6 +136,22 @@ export function moveColumnTo(order, sourceId, targetId) {
 }
 
 /**
+ * Rows in the order of `ids` (by `rowKey`); rows whose key is not listed keep their relative
+ * order after the listed ones, and unknown ids are ignored.
+ */
+export function orderByIds(rows, ids, rowKey = (row) => row.id) {
+  const list = Array.isArray(rows) ? rows : [];
+  const position = new Map((ids || []).map((id, index) => [id, index]));
+  const listed = list.filter((row) => position.has(rowKey(row))).sort((a, b) => position.get(rowKey(a)) - position.get(rowKey(b)));
+  return [...listed, ...list.filter((row) => !position.has(rowKey(row)))];
+}
+
+/** Screen-reader announcement after a row move (manual order). */
+export function describeRowMove(label, position, total) {
+  return `${label} movido a la posición ${position} de ${total}.`;
+}
+
+/**
  * Reconciles a saved order with the current column ids: unknown (stale) and duplicate ids
  * are dropped, and columns missing from the saved order are appended in default order.
  */

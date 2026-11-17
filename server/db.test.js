@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, migrateResolutionDate, migrateTalentRelations, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
+import { applySchema, closeDatabase, INITIAL_SERVICE_YEAR, migrateResolutionDate, migrateTalentProfiles, migrateTalentRelations, migrateTalentSortOrder, openDatabase, seedDatabase, SERVICE_CATALOG } from './db.js';
 import { createTempDatabase } from './testing.js';
 
 function count(db, table) {
@@ -814,6 +814,52 @@ test('the talent relations backfill derives LoBs, towers and the primary tower f
     assert.deepEqual(lobsOf('TA-2'), []);
     assert.equal(primaryOf('TA-1'), 'T-2');
     assert.equal(temp.db.prepare('SELECT COUNT(*) AS count FROM talent_towers WHERE talent_id = ?').get('TA-2').count, 2);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('talent profiles become a JSON list once and the manual order is backfilled by name', () => {
+  const temp = createTempDatabase();
+  try {
+    const stamp = '2026-01-01';
+    const insertTalent = temp.db.prepare('INSERT INTO talents (id, name, profile, created_at, updated_at) VALUES (?, ?, ?, ?, ?)');
+    insertTalent.run('TA-1', 'Zeta', 'Ambos', stamp, stamp);
+    insertTalent.run('TA-2', 'alfa', 'No funcional', stamp, stamp);
+    insertTalent.run('TA-3', 'Beta', '', stamp, stamp);
+    insertTalent.run('TA-4', 'Gamma', 'Otro', stamp, stamp);
+    // Simulate a database that predates both migrations.
+    temp.db.prepare('DELETE FROM schema_meta WHERE key IN (?, ?)').run('talent_profiles_multi_v1', 'talent_sort_order_v1');
+    migrateTalentProfiles(temp.db);
+    migrateTalentSortOrder(temp.db);
+    const row = (id) => temp.db.prepare('SELECT name, profile, sort_order, updated_at FROM talents WHERE id = ?').get(id);
+    assert.equal(row('TA-1').profile, '["Funcional","No funcional"]');
+    assert.equal(row('TA-2').profile, '["No funcional"]');
+    assert.equal(row('TA-3').profile, '[]');
+    assert.equal(row('TA-4').profile, '[]');
+    assert.equal(row('TA-1').updated_at, stamp);
+    assert.deepEqual(['TA-2', 'TA-3', 'TA-4', 'TA-1'].map((id) => row(id).sort_order), [1, 2, 3, 4]);
+
+    // Guarded: later boots leave user edits alone.
+    temp.db.prepare("UPDATE talents SET profile = 'Ambos', sort_order = 9 WHERE id = 'TA-3'").run();
+    applySchema(temp.db);
+    assert.equal(row('TA-3').profile, 'Ambos');
+    assert.equal(row('TA-3').sort_order, 9);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('the schema adds assignment dates, talent order and the performance reviews table idempotently', () => {
+  const temp = createTempDatabase();
+  try {
+    applySchema(temp.db);
+    const columns = (table) => temp.db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name);
+    assert.ok(columns('assignments').includes('start_date'));
+    assert.ok(columns('assignments').includes('end_date'));
+    assert.ok(columns('talents').includes('sort_order'));
+    assert.ok(columns('activity_catalog').includes('updated_at'));
+    assert.ok(columns('performance_reviews').includes('link_url'));
   } finally {
     temp.cleanup();
   }

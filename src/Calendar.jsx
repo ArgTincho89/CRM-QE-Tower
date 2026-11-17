@@ -3,6 +3,7 @@ import {
   CALENDAR_EVENT_TYPES, CALENDAR_VIEWS, SPANISH_WEEKDAYS, agendaMonths, agendaStartDay, buildCalendarEvents, dayHeading, filterEventsByType,
   groupEventsByDay, monthGrid, parseIsoDate, periodTitle, shiftAnchor, splitCellEvents, toLocalIsoDate, weekDates,
 } from './calendar.js';
+import { listOperationRecords } from './api.js';
 
 // Below this width the month grid is too cramped, so the calendar opens in the agenda.
 const NARROW_SCREEN_QUERY = '(max-width: 720px)';
@@ -19,7 +20,7 @@ const TYPE_LABELS = Object.fromEntries(CALENDAR_EVENT_TYPES.map((type) => [type.
 
 function CalendarEvent({ event, onOpen }) {
   const overdue = event.type === 'initiative' && event.urgency === 'due';
-  const description = `${TYPE_LABELS[event.type]}: ${event.label}${overdue ? '. Próxima acción vencida' : ''}`;
+  const description = event.description || `${TYPE_LABELS[event.type]}: ${event.label}${overdue ? '. Próxima acción vencida' : ''}`;
   return <button type="button" className={`calendar-event calendar-event-${event.type}${overdue ? ' calendar-event-overdue' : ''}`} onClick={() => onOpen(event)} title={description} aria-label={description}>
     <span className="calendar-event-dot" aria-hidden="true" />
     <span className="calendar-event-label">{event.label}</span>
@@ -28,7 +29,8 @@ function CalendarEvent({ event, onOpen }) {
 
 /**
  * "Calendario": read-only, all-day view of next actions (initiatives and opportunities) and
- * framework agreement end dates, in month, week or agenda views. Clicking an event opens its record.
+ * framework agreement end dates, plus the end of People assignments, in month, week or agenda views.
+ * Clicking an event opens its record (assignments open People > Asignaciones).
  */
 export default function CalendarPage({ initiatives, opportunities, agreements, onOpenEvent }) {
   const today = toLocalIsoDate(new Date());
@@ -40,9 +42,17 @@ export default function CalendarPage({ initiatives, opportunities, agreements, o
   // Bumped by "Hoy" so the agenda scrolls back to today even when nothing else changed.
   const [scrollRequest, setScrollRequest] = useState(0);
 
+  // Assignments live in People; the calendar loads them itself and simply omits them on failure.
+  const [assignments, setAssignments] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    listOperationRecords('assignments').then((payload) => { if (!cancelled) setAssignments(payload?.records || []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const allEvents = useMemo(
-    () => buildCalendarEvents({ initiatives, opportunities, agreements }),
-    [initiatives, opportunities, agreements],
+    () => buildCalendarEvents({ initiatives, opportunities, agreements, assignments }),
+    [initiatives, opportunities, agreements, assignments],
   );
   const events = useMemo(() => filterEventsByType(allEvents, enabledTypes), [allEvents, enabledTypes]);
   const eventsByDay = useMemo(() => groupEventsByDay(events), [events]);

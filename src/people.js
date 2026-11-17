@@ -2,7 +2,14 @@
 // purpose: the server runtime image copies this file alone (see the Dockerfile).
 
 export const TALENT_CATEGORIES = ['QA Tester', 'QA Engineer', 'QA Otros'];
-export const TALENT_PROFILES = ['Funcional', 'No funcional', 'Ambos'];
+/** "Perfil" of a talent: multi-select, stored as a JSON array in `talents.profile`. */
+export const TALENT_PROFILES = ['Funcional', 'No funcional', 'Automatización'];
+/** Retired single-choice value that meant both functional profiles. */
+export const LEGACY_BOTH_PROFILE = 'Ambos';
+
+/** Status of a performance review objective. */
+export const PERFORMANCE_STATUSES = ['Pendiente', 'Cumplido', 'No cumplido'];
+export const DEFAULT_PERFORMANCE_STATUS = PERFORMANCE_STATUSES[0];
 
 /** Skill proficiency ("Nivel actual" / "Nivel objetivo"), stored as 1..4. */
 export const SKILL_LEVELS = [
@@ -21,6 +28,36 @@ export const PLAN_STATUS_DEFAULTS = ['No iniciada', 'En curso', 'Completada'];
 export const TESTING_SCOPE_DEFAULTS = ['Functional', 'API', 'E2E', 'Regression', 'Performance', 'Security', 'Accessibility', 'Mobile'];
 
 export const ASSIGNMENT_LIMIT = 100;
+
+/**
+ * Talent profiles from what may be stored or sent: an array, a JSON array string or a legacy
+ * single value ('Ambos' = Funcional + No funcional). Unknown values are dropped and the result
+ * follows the TALENT_PROFILES order without duplicates.
+ */
+export function parseTalentProfiles(value) {
+  let items = [];
+  if (Array.isArray(value)) items = value;
+  else {
+    const raw = String(value ?? '').trim();
+    if (raw.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw);
+        items = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        items = [];
+      }
+    } else if (raw) items = [raw];
+  }
+  const wanted = new Set();
+  for (const item of items) {
+    const text = String(item ?? '').trim();
+    if (text === LEGACY_BOTH_PROFILE) {
+      wanted.add('Funcional');
+      wanted.add('No funcional');
+    } else wanted.add(text);
+  }
+  return TALENT_PROFILES.filter((profile) => wanted.has(profile));
+}
 
 export function skillLevelLabel(value) {
   return SKILL_LEVELS.find((level) => level.value === Number(value))?.label || '';
@@ -49,6 +86,46 @@ export function buildActivityMatrix(activities = []) {
     category: activity.category || '',
     cells: CAREER_LEVELS.map((level) => ({ level, ...describeMatrixCell(activity.levels?.[level]) })),
   }));
+}
+
+/** Career levels (L1..L7) an activity has configured: the non-empty cells of its catalog row. */
+export function configuredCareerLevels(activity) {
+  if (!activity) return [];
+  return CAREER_LEVELS.filter((level) => String(activity.levels?.[level] ?? activity[level.toLowerCase()] ?? '').trim() !== '');
+}
+
+/** An assignment is active on `today` (ISO date) when start ≤ today ≤ end; a missing date is open. */
+export function isAssignmentActive(assignment, today) {
+  const start = String(assignment?.startDate ?? '').trim();
+  const end = String(assignment?.endDate ?? '').trim();
+  if (start && start > today) return false;
+  if (end && end < today) return false;
+  return true;
+}
+
+/**
+ * Availability per talent id on `today`: 100 minus the summed percentage of the assignments active
+ * that day. Talents without active assignments are not in the map (see talentAvailability).
+ */
+export function computeAvailability(assignments = [], today) {
+  const active = (assignments || []).filter((item) => isAssignmentActive(item, today));
+  const totals = computeAssignmentTotals(active);
+  return new Map([...totals].map(([talentId, total]) => [talentId, Math.round((ASSIGNMENT_LIMIT - total) * 100) / 100]));
+}
+
+/** Availability of one talent from a computeAvailability map (100 when nothing is active). */
+export function talentAvailability(availability, talentId) {
+  return availability.has(talentId) ? availability.get(talentId) : ASSIGNMENT_LIMIT;
+}
+
+/** "Disponible": the talent has between 1 % and 100 % free right now. */
+export function isAvailable(value) {
+  return Number.isFinite(value) && value >= 1 && value <= ASSIGNMENT_LIMIT;
+}
+
+/** What best identifies an assignment's project: client, else tower, else LoB. */
+export function assignmentProjectLabel(assignment) {
+  return assignment?.clientName || assignment?.towerName || assignment?.lobName || 'sin proyecto';
 }
 
 /** Sum of the assignment percentages per talent id. */
@@ -135,11 +212,14 @@ function numberError(value, { min = 0, max = Infinity, required = false, label }
   return '';
 }
 
-export const TALENT_FORM_FIELDS = ['name', 'location', 'category', 'profile', 'lobIds', 'towerIds', 'primaryTowerId'];
+export const TALENT_FORM_FIELDS = ['name', 'location', 'category', 'profiles', 'lobIds', 'towerIds', 'primaryTowerId'];
 /** Fields of the create dialog: the name is composed from these, so `name` is not a form field. */
-export const TALENT_CREATE_FORM_FIELDS = ['firstName', 'lastName', 'secondLastName', 'location', 'category', 'profile', 'lobIds', 'towerIds', 'primaryTowerId'];
+export const TALENT_CREATE_FORM_FIELDS = ['firstName', 'lastName', 'secondLastName', 'location', 'category', 'profiles', 'lobIds', 'towerIds', 'primaryTowerId'];
 export const SKILL_FORM_FIELDS = ['talentId', 'activityId', 'currentLevel', 'targetLevel', 'careerLevel', 'certificate', 'comment'];
-export const ASSIGNMENT_FORM_FIELDS = ['talentId', 'towerId', 'lobId', 'clientId', 'percentage'];
+export const ASSIGNMENT_FORM_FIELDS = ['talentId', 'towerId', 'lobId', 'clientId', 'percentage', 'startDate', 'endDate'];
+export const ACTIVITY_FORM_FIELDS = ['name', 'category', ...CAREER_LEVELS.map((level) => level.toLowerCase())];
+export const PERFORMANCE_FORM_FIELDS = ['talentId', 'year', 'objective', 'status', 'linkTitle', 'linkUrl', 'notes'];
+export const PERFORMANCE_MAX_OBJECTIVES = 50;
 export const COURSE_FORM_FIELDS = ['name', 'family', 'istqbCategory', 'types', 'provider', 'level', 'estimatedHours', 'url', 'validityMonths'];
 export const PLAN_FORM_FIELDS = ['talentId', 'task', 'courseId', 'courseName', 'family', 'estimatedHours', 'dedicatedHours', 'progress', 'status', 'startDate', 'plannedEndDate', 'actualEndDate', 'evidence', 'nextStep', 'expiryDate'];
 export const PROJECT_FORM_FIELDS = ['code', 'applicationName', 'version', 'client', 'naq', 'projectType', 'deliveryTarget', 'testingScope', 'qaServiceType', 'phase', 'riskLevel', 'automation', 'status', 'projectUrl', 'qaOwner', 'qaEntryDate', 'targetReleaseDate', 'createdDate', 'attachments', 'comments'];
@@ -185,11 +265,15 @@ export function validateTalentCreateForm(form) {
   return { ...errors, ...talentErrors };
 }
 
-export function validateSkillForm(form) {
+/** `allowedCareerLevels` (optional) are the "Nivel" values the selected activity accepts. */
+export function validateSkillForm(form, { allowedCareerLevels = null } = {}) {
   const errors = {};
   if (isBlank(form.talentId)) errors.talentId = 'Selecciona la persona.';
   if (isBlank(form.activityId)) errors.activityId = 'Selecciona la actividad.';
   if (isBlank(form.currentLevel)) errors.currentLevel = 'Selecciona el nivel actual.';
+  if (!isBlank(form.careerLevel) && allowedCareerLevels && !allowedCareerLevels.includes(form.careerLevel)) {
+    errors.careerLevel = 'Ese nivel no está configurado para la actividad seleccionada.';
+  }
   return errors;
 }
 
@@ -198,7 +282,63 @@ export function validateAssignmentForm(form) {
   if (isBlank(form.talentId)) errors.talentId = 'Selecciona el talento.';
   const percentage = numberError(form.percentage, { min: 0, max: 100, required: true, label: 'el % de asignación' });
   if (percentage) errors.percentage = percentage;
+  if (!isBlank(form.startDate) && !isBlank(form.endDate) && form.endDate < form.startDate) {
+    errors.endDate = 'La fecha fin no puede ser anterior a la fecha inicio.';
+  }
   return errors;
+}
+
+export function validateActivityForm(form) {
+  const errors = {};
+  if (isBlank(form.name)) errors.name = 'Indica el nombre de la actividad.';
+  return errors;
+}
+
+function yearError(value) {
+  const year = toNumber(value);
+  if (year === null) return 'Indica el año.';
+  if (Number.isNaN(year) || !Number.isInteger(year) || year < 2000 || year > 2100) return 'El año debe ser un número entero entre 2000 y 2100.';
+  return '';
+}
+
+/** One performance review objective (edit dialog). */
+export function validatePerformanceForm(form) {
+  const errors = {};
+  if (isBlank(form.talentId)) errors.talentId = 'Selecciona el talento.';
+  const year = yearError(form.year);
+  if (year) errors.year = year;
+  if (isBlank(form.objective)) errors.objective = 'Indica el objetivo.';
+  if (!isBlank(form.linkUrl) && !safeExternalUrl(form.linkUrl)) errors.linkUrl = 'El enlace debe empezar por http:// o https://.';
+  return errors;
+}
+
+/**
+ * Create dialog: one talent and year plus a list of objectives. Errors of an objective are keyed
+ * `objectives.<index>.<field>`.
+ */
+export function validatePerformanceCreateForm(form) {
+  const errors = {};
+  if (isBlank(form.talentId)) errors.talentId = 'Selecciona el talento.';
+  const year = yearError(form.year);
+  if (year) errors.year = year;
+  const objectives = form.objectives || [];
+  if (objectives.length === 0) errors.objectives = 'Añade al menos un objetivo.';
+  else if (objectives.length > PERFORMANCE_MAX_OBJECTIVES) errors.objectives = `Como máximo ${PERFORMANCE_MAX_OBJECTIVES} objetivos a la vez.`;
+  objectives.forEach((item, index) => {
+    if (isBlank(item.objective)) errors[`objectives.${index}.objective`] = 'Indica el objetivo.';
+    if (!isBlank(item.linkUrl) && !safeExternalUrl(item.linkUrl)) errors[`objectives.${index}.linkUrl`] = 'El enlace debe empezar por http:// o https://.';
+  });
+  return errors;
+}
+
+/** Years offered by the performance review filter: the current one plus every stored year, newest first. */
+export function performanceYears(records = [], currentYear) {
+  const years = new Set([Number(currentYear)]);
+  for (const record of records) {
+    const year = Number(record?.year);
+    if (record?.year !== null && record?.year !== '' && Number.isInteger(year)) years.add(year);
+  }
+  return [...years].filter(Number.isFinite).sort((a, b) => b - a);
 }
 
 export function validateCourseForm(form) {

@@ -131,9 +131,13 @@ export const getMonthlyAggregates = (year) => request(`/reports/monthly?year=${e
 export const listMonthlySnapshots = () => request('/reports/monthly-snapshots');
 export const getMonthlySnapshot = (period) => request(`/reports/monthly-snapshots/${encodeURIComponent(period)}`);
 export const getLiveMonthlyReport = () => request('/reports/monthly-live');
-// "People" and "Proyectos": generic CRUD per resource ('talents', 'talent-skills', 'assignments',
-// 'training-catalog', 'training-plan', 'projects'); the activity catalog is read-only.
+// "People" and "Proyectos": generic CRUD per resource ('talents', 'talent-skills', 'activity-catalog',
+// 'assignments', 'training-catalog', 'training-plan', 'performance-reviews', 'projects').
 export const listActivityCatalog = () => request('/activity-catalog');
+// Manual order of "Listado de personas": the full list of talent ids in display order.
+export const reorderTalents = (ids) => request('/talents/reorder', { method: 'POST', body: { ids } });
+// What blocks deleting a record: `{ blocked, links: [{ count, label, text }], message }`.
+export const getOperationRecordLinks = (resource, id) => request(`/${resource}/${encodeURIComponent(id)}/links`);
 export const listOperationRecords = (resource) => request(`/${resource}`);
 export const createOperationRecord = (resource, body) => request(`/${resource}`, { method: 'POST', body });
 export const updateOperationRecord = (resource, id, body) => request(`/${resource}/${encodeURIComponent(id)}`, { method: 'PATCH', body });
